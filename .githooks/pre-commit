@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit
+#
+# Fast shift-left gate. Project-local by design — no Python `pre-commit`
+# framework, no host install. Uses ./bin/ tools + `git config
+# core.hooksPath .githooks` (wired by `make pre-commit-install`, also run
+# automatically by `make dev-setup`).
+#
+# Scope split: this hook catches the cheap, embarrassing mistakes in
+# <1 s — unformatted Terraform, secrets staged for commit. The heavy
+# checks (terraform validate / tflint / tfsec / plan) run in CI
+# (.github/workflows/infra-plan.yml) where a slower feedback loop is fine.
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+export PATH="$ROOT/bin:$PATH"
+fail=0
+
+# --- terraform fmt (only when .tf / .tfvars staged) ------------------------
+if git diff --cached --name-only --diff-filter=ACM | grep -qE '\.(tf|tfvars)$'; then
+  if command -v terraform >/dev/null 2>&1; then
+    if ! terraform fmt -check -recursive "$ROOT/terraform/" >/dev/null 2>&1; then
+      echo "pre-commit: terraform fmt drift — run 'make fmt' and re-stage." >&2
+      fail=1
+    fi
+  else
+    echo "pre-commit: terraform not on PATH — skipping fmt check." >&2
+  fi
+fi
+
+# --- gitleaks secret scan on staged content --------------------------------
+# The single most important check: blocks a credential / private key from
+# ever entering git history. Cheap to run, catastrophic to skip.
+# `protect --staged` scans the staged diff only (gitleaks 8.18.x).
+if [ -x "$ROOT/bin/gitleaks" ]; then
+  if ! "$ROOT/bin/gitleaks" protect --staged --no-banner --redact --source "$ROOT" >/dev/null 2>&1; then
+    echo "pre-commit: gitleaks detected a secret in staged changes — ABORTING." >&2
+    "$ROOT/bin/gitleaks" protect --staged --no-banner --redact --source "$ROOT" >&2 || true
+    fail=1
+  fi
+else
+  echo "pre-commit: gitleaks not installed — run 'make dev-setup'. Secret scan SKIPPED." >&2
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit: blocked. Fix the above and re-commit (do NOT use --no-verify)." >&2
+fi
+exit "$fail"

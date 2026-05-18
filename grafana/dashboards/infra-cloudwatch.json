@@ -1,0 +1,123 @@
+{
+  "title": "aegis-stateless — infra (CloudWatch)",
+  "uid": "aegis-stateless-infra-cw",
+  "schemaVersion": 38,
+  "version": 1,
+  "tags": ["aegis-stateless", "managed-by-terraform", "cloudwatch"],
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "ALB 5xx responses (count)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "cloudwatch", "uid": "${cloudwatch_uid}" },
+          "queryMode": "Metrics",
+          "region": "default",
+          "namespace": "AWS/ApplicationELB",
+          "metricName": "HTTPCode_ELB_5XX_Count",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Sum",
+          "period": "",
+          "label": "ELB 5xx"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "cloudwatch", "uid": "${cloudwatch_uid}" },
+          "queryMode": "Metrics",
+          "region": "default",
+          "namespace": "AWS/ApplicationELB",
+          "metricName": "HTTPCode_Target_5XX_Count",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Sum",
+          "period": "",
+          "label": "target 5xx"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "ALB healthy host count",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "red" },
+              { "value": 1, "color": "green" }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "cloudwatch", "uid": "${cloudwatch_uid}" },
+          "queryMode": "Metrics",
+          "region": "default",
+          "namespace": "AWS/ApplicationELB",
+          "metricName": "HealthyHostCount",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "period": "",
+          "label": "healthy hosts"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "EC2 instance status-check failures",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 1, "color": "red" }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "cloudwatch", "uid": "${cloudwatch_uid}" },
+          "queryMode": "Metrics",
+          "region": "default",
+          "namespace": "AWS/EC2",
+          "metricName": "StatusCheckFailed",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Maximum",
+          "period": "",
+          "label": "status-check failed"
+        }
+      ]
+    }
+  ]
+}

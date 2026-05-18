@@ -1,0 +1,112 @@
+name: infra-ops
+
+# Workflow-dispatch only — operator-triggered one-shots and DR drill.
+#
+# Available operations:
+#   - bootstrap         : create S3 bucket + DynamoDB lock table (one-time)
+#   - destroy-region    : tear down a single region's regional stack (DR drill)
+#   - destroy-platform  : tear down platform env (post-submission cleanup)
+#
+# Bootstrap uses LOCAL state, applied in CI's ephemeral runner — operator
+# uploads the resulting state to a one-off artifact + manually configures
+# the GH Actions secrets TFSTATE_BUCKET / TFSTATE_REGION afterwards.
+# (For take-home, applying bootstrap from operator's laptop is also fine
+# and arguably safer — see backlog Step 6 + Open Questions.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Operation to run
+        required: true
+        type: choice
+        options:
+          - bootstrap
+          - destroy-region
+          - destroy-platform
+      region:
+        description: Region (required for destroy-region)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: bootstrap
+        if: ${{ inputs.operation == 'bootstrap' }}
+        run: |
+          cd terraform/envs/bootstrap
+          terraform init && terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
+          terraform output -raw backend_hcl
+          echo ""
+          echo "::warning::Capture the bucket_name + region above and set them as GH Actions secrets TFSTATE_BUCKET + TFSTATE_REGION."
+
+      - name: destroy-region
+        if: ${{ inputs.operation == 'destroy-region' }}
+        env:
+          TF_VAR_region:         ${{ inputs.region }}
+          TF_VAR_tfstate_bucket: ${{ secrets.TFSTATE_BUCKET }}
+          TF_VAR_tfstate_region: ${{ secrets.TFSTATE_REGION }}
+          TF_VAR_github_token:   ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+        run: |
+          if [[ -z "${{ inputs.region }}" ]]; then
+            echo "::error::region input is required for destroy-region"
+            exit 1
+          fi
+          r='${{ inputs.region }}'
+          # Per-region scalars + platform_region — all from the single
+          # SoT, regions.auto.tfvars.json.
+          export TF_VAR_platform_region="$(jq -r '.platform_region' regions.auto.tfvars.json)"
+          eval "$(jq -r --arg r "$r" '.regions[$r] | "TF_VAR_vpc_cidr=\(.cidr); TF_VAR_node_instance=\(.node_instance); TF_VAR_node_min=\(.node_min); TF_VAR_node_max=\(.node_max)"' regions.auto.tfvars.json)"
+          export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
+          cd terraform/envs/regional
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+            -backend-config="key=regional/$r/terraform.tfstate" \
+            -backend-config="encrypt=true"
+          terraform destroy -auto-approve
+
+      - name: destroy-platform
+        if: ${{ inputs.operation == 'destroy-platform' }}
+        env:
+          TF_VAR_grafana_cloud_api_token:             ${{ secrets.GRAFANA_CLOUD_API_TOKEN }}
+          TF_VAR_grafana_auth_token:                  ${{ secrets.GRAFANA_AUTH_TOKEN }}
+          TF_VAR_grafana_cloud_mimir_username:     ${{ secrets.GRAFANA_CLOUD_MIMIR_USERNAME }}
+          TF_VAR_grafana_cloud_loki_username:      ${{ secrets.GRAFANA_CLOUD_LOKI_USERNAME }}
+          TF_VAR_grafana_cloud_tempo_username:     ${{ secrets.GRAFANA_CLOUD_TEMPO_USERNAME }}
+          TF_VAR_grafana_cloud_pyroscope_username: ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_USERNAME }}
+          TF_VAR_grafana_cloud_mimir_url:             ${{ secrets.GRAFANA_CLOUD_MIMIR_URL }}
+          TF_VAR_grafana_cloud_loki_url:              ${{ secrets.GRAFANA_CLOUD_LOKI_URL }}
+          TF_VAR_grafana_cloud_tempo_url:             ${{ secrets.GRAFANA_CLOUD_TEMPO_URL }}
+          TF_VAR_grafana_cloud_pyroscope_url:         ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_URL }}
+          TF_VAR_budget_alert_email:                  ${{ secrets.BUDGET_ALERT_EMAIL }}
+          TF_VAR_github_token:                        ${{ secrets.GH_DEPLOY_KEY_PAT }}
+        run: |
+          cd terraform/envs/platform
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+            -backend-config="encrypt=true"
+          terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"

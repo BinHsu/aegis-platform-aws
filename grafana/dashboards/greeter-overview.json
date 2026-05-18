@@ -1,0 +1,289 @@
+{
+  "title": "aegis-greeter — overview",
+  "uid": "aegis-greeter-overview",
+  "schemaVersion": 38,
+  "version": 5,
+  "tags": ["aegis-stateless", "managed-by-terraform"],
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "region",
+        "label": "Region",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+        "definition": "label_values(region)",
+        "query": { "query": "label_values(region)", "refId": "StandardVariableQuery" },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "sum by (region, http_route) (job:greeter_http_requests:rate5m{region=~\"$region\"})",
+          "legendFormat": "{{region}} · {{http_route}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "5xx error rate (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "decimals": 2 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "sum by (region) (job:greeter_http_requests:rate5m{http_response_status_code=~\"5..\",region=~\"$region\"}) / clamp_min(sum by (region) (job:greeter_http_requests:rate5m{region=~\"$region\"}), 1e-9)",
+          "legendFormat": "{{region}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Latency p95 / p99 (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "histogram_quantile(0.95, job:greeter_http_request_duration:rate5m{region=~\"$region\"})",
+          "legendFormat": "{{region}} · p95"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "histogram_quantile(0.99, job:greeter_http_request_duration:rate5m{region=~\"$region\"})",
+          "legendFormat": "{{region}} · p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "In-flight requests",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "sum by (region) (http_server_active_requests{service_name=\"aegis-greeter\",region=~\"$region\"})",
+          "legendFormat": "{{region}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Pod readiness (ready vs desired replicas)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "red" },
+              { "value": 1, "color": "green" }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "sum by (region) (kube_deployment_status_replicas_ready{deployment=\"aegis-greeter\",region=~\"$region\"})",
+          "legendFormat": "{{region}} ready"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "sum by (region) (kube_deployment_spec_replicas{deployment=\"aegis-greeter\",region=~\"$region\"})",
+          "legendFormat": "{{region}} desired"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Container memory vs limit (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 0.9, "color": "red" }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "max by (region) (container_memory_working_set_bytes{pod=~\"aegis-greeter.*\",region=~\"$region\"}) / max by (region) (kube_pod_container_resource_limits{pod=~\"aegis-greeter.*\",resource=\"memory\",region=~\"$region\"})",
+          "legendFormat": "{{region}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Node CPU utilization (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "decimals": 2, "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "1 - avg by (region, instance) (rate(node_cpu_seconds_total{mode=\"idle\",region=~\"$region\"}[5m]))",
+          "legendFormat": "{{region}} · {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Node memory utilization (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 0.85, "color": "red" }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "1 - node_memory_MemAvailable_bytes{region=~\"$region\"} / node_memory_MemTotal_bytes{region=~\"$region\"}",
+          "legendFormat": "{{region}} · {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "apiserver request rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "cluster:apiserver_requests:rate5m{region=~\"$region\"}",
+          "legendFormat": "{{region}} · {{code}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "apiserver error rate (5xx %)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 0.05, "color": "red" }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "sum by (region) (cluster:apiserver_requests:rate5m{code=~\"5..\",region=~\"$region\"}) / clamp_min(sum by (region) (cluster:apiserver_requests:rate5m{region=~\"$region\"}), 1e-9)",
+          "legendFormat": "{{region}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Personalized vs default greetings (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 40 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${prometheus_uid}" },
+          "expr": "sum by (region, personalized) (rate(greeter_responses_total{region=~\"$region\"}[5m]))",
+          "legendFormat": "{{region}} · personalized={{personalized}}"
+        }
+      ]
+    }
+  ]
+}

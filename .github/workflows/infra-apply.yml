@@ -1,0 +1,134 @@
+name: infra-apply
+
+# Push to main → apply platform then regional matrix (in parallel per region).
+# Bootstrap is NOT in this path — it's one-shot via infra-ops.yml.
+#
+# Role assumed: aegis-stateless-apply (AdministratorAccess, trust scoped to
+# refs/heads/main only — PRs cannot assume this role). Combined with branch
+# protection (status checks + linear history, see
+# platform/branch-protection.tf), this means an apply only happens via a
+# reviewed commit landing on main.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'regions.auto.tfvars.json'
+      - 'terraform/**'
+      - 'grafana/**'
+      - '.github/workflows/infra-apply.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  setup:
+    name: setup-matrix
+    runs-on: ubuntu-latest
+    outputs:
+      enabled_regions: ${{ steps.regions.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: regions
+        run: |
+          list=$(jq -c '[.regions | to_entries[] | select(.value.enabled) | .key]' regions.auto.tfvars.json)
+          echo "list=${list}" >> "$GITHUB_OUTPUT"
+
+  apply-platform:
+    name: apply-platform
+    runs-on: ubuntu-latest
+    # Skips until the operator has run bootstrap + platform locally and
+    # set the BOOTSTRAP_COMPLETE repo variable (the IAM apply role +
+    # GitHub OIDC provider must exist first). Keeps the pipeline green
+    # through the bootstrap-ordering gap.
+    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: apply
+        env:
+          TF_VAR_grafana_cloud_api_token:             ${{ secrets.GRAFANA_CLOUD_API_TOKEN }}
+          TF_VAR_grafana_auth_token:                  ${{ secrets.GRAFANA_AUTH_TOKEN }}
+          TF_VAR_grafana_cloud_mimir_username:     ${{ secrets.GRAFANA_CLOUD_MIMIR_USERNAME }}
+          TF_VAR_grafana_cloud_loki_username:      ${{ secrets.GRAFANA_CLOUD_LOKI_USERNAME }}
+          TF_VAR_grafana_cloud_tempo_username:     ${{ secrets.GRAFANA_CLOUD_TEMPO_USERNAME }}
+          TF_VAR_grafana_cloud_pyroscope_username: ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_USERNAME }}
+          TF_VAR_grafana_cloud_mimir_url:             ${{ secrets.GRAFANA_CLOUD_MIMIR_URL }}
+          TF_VAR_grafana_cloud_loki_url:              ${{ secrets.GRAFANA_CLOUD_LOKI_URL }}
+          TF_VAR_grafana_cloud_tempo_url:             ${{ secrets.GRAFANA_CLOUD_TEMPO_URL }}
+          TF_VAR_grafana_cloud_pyroscope_url:         ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_URL }}
+          TF_VAR_budget_alert_email:                  ${{ secrets.BUDGET_ALERT_EMAIL }}
+          TF_VAR_github_token:                        ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_enable_cloudwatch_datasource:        ${{ vars.ENABLE_CLOUDWATCH_DATASOURCE || 'false' }}
+          TF_VAR_grafana_cloud_aws_account_id:        ${{ secrets.GRAFANA_CLOUD_AWS_ACCOUNT_ID }}
+          TF_VAR_grafana_cloud_external_id:           ${{ secrets.GRAFANA_CLOUD_EXTERNAL_ID }}
+        run: |
+          cd terraform/envs/platform
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+            -backend-config="encrypt=true"
+          terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
+
+  apply-regional:
+    name: "apply-regional (${{ matrix.region }})"
+    runs-on: ubuntu-latest
+    needs: [setup, apply-platform]
+    # See apply-platform — gated on the operator-set BOOTSTRAP_COMPLETE.
+    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' && needs.setup.outputs.enabled_regions != '[]' }}
+    strategy:
+      fail-fast: false       # one region's failure doesn't abort others
+      matrix:
+        region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_APPLY_ROLE_ARN }}
+          aws-region: ${{ matrix.region }}
+      - name: extract per-region scalars
+        id: scalars
+        run: |
+          r='${{ matrix.region }}'
+          jq -r --arg r "$r" '.regions[$r] | "cidr=\(.cidr)\nnode_instance=\(.node_instance)\nnode_min=\(.node_min)\nnode_max=\(.node_max)"' \
+            regions.auto.tfvars.json >> "$GITHUB_OUTPUT"
+      - name: extract platform_region (single SoT)
+        id: pr
+        run: |
+          echo "platform_region=$(jq -r '.platform_region' regions.auto.tfvars.json)" >> "$GITHUB_OUTPUT"
+      - name: apply
+        env:
+          TF_VAR_region:          ${{ matrix.region }}
+          TF_VAR_vpc_cidr:        ${{ steps.scalars.outputs.cidr }}
+          TF_VAR_node_instance:   ${{ steps.scalars.outputs.node_instance }}
+          TF_VAR_node_min:        ${{ steps.scalars.outputs.node_min }}
+          TF_VAR_node_max:        ${{ steps.scalars.outputs.node_max }}
+          TF_VAR_platform_region: ${{ steps.pr.outputs.platform_region }}
+          TF_VAR_tfstate_bucket:  ${{ secrets.TFSTATE_BUCKET }}
+          TF_VAR_tfstate_region:  ${{ secrets.TFSTATE_REGION }}
+          TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+        run: |
+          cd terraform/envs/regional
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+            -backend-config="key=regional/${{ matrix.region }}/terraform.tfstate" \
+            -backend-config="encrypt=true"
+          terraform apply -auto-approve
