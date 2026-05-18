@@ -43,11 +43,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history so the scan sees the whole PR range
+          fetch-depth: 0 # full history so the scan sees every commit
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # `detect --source .` scans the full git history directly. The
+        # gitleaks-action's push-range diff fails when the range includes the
+        # repo's root commit — `root^` is not a valid revision — which every
+        # fresh repo hits on its first push. A direct full-history scan has no
+        # range to compute and is robust on any push.
+        run: |
+          ver=8.24.3
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --no-banner --exit-code 1
 
   lint-validate:
     name: fmt-validate-lint-sec
