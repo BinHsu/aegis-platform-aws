@@ -1,6 +1,6 @@
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.13"
+  version = "~> 6.6"
 
   name = "aegis-platform-${var.region}"
   cidr = var.vpc_cidr
