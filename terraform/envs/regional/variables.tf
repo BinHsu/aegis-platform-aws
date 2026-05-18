@@ -46,7 +46,7 @@ variable "tfstate_region" {
 
 # ---- secrets (gitignored secrets.auto.tfvars locally; GH Actions secrets in CI) ----
 variable "github_token" {
-  description = "GitHub fine-grained PAT with admin:public_key scope on aegis-stateless repo (regional-stack registers ArgoCD's deploy key per region)."
+  description = "GitHub fine-grained PAT with admin:public_key scope on every workload deploy repo (regional-stack registers one ArgoCD deploy key per repo, per region)."
   type        = string
   sensitive   = true
 }
@@ -56,17 +56,25 @@ variable "operator_principal_arn" {
   type        = string
 }
 
-# ---- repo refs (committed defaults; rarely changed) -----------------------
-variable "repo_url_ssh" {
-  description = "SSH URL of aegis-stateless (referenced by the ArgoCD repository Secret data.url)."
-  type        = string
-  default     = "git@github.com:BinHsu/aegis-stateless.git"
-}
-
-variable "repo_name" {
-  description = "Bare repo name (used by github_repository_deploy_key resource)."
-  type        = string
-  default     = "aegis-stateless"
+# ---- deploy repos (single source of truth: workloads.auto.tfvars.json) ----
+# Map of workloads ArgoCD reconciles into this region's cluster, keyed by
+# ArgoCD Application name. Passed via -var-file=workloads.auto.tfvars.json by
+# the Makefile / CI. Adding a workload = one JSON entry, zero .tf edits — the
+# same data-driven pattern regions.auto.tfvars.json uses for regions.
+variable "workloads" {
+  description = "Workloads ArgoCD reconciles into each cluster, keyed by Application name. Single source of truth: workloads.auto.tfvars.json."
+  type = map(object({
+    repo_name    = string
+    repo_url_ssh = string
+    path         = optional(string, "k8s/overlays/prod")
+    namespace    = string
+    region_env = optional(object({
+      deployment = string
+      container  = string
+      var_name   = string
+    }))
+    latency_ingress = optional(string)
+  }))
 }
 
 # ---- tags -----------------------------------------------------------------

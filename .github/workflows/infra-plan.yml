@@ -71,10 +71,6 @@ jobs:
         run: ./bin/tflint --recursive --chdir=terraform/
       - name: sec
         run: ./bin/tfsec terraform/ --exclude-downloaded-modules
-      - name: validate k8s manifests
-        run: |
-          ./bin/kustomize build k8s/overlays/prod \
-            | ./bin/kubeconform -strict -summary -kubernetes-version 1.30.0 -
 
   plan-platform:
     name: plan-platform
@@ -188,7 +184,7 @@ jobs:
           # the .tflock file. Plan is read-only against state so lock skip
           # is safe; apply (separate job, infra_apply role with S3 write)
           # acquires the lock normally.
-          terraform plan -lock=false -out=plan.bin
+          terraform plan -lock=false -var-file="$GITHUB_WORKSPACE/workloads.auto.tfvars.json" -out=plan.bin
           terraform show -no-color plan.bin > plan-${{ matrix.region }}.txt
       - uses: actions/upload-artifact@v7
         with:

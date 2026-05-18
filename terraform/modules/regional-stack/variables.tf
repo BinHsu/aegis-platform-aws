@@ -44,14 +44,20 @@ variable "zone_name" {
   type        = string
 }
 
-variable "repo_url_ssh" {
-  description = "SSH URL of aegis-stateless (referenced by the ArgoCD repository Secret data.url)."
-  type        = string
-}
-
-variable "repo_name" {
-  description = "Bare repo name (passed to github_repository_deploy_key for deploy-key registration)."
-  type        = string
+variable "workloads" {
+  description = "Workloads ArgoCD reconciles into this cluster, keyed by Application name. Each entry names a deploy repo (one read-only deploy key registered per region) plus optional region-injection knobs. See workloads.auto.tfvars.json."
+  type = map(object({
+    repo_name    = string
+    repo_url_ssh = string
+    path         = optional(string, "k8s/overlays/prod")
+    namespace    = string
+    region_env = optional(object({
+      deployment = string
+      container  = string
+      var_name   = string
+    }))
+    latency_ingress = optional(string)
+  }))
 }
 
 variable "ci_role_arn" {

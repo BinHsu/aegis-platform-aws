@@ -86,7 +86,7 @@ jobs:
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="key=regional/$r/terraform.tfstate" \
             -backend-config="encrypt=true"
-          terraform destroy -auto-approve
+          terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/workloads.auto.tfvars.json"
 
       - name: destroy-platform
         if: ${{ inputs.operation == 'destroy-platform' }}

@@ -14,6 +14,7 @@ on:
     branches: [main]
     paths:
       - 'regions.auto.tfvars.json'
+      - 'workloads.auto.tfvars.json'
       - 'terraform/**'
       - 'grafana/**'
       - '.github/workflows/infra-apply.yml'
@@ -131,4 +132,4 @@ jobs:
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="key=regional/${{ matrix.region }}/terraform.tfstate" \
             -backend-config="encrypt=true"
-          terraform apply -auto-approve
+          terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/workloads.auto.tfvars.json"

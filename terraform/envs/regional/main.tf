@@ -18,8 +18,7 @@ module "stack" {
   node_min      = var.node_min
   node_max      = var.node_max
 
-  repo_url_ssh = var.repo_url_ssh
-  repo_name    = var.repo_name
+  workloads = var.workloads
 
   ci_role_arn            = data.terraform_remote_state.platform.outputs.infra_ci_role_arn
   apply_role_arn         = data.terraform_remote_state.platform.outputs.infra_apply_role_arn
