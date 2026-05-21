@@ -21,6 +21,7 @@ signal, not ceremony.
 | [ADR-04](04-observability.md) | Observability | OpenTelemetry + Alloy → Grafana Cloud; free-tier cardinality discipline (keep-list before `remote_write`); pull vs ingest; recording rules. |
 | [ADR-05](05-disaster-recovery.md) | Disaster recovery | RPO N/A (stateless by design); a ~20–30 min cold-rebuild RTO target, attributed; the drill cycle + cross-region failover. |
 | [ADR-06](06-security-and-runtime.md) | Security & runtime | IRSA, OIDC, EKS access entries, scoped deploy keys; PodSecurity `restricted`; secrets kept out of git. |
+| [ADR-07](07-workload-self-ownership.md) | Workload self-ownership | *Proposed.* Continues the boundary discipline of ADR-01 + ADR-03: application catalog moves to `ApplicationSet` with an SCM-provider generator; workload IAM moves to ACK CRDs in each deploy repo. |
 
 ## Reading order by audience
 
