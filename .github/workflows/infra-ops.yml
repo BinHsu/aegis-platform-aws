@@ -4,8 +4,8 @@ name: infra-ops
 #
 # Available operations:
 #   - bootstrap         : create S3 bucket + DynamoDB lock table (one-time)
-#   - destroy-region    : tear down a single region's regional stack (DR drill)
-#   - destroy-platform  : tear down platform env (post-submission cleanup)
+#   - destroy-region    : destroy a single region's regional stack (DR drill)
+#   - destroy-platform  : destroy platform env (post-submission cleanup)
 #
 # Bootstrap uses LOCAL state, applied in CI's ephemeral runner — operator
 # uploads the resulting state to a one-off artifact + manually configures

@@ -35,7 +35,7 @@ interval is misleading for ephemeral infrastructure, so all three are stated:
 | Per DR drill (~6 hr) | ≈ $1.30 | The realistic cost of an actual use. |
 
 The gap between **$1.30 a drill** and **$150 a month** is the whole FinOps
-argument: it makes the teardown discipline a number, not a slogan.
+argument: it makes the destroy discipline a number, not a slogan.
 
 ## The platform env is effectively free
 
@@ -47,19 +47,19 @@ free-tier. Total **≈ $0–1/month**. It is cheap enough to leave running.
 ## The strategy: ephemeral regional infra
 
 The `regional` stack is the cost, so it is treated as ephemeral — stood up for
-a demo or a DR drill, torn down when idle (`make destroy-region`).
+a demo or a DR drill, destroyed when idle (`make destroy-region`).
 
 The `bootstrap` / `platform` / `regional` lifecycle split is what makes this
 safe. Tearing down `regional` never touches `platform`: ECR images, the
-Route 53 zone, and the Grafana dashboards survive a teardown, so the rebuild is
+Route 53 zone, and the Grafana dashboards survive a destroy, so the rebuild is
 just `make regional` — no re-push, no re-import. The split is described in
 [ADR-02](adr/02-terraform-foundation.md); its FinOps payoff is that the
 expensive layer is disposable while the stateful-but-cheap layer persists.
 
 The AWS Budget (`$10` warn / `$25` hard, provisioned in `platform`) backstops a
-forgotten teardown. The numbers are calibrated to this workflow, not to a
+forgotten destroy. The numbers are calibrated to this workflow, not to a
 steady-state service: one region left running reaches the warn line in ~2 days
-and the hard line in ~5, so a forgotten teardown pages well before it becomes
+and the hard line in ~5, so a forgotten destroy pages well before it becomes
 expensive.
 
 ## Cost scales linearly per region
@@ -90,5 +90,5 @@ resilience — and the trigger that would justify reversing it — is in
 The mature end of FinOps is **unit economics** — cost per request, per customer,
 per transaction — so spend is read against business value, not in the abstract.
 A hello-world greeter has no meaningful unit to divide by; the discipline here
-is the right-sizing and the teardown habit. Unit-economics dashboards earn their
+is the right-sizing and the destroy habit. Unit-economics dashboards earn their
 keep once the service carries real, billable traffic.

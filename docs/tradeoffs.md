@@ -142,7 +142,7 @@ reference structurally embeds the account ID, and the GitOps flow requires it:
 the sibling repo's CI commits the image-tag bump into this manifest, and ArgoCD
 renders the manifest as-is. So the committed file carries the account ID. An
 account ID is identity surface, not a credential, and the sandbox account is
-torn down after the demo — accepted for the take-home, recorded here, not hidden.
+destroyed after the demo — accepted for the take-home, recorded here, not hidden.
 
 - **Production / clean**: the registry is a deploy-environment concern, not a
   build artifact — so stop CI writing it into git. The CI commit-back then

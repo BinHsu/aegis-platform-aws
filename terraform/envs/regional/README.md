@@ -59,7 +59,7 @@ Other inputs (`region` / `vpc_cidr` / `node_*` / `platform_region` / `tfstate_bu
 ## DR drill (per-region granular)
 
 ```bash
-# tear down a single region
+# destroy a single region
 make destroy-region REGION=eu-central-1
 
 # … observe GC dashboard: that region's metrics drop, others (if any) untouched

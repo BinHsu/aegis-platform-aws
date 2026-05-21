@@ -37,7 +37,7 @@ say() { printf '\n=== %s === %s\n' "$1" "$(ts)"; }
 dur() { printf '%dm %ds' $(( ($2 - $1) / 60 )) $(( ($2 - $1) % 60 )); }
 
 # Other regions still enabled in regions.auto.tfvars.json — they must keep
-# serving while $REGION is torn down and rebuilt. Empty for a single-region
+# serving while $REGION is destroyed and rebuilt. Empty for a single-region
 # deployment, in which case the failover probe is skipped.
 SURVIVORS="$(jq -r --arg d "$REGION" \
   '.regions | to_entries[] | select(.value.enabled and .key != $d) | .key' \
@@ -64,7 +64,7 @@ probe_survivors() {
 build_failover_section() {
   [ -n "$SURVIVOR_ALBS" ] && [ -s "$PROBE_LOG" ] || return 0
   printf '\n## Cross-region failover\n\n'
-  printf 'While `%s` was torn down and rebuilt, every other enabled region was\n' "$CLUSTER"
+  printf 'While `%s` was destroyed and rebuilt, every other enabled region was\n' "$CLUSTER"
   printf 'probed every 20 s on the greeter health endpoint, through its own ALB:\n\n'
   printf '| Surviving region | Probes | Healthy (200) |\n|---|---|---|\n'
   for s in $SURVIVORS; do
@@ -73,7 +73,7 @@ build_failover_section() {
     printf '| `%s` | %s | %s |\n' "$s" "${t:-0}" "${o:-0}"
   done
   printf '\nA surviving region serving every probe through the drilled region'"'"'s\n'
-  printf 'full teardown and rebuild is the redundancy evidence: regional stacks\n'
+  printf 'full destroy and rebuild is the redundancy evidence: regional stacks\n'
   printf 'are independent (separate Terraform state, EKS cluster, ArgoCD), so\n'
   printf 'losing one does not affect another. DNS-level failover — Route 53\n'
   printf 'latency records with evaluate-target-health drop the drilled region'"'"'s\n'
@@ -119,8 +119,8 @@ if [ -n "$SURVIVOR_ALBS" ]; then
   echo "failover probe started (pid $PROBE_PID) → $PROBE_LOG"
 fi
 
-# ---- phase 1 — teardown ---------------------------------------------------
-say "PHASE 1 — teardown"
+# ---- phase 1 — destroy ----------------------------------------------------
+say "PHASE 1 — destroy"
 make destroy-region REGION="$REGION" AUTO_APPROVE=-auto-approve
 T1="$(now)"; T1_ts="$(ts)"
 
@@ -146,7 +146,7 @@ if [ -n "$PROBE_PID" ]; then kill "$PROBE_PID" 2>/dev/null || true; PROBE_PID=""
 
 # ---- phase 4 — report -----------------------------------------------------
 say "PHASE 4 — report"
-TEARDOWN="$(dur "$T0" "$T1")"
+DESTROY="$(dur "$T0" "$T1")"
 REBUILD="$(dur "$T1" "$T2")"
 RECONVERGE="$(dur "$T2" "$T3")"
 RTO="$(dur "$T1" "$T3")"
@@ -163,7 +163,7 @@ cat > "$REPORT" <<EOF
 | Phase | From → to | Duration |
 |---|---|---|
 | 0 — baseline | — ($T0_ts) | — |
-| 1 — teardown ($CLUSTER destroyed) | $T0_ts → $T1_ts | $TEARDOWN |
+| 1 — destroy ($CLUSTER destroyed) | $T0_ts → $T1_ts | $DESTROY |
 | 2 — rebuild (Terraform re-apply) | $T1_ts → $T2_ts | $REBUILD |
 | 3 — reconverge (ArgoCD syncs from git) | $T2_ts → $T3_ts | $RECONVERGE |
 | **Measured cold-rebuild RTO** (region down → workload back) | $T1_ts → $T3_ts | **$RTO** |
@@ -175,14 +175,14 @@ ${FAILOVER_SECTION}
 
 ## Grafana evidence — capture manually
 
-The live dashboard is not durable evidence (the cluster is torn down after the
+The live dashboard is not durable evidence (the cluster is destroyed after the
 demo; Grafana Cloud's free tier retains data ~14 days). Capture it now, while
 the drill window is still queryable:
 
 1. Open the \`aegis-greeter-overview\` dashboard.
 2. Set the time range to **$T0_ts → $(ts)**.
 3. Screenshot the **Pod readiness** panel (and **Node CPU / Node memory**) —
-   they show the drilled region's pods/nodes drop at teardown, the flat gap
+   they show the drilled region's pods/nodes drop at destroy, the flat gap
    through the rebuild, and the recovery at reconverge. Request-rate / latency
    panels need live traffic — without a load generator they stay flat.
 4. Save the screenshots into this directory (e.g. \`grafana-dr-curve.png\` for

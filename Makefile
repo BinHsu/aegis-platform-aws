@@ -156,14 +156,14 @@ regional-one: $(BACKEND_HCL)
 
 all: bootstrap platform regional
 
-# DR drill: tear down ONE region (per-region state key isolates the
+# DR drill: destroy ONE region (per-region state key isolates the
 # blast). Others (if enabled) and platform env stay alive.
 destroy-region: $(BACKEND_HCL)
 	@test -n "$(REGION)" || (echo "ERROR: REGION=<region> required"; exit 1)
 	# Delete the greeter Ingress first so the ALB controller removes its ALB —
 	# that ALB is not in Terraform state and would otherwise orphan its ENIs
-	# and stall the VPC teardown (DependencyViolation). See scripts/dr/pre-teardown.sh.
-	./scripts/dr/pre-teardown.sh $(REGION)
+	# and stall the VPC destroy (DependencyViolation). See scripts/dr/pre-destroy.sh.
+	./scripts/dr/pre-destroy.sh $(REGION)
 	@bucket=$$(cd $(TF_BOOTSTRAP) && terraform output -raw bucket_name); \
 	tfstate_region=$$(cd $(TF_BOOTSTRAP) && terraform output -raw region); \
 	platform_region=$$(jq -r '.platform_region' $(TFVARS_JSON)); \
@@ -187,9 +187,9 @@ destroy-region: $(BACKEND_HCL)
 	  TF_VAR_node_max=$$node_max \
 	  terraform destroy -var-file=$(WORKLOADS_JSON) $(AUTO_APPROVE)
 
-# Full teardown of platform (post-submission cleanup). bootstrap's bucket
+# Full destroy of platform (post-submission cleanup). bootstrap's bucket
 # + lock table have lifecycle prevent_destroy — operator must edit those
-# blocks first for a true full teardown.
+# blocks first for a true full destroy.
 destroy-platform: $(BACKEND_HCL)
 	cd $(TF_PLATFORM) && \
 	  terraform init -reconfigure -backend-config=$(BACKEND_HCL) && \

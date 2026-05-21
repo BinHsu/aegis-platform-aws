@@ -26,7 +26,7 @@ deploy repo, and ArgoCD fans out one `Application` per entry.
 | Operate it day-to-day | [Day-to-day operations](#day-to-day-operations) below |
 | See what's monitored and alerted on | [`docs/metrics-and-alerts.md`](docs/metrics-and-alerts.md) — panel + alert catalog |
 | Run / understand the DR drill | [`docs/dr-plan.md`](docs/dr-plan.md) + [DR drill](#dr-drill) below |
-| Know what it costs to run | [`docs/finops.md`](docs/finops.md) — cost model + the ephemeral-teardown strategy |
+| Know what it costs to run | [`docs/finops.md`](docs/finops.md) — cost model + the ephemeral-destroy strategy |
 | See what was deliberately deferred | [`docs/tradeoffs.md`](docs/tradeoffs.md) |
 
 ## Architecture
@@ -208,13 +208,13 @@ The pre-commit hook (`.githooks/pre-commit`, wired by `make dev-setup`) runs
 |---|---|---|
 | Per region | ~$0.20/hr | EKS control plane + Spot nodes + ALB + NAT gateway |
 | Platform env | ~$0/mo | Route 53 zone + ECR storage — safe to leave running |
-| Per DR drill | ~$1–2 | ~6 h: stand up → drill → tear down |
+| Per DR drill | ~$1–2 | ~6 h: stand up → drill → destroy |
 
 Regional infrastructure is **ephemeral** — stood up for a demo or DR drill, torn
 down when idle (`make destroy-region`). The `bootstrap`/`platform`/`regional`
-lifecycle split keeps this safe: a teardown never touches ECR images, the
+lifecycle split keeps this safe: a destroy never touches ECR images, the
 Route 53 zone, or Grafana dashboards. An AWS Budget ($10 warn / $25 hard)
-backstops a forgotten teardown. Cost scales linearly per region.
+backstops a forgotten destroy. Cost scales linearly per region.
 
 Full breakdown — itemised rates, the interval math, and the levers pulled — in
 [`docs/finops.md`](docs/finops.md).

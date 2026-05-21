@@ -9,7 +9,7 @@ drill's timed evidence to `evidence/`.
 This plan covers the **workload tier** — the greeter Deployment and the regional
 infrastructure that hosts it (VPC, EKS, ALB, ArgoCD, the Alloy collector). It
 does **not** cover the `platform` environment (Route 53 zone, ECR, OIDC roles,
-Grafana dashboards): that is slow-lifecycle, survives a regional teardown by
+Grafana dashboards): that is slow-lifecycle, survives a regional destroy by
 design, and is outside the drill's blast radius.
 
 ## Service-level targets
@@ -50,7 +50,7 @@ not "recovered" by this repo's code.
 
 ```mermaid
 flowchart LR
-    P0[Phase 0: baseline] --> P1[Phase 1: teardown]
+    P0[Phase 0: baseline] --> P1[Phase 1: destroy]
     P1 --> P2[Phase 2: rebuild]
     P2 --> P3[Phase 3: reconverge]
     P3 --> P4[Phase 4: report]
@@ -63,7 +63,7 @@ flowchart LR
 | Phase | Action | Timed |
 |---|---|---|
 | 0 — baseline | Confirm the cluster is healthy: greeter pods Ready. Record T0. | — |
-| 1 — teardown | `make destroy-region REGION=<region>` — VPC, EKS, ALB, ArgoCD, Alloy, workload destroyed. The greeter is now down. | T0 → T1 |
+| 1 — destroy | `make destroy-region REGION=<region>` — VPC, EKS, ALB, ArgoCD, Alloy, workload destroyed. The greeter is now down. | T0 → T1 |
 | 2 — rebuild | `make regional-one REGION=<region>` — Terraform re-applies the regional stack. | T1 → T2 |
 | 3 — reconverge | ArgoCD reinstalls, pulls each workload's deploy repo, syncs from its `k8s/overlays/prod/`. Poll until pods Ready. | T2 → T3 |
 | 4 — report | Compute per-phase durations and total RTO (T3 − T1); write the report to `evidence/`. | — |
@@ -89,6 +89,6 @@ a CLI log to `evidence/`. The operator pairs it with a Grafana dashboard
 screenshot of the drill window.
 
 The screenshot must be **committed into git** — the live dashboard is not
-durable evidence: the cluster is torn down after the drill, and Grafana Cloud's
+durable evidence: the cluster is destroyed after the drill, and Grafana Cloud's
 free tier retains data only ~14 days, so the proof would otherwise be gone by
 the time anyone looked. The evidence directory keeps it self-contained.
