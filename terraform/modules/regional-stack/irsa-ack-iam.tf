@@ -95,7 +95,7 @@ resource "aws_iam_policy" "ack_iam" {
 
 module "irsa_ack_iam" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.44"
+  version = "~> 6.6"
 
   # PREFIX is load-bearing — see the SCP coupling note above. Do not reorder
   # to put the region first without updating the fabric SCP glob.
