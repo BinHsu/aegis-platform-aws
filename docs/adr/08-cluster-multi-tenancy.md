@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted (2026-05-22).
+Accepted (2026-05-22). **Partially superseded by [ADR-09](09-platform-as-product-xrd.md) (2026-05-28):** the "deferred abstraction ladder" stance below reverses — a platform-defined XRD layer (`WorkloadIdentity`, with vocabulary extended on demand) lands now, not when `count(aegis-platform-<cloud>) > 1`, on platform-as-product reasoning. The **overlay-per-cloud** model named below as the multi-cloud fallback is demoted to a *per-resource* fallback for cases where an XR abstraction would be too leaky to design honestly. Cloud-invariance, previously aspirational here (deploy repos declared AWS-bound ACK CRDs), becomes actual under ADR-09 — deploy repos speak the platform XR vocabulary, vendor CRDs live only inside Compositions. The "abstraction-trigger" session-close marker at the top of this file is satisfied by ADR-09; future re-counts inform XRD vocabulary growth, not the trigger itself.
 
 ## Context
 

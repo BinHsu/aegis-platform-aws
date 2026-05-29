@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-05-22).
+Accepted (2026-05-22). **Partially superseded by [ADR-09](09-platform-as-product-xrd.md) (2026-05-28):** the core *workload self-ownership* decision is retained — the workload still owns its IAM declaration in its deploy repo. The *workload-facing CRD mechanism* shifts: deploy repos no longer declare `iam.services.k8s.aws/Role` directly; they declare a platform-defined XR (`WorkloadIdentity`), and an AWS-side Crossplane Composition wraps the same ACK implementation underneath. The "ACK because single-cloud" rejection of Crossplane in *Alternatives Considered* is reversed — not on multi-cloud grounds, but on platform-as-product API hygiene + developer autonomy grounds (see ADR-09 Context). The four-pack enforcement model is preserved unchanged.
 
 ## Context
 
