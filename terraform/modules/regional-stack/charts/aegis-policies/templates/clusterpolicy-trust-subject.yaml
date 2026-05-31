@@ -7,9 +7,17 @@
 # deploy repo physically cannot mint an IAM role that trusts
 # `system:serviceaccount:aegis-core:aegis-core-engine`.
 #
-# Helm note: Kyverno's own `{{ ... }}` substitutions are emitted verbatim via
-# Go backtick raw strings (`{{ `...` }}`) so Helm does not try to render them
-# — Kyverno resolves them at admission time, not at chart-render time.
+{{- /*
+Helm note: Kyverno's own JsonPath-style substitutions are emitted verbatim via
+Go backtick raw strings so Helm does not try to render them at chart-render
+time — Kyverno resolves them at admission time. See the `key:` lines below
+for the pattern.
+
+This block is a Go-template comment because a plain YAML comment containing
+literal Helm action delimiters breaks the parser (pre-existing bug discovered
+during ADR-09 Phase 3 — the chart had been silently un-renderable since first
+authored, dormant only because BOOTSTRAP_COMPLETE has never been set).
+*/ -}}
 #
 # ⚠️ Known limitation refined at bootstrap: the two-condition check catches the
 # primary attack (a Role that trusts a foreign SA without its own). RE2 has no

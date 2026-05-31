@@ -1,0 +1,67 @@
+# ADR-09 — first XRD in the platform vocabulary. Defines a namespaced Claim
+# (WorkloadIdentity) and a cluster-scoped XR (XWorkloadIdentity). Deploy repos
+# declare the Claim; the platform's Composition (sibling file) renders an
+# ACK iam.services.k8s.aws/Role from each XR.
+#
+# Shape: deliberately minimal. The deploy repo declares ONLY what is genuinely
+# workload-owned (which SA, optional managed-policy ARNs). The trust namespace
+# is NOT a parameter — it is derived from the Claim's own metadata.namespace
+# via the Composition's spec.claimRef.namespace reference. So a Claim cannot
+# declare a trust subject in a foreign namespace; the API shape forbids it.
+#
+# Versioning: v1alpha1 with an explicit breaking-change license (ADR-09).
+# Stabilization to v1 requires either a second-cloud Composition or six months
+# of steady-state single-cloud production with no breaking schema change.
+
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xworkloadidentities.platform.aegis.io
+  annotations:
+    aegis.binhsu.org/adr: "ADR-09 Phase 3"
+    aegis.binhsu.org/status: "implemented, E2E PENDING platform bootstrap"
+spec:
+  group: platform.aegis.io
+  names:
+    kind: XWorkloadIdentity
+    plural: xworkloadidentities
+  claimNames:
+    kind: WorkloadIdentity
+    plural: workloadidentities
+  defaultCompositionRef:
+    name: workloadidentity-ack-iam-role
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                parameters:
+                  type: object
+                  properties:
+                    serviceAccountName:
+                      type: string
+                      description: >-
+                        The Kubernetes ServiceAccount in this Claim's namespace
+                        that will assume the IRSA role. The trust subject is
+                        derived as
+                        system:serviceaccount:<claim-namespace>:<serviceAccountName>.
+                      pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                    policyArns:
+                      type: array
+                      description: >-
+                        Optional managed-policy ARNs to attach. Skeleton roles
+                        start with none — add when the workload gains concrete
+                        AWS API surface.
+                      items:
+                        type: string
+                        pattern: "^arn:aws:iam::(aws|[0-9]{12}):policy/.+$"
+                  required:
+                    - serviceAccountName
+              required:
+                - parameters

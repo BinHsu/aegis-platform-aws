@@ -1,0 +1,98 @@
+# ADR-09 Phase 3 — WorkloadIdentity → ACK IAM Role Composition.
+#
+# Renders a single iam.services.k8s.aws/Role from each XWorkloadIdentity. The
+# trust policy is a fixed JSON template with three substitutions:
+#   - <oidc-arn> + <oidc-host> — Helm-rendered at chart install (cluster-scoped)
+#   - %s namespace + %s saName — Crossplane-patched at reconcile (workload-scoped)
+#
+# Why this split: cluster-scoped values are the same for every Composition
+# instance in this cluster, so embedding them at chart install (one render per
+# cluster, one Composition CR per cluster) is simpler than threading them
+# through every claim. Workload-scoped values vary per claim, so they need
+# runtime patching.
+#
+# mode: Pipeline + function-patch-and-transform — same DSL as the deprecated
+# mode: Resources, but on the non-deprecated rail (ADR-09 amendment: "v1
+# Composition" = apiextensions.crossplane.io/v1 API + patch-and-transform DSL,
+# not literal `mode: Resources`).
+
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: workloadidentity-ack-iam-role
+  annotations:
+    aegis.binhsu.org/adr: "ADR-09 Phase 3"
+    aegis.binhsu.org/status: "implemented, E2E PENDING platform bootstrap"
+spec:
+  compositeTypeRef:
+    apiVersion: platform.aegis.io/v1alpha1
+    kind: XWorkloadIdentity
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: iam-role
+            base:
+              apiVersion: iam.services.k8s.aws/v1alpha1
+              kind: Role
+              spec:
+                path: {{ .Values.iamRolePath | quote }}
+                description: "Workload IRSA role provisioned by Crossplane Composition for WorkloadIdentity (ADR-09)."
+                tags:
+                  - key: managed-by
+                    value: crossplane
+                  - key: aegis.platform/abstraction
+                    value: WorkloadIdentity
+            patches:
+              # The ACK Role CR lives in the Claim's namespace (so namespace-
+              # scoped RBAC + lifecycle line up with the workload).
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.claimRef.namespace
+                toFieldPath: metadata.namespace
+              # metadata.name — short, namespace-local. Combined with the
+              # namespace this is unique in-cluster.
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.parameters.serviceAccountName
+                  strategy: string
+                  string:
+                    fmt: "%s"
+                toFieldPath: metadata.name
+              # spec.name — AWS-side IAM Role name. Prefixed for SCP/glob
+              # legibility; bounded to AWS's 64-char IAM-role-name limit even
+              # with the longest realistic ns+sa.
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.claimRef.namespace
+                    - fromFieldPath: spec.parameters.serviceAccountName
+                  strategy: string
+                  string:
+                    fmt: "aegis-workload-%s-%s"
+                toFieldPath: spec.name
+              # Trust policy. The JSON template is rendered by Helm first
+              # (.Values.* substituted), then Crossplane substitutes %s/%s at
+              # reconcile from the Claim's namespace + SA name. Inputs are
+              # DNS-1123, so no JSON-escape risk.
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.claimRef.namespace
+                    - fromFieldPath: spec.parameters.serviceAccountName
+                  strategy: string
+                  string:
+                    fmt: '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"{{ .Values.oidcProviderArn }}"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"{{ .Values.oidcProviderHost }}:sub":"system:serviceaccount:%s:%s","{{ .Values.oidcProviderHost }}:aud":"sts.amazonaws.com"}}}]}'
+                toFieldPath: spec.assumeRolePolicyDocument
+              # Optional managed-policy ARNs. ACK calls this field `policies`
+              # (NOT policyARNs/policyArns — that's an SDK naming, not the CRD).
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.policyArns
+                toFieldPath: spec.policies
+                policy:
+                  fromFieldPath: Optional

@@ -1,0 +1,50 @@
+# ADR-09 — 5th enforcement layer at the workload-facing XR API.
+#
+# The existing four-pack runs UNDER the Composition (Kyverno's trust-subject
+# policy validates the rendered ACK Role; SCP carve-out scopes the ACK
+# controller; path-scoping bounds the AWS-side principal; NetworkPolicy bounds
+# lateral movement). This 5th layer adds admission AT the workload-facing XR,
+# so an obviously-malformed claim is rejected before Crossplane even renders.
+#
+# Rule: a WorkloadIdentity Claim may only be created in a workload namespace
+# matching the same glob the default-deny baseline uses. System namespaces
+# (kube-system, crossplane-system, ack-system, kyverno, argocd, …) cannot
+# mint workload identities — the Composition would derive the trust subject
+# from those namespaces and let, e.g., kube-system SAs assume an AWS role.
+#
+# The Claim's own metadata.namespace IS the trust namespace (the Composition
+# uses spec.claimRef.namespace, NOT a user-declared parameters.namespace), so
+# there is no "namespace claim" to validate separately — restricting WHERE
+# the Claim can live is sufficient.
+#
+# Implementation: Kyverno's positive-pattern validation, which accepts glob
+# wildcards natively in field values — no embedded regex, no Sprig pipeline
+# tricks (cf. trust-subject.yaml which has to use regex_match for substring
+# matching inside a JSON string).
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: workloadidentity-claim-namespace-restriction
+  annotations:
+    aegis.binhsu.org/enforcement: "adr-09-5th-layer-xr-admission"
+    aegis.binhsu.org/status: "implemented, E2E PENDING platform bootstrap"
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: workloadidentity-only-in-workload-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - platform.aegis.io/v1alpha1/WorkloadIdentity
+      validate:
+        message: >-
+          A WorkloadIdentity Claim may only be created in a workload namespace
+          (matching the workloadNamespaceGlob {{ .Values.workloadNamespaceGlob | quote }}).
+          System namespaces cannot mint workload identities (ADR-09 5th-layer
+          enforcement on the XR admission path).
+        pattern:
+          metadata:
+            namespace: {{ .Values.workloadNamespaceGlob | quote }}

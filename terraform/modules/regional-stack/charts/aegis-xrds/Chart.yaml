@@ -1,0 +1,13 @@
+apiVersion: v2
+name: aegis-xrds
+description: >-
+  Platform-defined CompositeResourceDefinitions and Compositions (ADR-09
+  platform-as-product XRD). Workload deploy repos declare claims (e.g.
+  WorkloadIdentity); Compositions render the underlying ACK CRDs that the
+  ACK IAM controller reconciles into AWS. Bundles the function-patch-and-
+  transform Function package the Compositions depend on. Cluster-scoped
+  OIDC values are Helm-rendered into the Composition's trust-policy
+  template at install time. implemented, E2E PENDING bootstrap.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

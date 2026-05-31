@@ -102,7 +102,7 @@ Single-cloud-only stabilization is *not* the cheap path it appears: a `v1` XR lo
 
 - **Custom platform operator instead of Crossplane.** Rejected: reinvents the Composition primitive for marginal benefit. Crossplane v1 Composition is the mature, well-understood implementation of this pattern. The cost of a custom operator (lifecycle, reconciliation correctness, status reporting) outweighs the gain of avoiding Crossplane's surface.
 
-- **Crossplane Functions / KCL pipeline (v1.20+).** Deferred. Stay on v1 Composition resources for now — smaller surface, fewer failure modes. Re-evaluate when composition complexity or dynamic field generation actually demands it.
+- **Crossplane Functions / KCL pipeline (v1.20+).** Deferred. Stay on the v1 Composition API + patch-and-transform DSL — meaning `apiextensions.crossplane.io/v1` with `mode: Pipeline` + `function-patch-and-transform` (the same DSL as the deprecated `mode: Resources`, on the non-deprecated rail). Smaller surface, fewer failure modes than `function-go-templating` or KCL. Re-evaluate when a Composition genuinely needs branching, loops, or dynamic field generation that `CombineFromComposite` + transforms cannot express.
 
 - **Wait for multi-cloud reality before pivoting (the "design without validation" objection).** Acknowledged but rejected: a `v1alpha1` schema with an explicit breaking-change license absorbs the design-without-validation risk. The alternative (no abstraction at all until `count > 1`) defers learning indefinitely and pays the entire migration cost in one event.
 
