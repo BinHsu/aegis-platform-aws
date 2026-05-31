@@ -116,10 +116,20 @@ resource "aws_iam_role_policy_attachment" "infra_ci_readonly" {
   policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
-# ---- Role C: aegis-platform-aws CI apply → admin scoped to main branch --------
+# ---- Role C: gh-tf-apply-platform CI apply → admin scoped to main branch ------
 # Trust = ONLY pushes to refs/heads/main (PRs cannot assume this role).
 # Permissions = AdministratorAccess (production hardening = bespoke
 # least-privilege; documented in tradeoffs). Used by infra-apply.yml.
+#
+# Named in the `gh-tf-*` family on purpose: the landing-zone org SCP
+# `deny-iam-privilege-escalation` permits IAM mutation only for a `gh-tf-*`
+# (and break-glass / Control-Tower) name glob. A repo-branded name like the
+# former `aegis-platform-aws-apply` is NOT in that glob, so its IAM-creating
+# applies (EKS IRSA, the ACK controller role) would be SCP-denied. `gh-tf-*`
+# makes the existing glob cover it with no landing-zone SCP change.
+# NOTE on rename: re-seed the AWS_INFRA_APPLY_ROLE_ARN repo secret with the new
+# ARN after apply, and seed the new role once via break-glass (its own
+# iam:CreateRole is SCP-gated for a human — chicken-and-egg).
 data "aws_iam_policy_document" "infra_apply_trust" {
   statement {
     effect  = "Allow"
@@ -150,7 +160,7 @@ data "aws_iam_policy_document" "infra_apply_trust" {
 }
 
 resource "aws_iam_role" "infra_apply" {
-  name               = "aegis-platform-aws-apply"
+  name               = "gh-tf-apply-platform"
   assume_role_policy = data.aws_iam_policy_document.infra_apply_trust.json
 }
 

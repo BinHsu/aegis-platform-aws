@@ -59,7 +59,7 @@ gh secret set TFSTATE_REGION                       -b "eu-central-1"       --rep
 
 # Set after applying platform once (capture from `terraform output`):
 gh secret set AWS_INFRA_CI_ROLE_ARN                -b "arn:aws:iam::<acct>:role/aegis-platform-aws-ci"    --repo BinHsu/aegis-platform-aws
-gh secret set AWS_INFRA_APPLY_ROLE_ARN             -b "arn:aws:iam::<acct>:role/aegis-platform-aws-apply" --repo BinHsu/aegis-platform-aws
+gh secret set AWS_INFRA_APPLY_ROLE_ARN             -b "arn:aws:iam::<acct>:role/gh-tf-apply-platform" --repo BinHsu/aegis-platform-aws
 ```
 
 ## CI bootstrap gate — `BOOTSTRAP_COMPLETE`

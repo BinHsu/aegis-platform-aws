@@ -3,7 +3,7 @@ name: infra-apply
 # Push to main → apply platform then regional matrix (in parallel per region).
 # Bootstrap is NOT in this path — it's one-shot via infra-ops.yml.
 #
-# Role assumed: aegis-platform-aws-apply (AdministratorAccess, trust scoped to
+# Role assumed: gh-tf-apply-platform (AdministratorAccess, trust scoped to
 # refs/heads/main only — PRs cannot assume this role). Combined with branch
 # protection (status checks + linear history, see
 # platform/branch-protection.tf), this means an apply only happens via a
