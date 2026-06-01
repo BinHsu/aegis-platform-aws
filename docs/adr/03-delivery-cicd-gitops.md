@@ -27,6 +27,23 @@ bootstrap and the DR drill.
 (trusted from any ref) and an apply role whose trust is pinned to
 `refs/heads/main`, so a PR branch cannot assume it. No static AWS keys.
 
+**GitHub OIDC provider ownership — landing-zone, not platform** *(2026-06-01).*
+`token.actions.githubusercontent.com` is a per-account singleton and an
+account-foundation federation root. It is owned and lifecycle-managed by the
+landing-zone — the same tier that owns the break-glass role, the state backend,
+and the org SCP — and this composition references it via a `data` source
+(`envs/platform/oidc.tf`), not a `resource`. Two reasons: a platform `terraform
+destroy` must not delete the provider out from under every other repo's CI roles
+that federate the same singleton; and minting a new federation root
+(`iam:CreateOpenIDConnectProvider`) is escalation-adjacent and belongs to the
+foundation tier, not a workload apply path. **Dependency:** platform's target
+account must already have the landing-zone-provisioned provider before
+`terraform apply` (it exists in staging / shared / management; prod would need an
+LZ prod-OIDC bootstrap first). The per-cluster **EKS IRSA** OIDC providers
+(`oidc.eks.<region>...`) are unaffected — those are workload artifacts, one per
+cluster, created and owned by `modules/regional-stack`. The enclave made the same
+move in its ADR-0052.
+
 **Per-cluster ArgoCD.** Each EKS cluster runs its own ArgoCD, installed by
 `modules/regional-stack`, with one `Application` per workload — each pointing at
 that workload's deploy repo (`k8s/overlays/prod/`). The workload set is data
