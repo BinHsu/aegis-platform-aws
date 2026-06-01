@@ -1,14 +1,26 @@
-resource "aws_iam_openid_connect_provider" "github" {
-  url            = "https://token.actions.githubusercontent.com"
-  client_id_list = ["sts.amazonaws.com"]
-
-  # AWS no longer validates the thumbprint at sts:AssumeRoleWithWebIdentity
-  # for github.com's OIDC issuer (chain-of-trust verification handled at the
-  # control-plane layer), but the field is still required by the IAM API.
-  # The value below is the well-known SHA-1 of github.com's signing cert
-  # ancestor and is duplicated across most public examples; functional only
-  # for backwards-compat.
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+# ---- GitHub Actions OIDC provider — SHARED, referenced NOT managed ----------
+# token.actions.githubusercontent.com is a per-ACCOUNT singleton and an
+# account-foundation federation root. It is owned and lifecycle-managed by the
+# aegis landing-zone (the same layer that owns the break-glass role + state
+# backend), and shared by every repo's CI roles. This composition references it
+# via data source so:
+#   - a platform `terraform destroy` can never delete the provider out from
+#     under enclave / other repos that federate the same singleton, and
+#   - the escalation-critical iam:CreateOpenIDConnectProvider stays out of the
+#     platform apply path (it belongs to the foundation layer, not a workload).
+# (ADR-03 § "GitHub OIDC provider ownership". The enclave made the same move in
+# its ADR-0052.)
+#
+# DEPENDENCY: platform's target account MUST already have this provider, created
+# by the landing-zone bootstrap, before `terraform apply` here. LZ owns it today
+# in staging / shared / management; prod has none yet, so deploying platform to
+# prod needs an LZ prod-OIDC bootstrap first.
+#
+# NOTE: the per-cluster EKS IRSA OIDC providers (oidc.eks.<region>...) are a
+# DIFFERENT thing — workload artifacts, one per cluster, created and owned by
+# this stack's regional module. Only the GitHub Actions provider moves to LZ.
+data "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
 }
 
 # ---- Role A: aegis-greeter CI → ECR push -----------------------------------
@@ -19,7 +31,7 @@ data "aws_iam_policy_document" "greeter_ci_trust" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
     }
 
     condition {
@@ -87,7 +99,7 @@ data "aws_iam_policy_document" "infra_ci_trust" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
     }
 
     condition {
@@ -137,7 +149,7 @@ data "aws_iam_policy_document" "infra_apply_trust" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
     }
 
     condition {
