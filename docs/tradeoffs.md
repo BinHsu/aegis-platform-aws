@@ -48,7 +48,7 @@ deliberate, documented choice for the take-home.
 
 ### IAM apply role is `AdministratorAccess`
 
-`aegis-platform-aws-apply` (the CI apply role) carries `AdministratorAccess`. Its
+`gh-tf-apply-platform` (the CI apply role) carries `AdministratorAccess`. Its
 *trust* is tight — only `repo:BinHsu/aegis-platform-aws:ref:refs/heads/main` — but
 its *permissions* are broad.
 

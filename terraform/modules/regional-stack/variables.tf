@@ -84,7 +84,7 @@ variable "ci_role_arn" {
 }
 
 variable "apply_role_arn" {
-  description = "ARN of the aegis-platform-aws-apply IAM role (CI apply). Gets an EKS ClusterAdmin access entry so `terraform apply` from CI can manage Helm/k8s resources."
+  description = "ARN of the gh-tf-apply-platform IAM role (CI apply). Gets an EKS ClusterAdmin access entry so `terraform apply` from CI can manage Helm/k8s resources."
   type        = string
 }
 

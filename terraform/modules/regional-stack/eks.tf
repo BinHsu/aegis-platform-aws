@@ -39,8 +39,8 @@ module "eks" {
 
   # OFF — this flag injects the *running caller's* ARN into access_entries,
   # which is identity-dependent: a local `make` run (IAM user) and a CI run
-  # (the aegis-platform-aws-apply role) compute different sets, causing drift,
-  # and when CI runs as aegis-platform-aws-apply it duplicates the explicit
+  # (the gh-tf-apply-platform role) compute different sets, causing drift,
+  # and when CI runs as gh-tf-apply-platform it duplicates the explicit
   # infra_apply entry below → `CreateAccessEntry: ResourceInUse`. All cluster
   # access is the explicit, deterministic access_entries below — the human
   # operator included, so operator access does not depend on the (invisible,
