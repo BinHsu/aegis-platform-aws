@@ -27,15 +27,18 @@ module "stack" {
   zone_id   = data.terraform_remote_state.platform.outputs.zone_id
   zone_name = data.terraform_remote_state.platform.outputs.zone_name
 
-  gc_api_token          = data.aws_ssm_parameter.gc_api_token.value
-  gc_mimir_url          = data.aws_ssm_parameter.gc_mimir_url.value
-  gc_mimir_username     = data.aws_ssm_parameter.gc_mimir_username.value
-  gc_loki_url           = data.aws_ssm_parameter.gc_loki_url.value
-  gc_loki_username      = data.aws_ssm_parameter.gc_loki_username.value
-  gc_tempo_url          = data.aws_ssm_parameter.gc_tempo_url.value
-  gc_tempo_username     = data.aws_ssm_parameter.gc_tempo_username.value
-  gc_pyroscope_url      = data.aws_ssm_parameter.gc_pyroscope_url.value
-  gc_pyroscope_username = data.aws_ssm_parameter.gc_pyroscope_username.value
+  # Observability toggle — when false the gc_* SSM data lookups are count=0,
+  # so we pass "" and the module skips Alloy + its credential Secret.
+  enable_observability  = var.enable_observability
+  gc_api_token          = var.enable_observability ? data.aws_ssm_parameter.gc_api_token[0].value : ""
+  gc_mimir_url          = var.enable_observability ? data.aws_ssm_parameter.gc_mimir_url[0].value : ""
+  gc_mimir_username     = var.enable_observability ? data.aws_ssm_parameter.gc_mimir_username[0].value : ""
+  gc_loki_url           = var.enable_observability ? data.aws_ssm_parameter.gc_loki_url[0].value : ""
+  gc_loki_username      = var.enable_observability ? data.aws_ssm_parameter.gc_loki_username[0].value : ""
+  gc_tempo_url          = var.enable_observability ? data.aws_ssm_parameter.gc_tempo_url[0].value : ""
+  gc_tempo_username     = var.enable_observability ? data.aws_ssm_parameter.gc_tempo_username[0].value : ""
+  gc_pyroscope_url      = var.enable_observability ? data.aws_ssm_parameter.gc_pyroscope_url[0].value : ""
+  gc_pyroscope_username = var.enable_observability ? data.aws_ssm_parameter.gc_pyroscope_username[0].value : ""
 
   project_tag     = var.project_tag
   cost_center_tag = var.cost_center_tag

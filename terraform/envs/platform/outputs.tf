@@ -49,17 +49,27 @@ output "infra_apply_role_arn" {
 }
 
 output "grafana_cloud_ssm_paths" {
-  description = "SSM Parameter Store paths holding Grafana Cloud creds. regional/ env reads these via data.aws_ssm_parameter."
-  value = {
-    api_token          = aws_ssm_parameter.gc_api_token.name
-    mimir_url          = aws_ssm_parameter.gc_mimir_url.name
-    mimir_username     = aws_ssm_parameter.gc_mimir_username.name
-    loki_url           = aws_ssm_parameter.gc_loki_url.name
-    loki_username      = aws_ssm_parameter.gc_loki_username.name
-    tempo_url          = aws_ssm_parameter.gc_tempo_url.name
-    tempo_username     = aws_ssm_parameter.gc_tempo_username.name
-    pyroscope_url      = aws_ssm_parameter.gc_pyroscope_url.name
-    pyroscope_username = aws_ssm_parameter.gc_pyroscope_username.name
+  description = "SSM Parameter Store paths holding Grafana Cloud creds. regional/ env reads these via data.aws_ssm_parameter. When enable_observability=false the gc_* parameters are not created (count=0), so the fields resolve to empty strings — regional/ checks its own enable_observability and skips the SSM lookups, so it never dereferences an empty path."
+  value = var.enable_observability ? {
+    api_token          = aws_ssm_parameter.gc_api_token[0].name
+    mimir_url          = aws_ssm_parameter.gc_mimir_url[0].name
+    mimir_username     = aws_ssm_parameter.gc_mimir_username[0].name
+    loki_url           = aws_ssm_parameter.gc_loki_url[0].name
+    loki_username      = aws_ssm_parameter.gc_loki_username[0].name
+    tempo_url          = aws_ssm_parameter.gc_tempo_url[0].name
+    tempo_username     = aws_ssm_parameter.gc_tempo_username[0].name
+    pyroscope_url      = aws_ssm_parameter.gc_pyroscope_url[0].name
+    pyroscope_username = aws_ssm_parameter.gc_pyroscope_username[0].name
+    } : {
+    api_token          = ""
+    mimir_url          = ""
+    mimir_username     = ""
+    loki_url           = ""
+    loki_username      = ""
+    tempo_url          = ""
+    tempo_username     = ""
+    pyroscope_url      = ""
+    pyroscope_username = ""
   }
 }
 
@@ -69,8 +79,8 @@ output "alb_access_logs_bucket" {
 }
 
 output "public_dashboard_urls" {
-  description = "Read-only public share URLs for Grafana dashboards (linked from README for reviewer)."
+  description = "Read-only public share URLs for Grafana dashboards (linked from README for reviewer). Null when enable_observability=false (no public dashboard exists)."
   value = {
-    greeter_overview = "${var.grafana_cloud_url}/public-dashboards/${grafana_dashboard_public.greeter_overview.access_token}"
+    greeter_overview = var.enable_observability ? "${var.grafana_cloud_url}/public-dashboards/${grafana_dashboard_public.greeter_overview[0].access_token}" : null
   }
 }

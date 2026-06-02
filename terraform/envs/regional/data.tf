@@ -20,46 +20,55 @@ data "terraform_remote_state" "platform" {
 # (SSM parameters live in the platform region, this regional apply may be
 # elsewhere).
 data "aws_ssm_parameter" "gc_api_token" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.api_token
 }
 
 data "aws_ssm_parameter" "gc_mimir_url" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.mimir_url
 }
 
 data "aws_ssm_parameter" "gc_mimir_username" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.mimir_username
 }
 
 data "aws_ssm_parameter" "gc_loki_url" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.loki_url
 }
 
 data "aws_ssm_parameter" "gc_loki_username" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.loki_username
 }
 
 data "aws_ssm_parameter" "gc_tempo_url" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.tempo_url
 }
 
 data "aws_ssm_parameter" "gc_tempo_username" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.tempo_username
 }
 
 data "aws_ssm_parameter" "gc_pyroscope_url" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.pyroscope_url
 }
 
 data "aws_ssm_parameter" "gc_pyroscope_username" {
+  count    = var.enable_observability ? 1 : 0
   provider = aws.platform
   name     = data.terraform_remote_state.platform.outputs.grafana_cloud_ssm_paths.pyroscope_username
 }

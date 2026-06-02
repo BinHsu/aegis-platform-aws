@@ -108,11 +108,14 @@ resource "grafana_data_source" "cloudwatch" {
 }
 
 # CloudWatch dashboard — created with the data source so there is never a
-# dangling datasource reference (both gated on the same flag).
+# dangling datasource reference (both gated on the same flag). It lands in
+# the shared aegis folder, which only exists when enable_observability=true,
+# so this dashboard is additionally gated on enable_observability to avoid a
+# dangling grafana_folder.aegis_stateless[0] reference.
 resource "grafana_dashboard" "infra_cloudwatch" {
-  count = var.enable_cloudwatch_datasource ? 1 : 0
+  count = var.enable_cloudwatch_datasource && var.enable_observability ? 1 : 0
 
-  folder = grafana_folder.aegis_stateless.uid
+  folder = grafana_folder.aegis_stateless[0].uid
   config_json = templatefile("${path.module}/../../../grafana/dashboards/infra-cloudwatch.json", {
     cloudwatch_uid = grafana_data_source.cloudwatch[0].uid
   })
