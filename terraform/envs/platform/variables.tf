@@ -30,9 +30,9 @@ variable "ecr_repository_name" {
 
 # ---- observability toggle --------------------------------------------------
 variable "enable_observability" {
-  description = "Whether to provision the Grafana Cloud observability stack (dashboards, alert rules, contact points, the grafana_data_source lookup, and the SSM parameters holding GC creds). Default true. Set false to apply the platform with NO Grafana Cloud creds: every grafana_* resource + the gc_* SSM parameters are skipped (count = 0), and grafana_cloud_ssm_paths resolves to empty strings so regional/ can skip the in-cluster Alloy collector too."
+  description = "Whether to provision the Grafana Cloud observability stack (dashboards, alert rules, contact points, the grafana_data_source lookup, and the SSM parameters holding GC creds). Default FALSE so a fork WITHOUT a Grafana Cloud account deploys cleanly out of the box — every grafana_* resource + the gc_* SSM parameters are skipped (count = 0), and grafana_cloud_ssm_paths resolves to empty strings so regional/ skips the in-cluster Alloy collector too. Set true to opt in; then grafana_auth_token + grafana_cloud_api_token become REQUIRED (enforced by the precondition in observability-guard.tf — a clear plan-time error instead of an opaque grafana-provider 401 mid-apply). Keep in sync with the regional env's enable_observability."
   type        = bool
-  default     = true
+  default     = false
 }
 
 # ---- Grafana Cloud creds (sensitive; supplied via gitignored tfvars) -------
