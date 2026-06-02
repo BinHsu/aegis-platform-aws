@@ -9,6 +9,8 @@
 # observability addon. No CloudWatch dashboards / alarms in scope.
 
 resource "kubernetes_namespace" "monitoring" {
+  count = var.enable_observability ? 1 : 0
+
   metadata {
     name = "monitoring"
     labels = {
@@ -26,9 +28,11 @@ resource "kubernetes_namespace" "monitoring" {
 # (data.aws_ssm_parameter) and passes values in as sensitive module vars.
 # Alloy mounts these as env vars and references in its config via env().
 resource "kubernetes_secret" "grafana_cloud" {
+  count = var.enable_observability ? 1 : 0
+
   metadata {
     name      = "grafana-cloud-credentials"
-    namespace = kubernetes_namespace.monitoring.metadata[0].name
+    namespace = kubernetes_namespace.monitoring[0].metadata[0].name
   }
 
   # Keys are UPPERCASE — `envFrom.secretRef` maps each key verbatim to an
@@ -51,8 +55,9 @@ resource "kubernetes_secret" "grafana_cloud" {
 
 # ---- node-exporter (pinned subchart) --------------------------------------
 resource "helm_release" "node_exporter" {
+  count      = var.enable_observability ? 1 : 0
   name       = "prometheus-node-exporter"
-  namespace  = kubernetes_namespace.monitoring.metadata[0].name
+  namespace  = kubernetes_namespace.monitoring[0].metadata[0].name
   repository = "https://prometheus-community.github.io/helm-charts"
   chart      = "prometheus-node-exporter"
   version    = "4.41.0" # pinned
@@ -66,8 +71,9 @@ resource "helm_release" "node_exporter" {
 
 # ---- kube-state-metrics (pinned subchart) ---------------------------------
 resource "helm_release" "kube_state_metrics" {
+  count      = var.enable_observability ? 1 : 0
   name       = "kube-state-metrics"
-  namespace  = kubernetes_namespace.monitoring.metadata[0].name
+  namespace  = kubernetes_namespace.monitoring[0].metadata[0].name
   repository = "https://prometheus-community.github.io/helm-charts"
   chart      = "kube-state-metrics"
   version    = "5.25.1" # pinned
@@ -75,8 +81,9 @@ resource "helm_release" "kube_state_metrics" {
 
 # ---- Alloy ----------------------------------------------------------------
 resource "helm_release" "alloy" {
+  count      = var.enable_observability ? 1 : 0
   name       = "alloy"
-  namespace  = kubernetes_namespace.monitoring.metadata[0].name
+  namespace  = kubernetes_namespace.monitoring[0].metadata[0].name
   repository = "https://grafana.github.io/helm-charts"
   chart      = "alloy"
   version    = "0.10.1" # pinned
@@ -103,7 +110,7 @@ resource "helm_release" "alloy" {
         # Mount the GC credentials secret as env vars.
         envFrom = [{
           secretRef = {
-            name = kubernetes_secret.grafana_cloud.metadata[0].name
+            name = kubernetes_secret.grafana_cloud[0].metadata[0].name
           }
         }]
         # Expose host ports for OTLP gRPC (4317) and Pyroscope (4040)
@@ -138,4 +145,7 @@ resource "helm_release" "alloy" {
     helm_release.node_exporter,
     helm_release.kube_state_metrics,
   ]
+  # depends_on references whole resources (not indexed instances), which is
+  # legal even when those resources are count=0 — Terraform treats an empty
+  # instance set as "nothing to wait on".
 }

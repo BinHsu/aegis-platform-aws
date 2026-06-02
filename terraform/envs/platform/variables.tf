@@ -28,6 +28,13 @@ variable "ecr_repository_name" {
   default     = "aegis-greeter"
 }
 
+# ---- observability toggle --------------------------------------------------
+variable "enable_observability" {
+  description = "Whether to provision the Grafana Cloud observability stack (dashboards, alert rules, contact points, the grafana_data_source lookup, and the SSM parameters holding GC creds). Default true. Set false to apply the platform with NO Grafana Cloud creds: every grafana_* resource + the gc_* SSM parameters are skipped (count = 0), and grafana_cloud_ssm_paths resolves to empty strings so regional/ can skip the in-cluster Alloy collector too."
+  type        = bool
+  default     = true
+}
+
 # ---- Grafana Cloud creds (sensitive; supplied via gitignored tfvars) -------
 variable "grafana_cloud_url" {
   description = "Grafana Cloud stack URL (e.g. https://aegis.grafana.net). Used by the grafana TF provider."
@@ -36,15 +43,17 @@ variable "grafana_cloud_url" {
 }
 
 variable "grafana_cloud_api_token" {
-  description = "Grafana Cloud Access Policy token (glc_…) — used as the Alloy remote_write password for Mimir/Loki/Tempo/Pyroscope. NOT the grafana-provider auth (see grafana_auth_token). Supply via gitignored secrets.auto.tfvars. NEVER commit a value."
+  description = "Grafana Cloud Access Policy token (glc_…) — used as the Alloy remote_write password for Mimir/Loki/Tempo/Pyroscope. NOT the grafana-provider auth (see grafana_auth_token). Supply via gitignored secrets.auto.tfvars. NEVER commit a value. Defaults to \"\" so a deploy with enable_observability=false needs no GC token."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_auth_token" {
-  description = "Grafana instance service-account token (glsa_…) — auth for the `grafana` TF provider managing dashboards/folders/alert-rules on aegis.grafana.net. Distinct from grafana_cloud_api_token. Create via the instance: Administration → Users and access → Service accounts → Admin role → add token. NEVER commit a value."
+  description = "Grafana instance service-account token (glsa_…) — auth for the `grafana` TF provider managing dashboards/folders/alert-rules on aegis.grafana.net. Distinct from grafana_cloud_api_token. Create via the instance: Administration → Users and access → Service accounts → Admin role → add token. NEVER commit a value. Defaults to \"\" so a deploy with enable_observability=false leaves the grafana provider configured-but-unused (no resources → no auth call)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # Grafana Cloud uses a distinct instance-ID username per backend (Mimir,
@@ -53,48 +62,56 @@ variable "grafana_cloud_mimir_username" {
   description = "Mimir remote_write username (GC Prometheus instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_cloud_loki_username" {
   description = "Loki push username (GC Loki instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_cloud_tempo_username" {
   description = "Tempo OTLP username (GC Tempo instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_cloud_pyroscope_username" {
   description = "Pyroscope username (GC Pyroscope instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_cloud_mimir_url" {
   description = "Mimir push URL (e.g. https://prometheus-prod-XX-prod-eu-west-2.grafana.net/api/prom/push)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_cloud_loki_url" {
   description = "Loki push URL (e.g. https://logs-prod-XXX.grafana.net/loki/api/v1/push)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_cloud_tempo_url" {
   description = "Tempo OTLP URL (e.g. https://tempo-prod-XX-prod-eu-west-2.grafana.net:443)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "grafana_cloud_pyroscope_url" {
   description = "Pyroscope ingest URL (e.g. https://profiles-prod-XXX.grafana.net)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # ---- Budget alarm ----------------------------------------------------------

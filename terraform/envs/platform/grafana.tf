@@ -8,34 +8,39 @@
 # Convention: "grafanacloud-<stack>-prom" / "...-logs" / "...-traces" /
 # "...-profiles". If the stack slug differs, adjust the names below.
 data "grafana_data_source" "prometheus" {
-  name = "grafanacloud-aegis-prom"
+  count = var.enable_observability ? 1 : 0
+  name  = "grafanacloud-aegis-prom"
 }
 
 # ---- folder ---------------------------------------------------------------
 resource "grafana_folder" "aegis_stateless" {
+  count = var.enable_observability ? 1 : 0
   title = "aegis-platform-aws"
   uid   = "aegis-platform-aws"
 }
 
 # ---- dashboards -----------------------------------------------------------
 resource "grafana_dashboard" "greeter_overview" {
-  folder = grafana_folder.aegis_stateless.uid
+  count  = var.enable_observability ? 1 : 0
+  folder = grafana_folder.aegis_stateless[0].uid
   config_json = templatefile("${path.module}/../../../grafana/dashboards/greeter-overview.json", {
-    prometheus_uid = data.grafana_data_source.prometheus.uid
+    prometheus_uid = data.grafana_data_source.prometheus[0].uid
   })
   overwrite = true
 }
 
 # Public-share link for the reviewer (no GC account required to view).
 resource "grafana_dashboard_public" "greeter_overview" {
-  dashboard_uid = grafana_dashboard.greeter_overview.uid
+  count         = var.enable_observability ? 1 : 0
+  dashboard_uid = grafana_dashboard.greeter_overview[0].uid
   is_enabled    = true
   share         = "public"
 }
 
 # ---- alert routing --------------------------------------------------------
 resource "grafana_contact_point" "ops_email" {
-  name = "ops-email"
+  count = var.enable_observability ? 1 : 0
+  name  = "ops-email"
 
   email {
     addresses = [var.budget_alert_email]
@@ -43,7 +48,8 @@ resource "grafana_contact_point" "ops_email" {
 }
 
 resource "grafana_notification_policy" "main" {
-  contact_point   = grafana_contact_point.ops_email.name
+  count           = var.enable_observability ? 1 : 0
+  contact_point   = grafana_contact_point.ops_email[0].name
   group_by        = ["alertname", "grafana_folder"]
   group_wait      = "30s"
   group_interval  = "5m"
@@ -63,8 +69,9 @@ resource "grafana_notification_policy" "main" {
 # no-data for ~1-2 minutes after a cold apply.
 
 resource "grafana_rule_group" "rec_greeter_http_requests" {
+  count            = var.enable_observability ? 1 : 0
   name             = "rec-greeter-http-requests"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -72,7 +79,7 @@ resource "grafana_rule_group" "rec_greeter_http_requests" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -89,14 +96,15 @@ resource "grafana_rule_group" "rec_greeter_http_requests" {
     record {
       from                  = "A"
       metric                = "job:greeter_http_requests:rate5m"
-      target_datasource_uid = data.grafana_data_source.prometheus.uid
+      target_datasource_uid = data.grafana_data_source.prometheus[0].uid
     }
   }
 }
 
 resource "grafana_rule_group" "rec_greeter_http_request_duration" {
+  count            = var.enable_observability ? 1 : 0
   name             = "rec-greeter-http-request-duration"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -104,7 +112,7 @@ resource "grafana_rule_group" "rec_greeter_http_request_duration" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -123,14 +131,15 @@ resource "grafana_rule_group" "rec_greeter_http_request_duration" {
     record {
       from                  = "A"
       metric                = "job:greeter_http_request_duration:rate5m"
-      target_datasource_uid = data.grafana_data_source.prometheus.uid
+      target_datasource_uid = data.grafana_data_source.prometheus[0].uid
     }
   }
 }
 
 resource "grafana_rule_group" "rec_apiserver_requests" {
+  count            = var.enable_observability ? 1 : 0
   name             = "rec-apiserver-requests"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -138,7 +147,7 @@ resource "grafana_rule_group" "rec_apiserver_requests" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -155,7 +164,7 @@ resource "grafana_rule_group" "rec_apiserver_requests" {
     record {
       from                  = "A"
       metric                = "cluster:apiserver_requests:rate5m"
-      target_datasource_uid = data.grafana_data_source.prometheus.uid
+      target_datasource_uid = data.grafana_data_source.prometheus[0].uid
     }
   }
 }
@@ -168,8 +177,9 @@ resource "grafana_rule_group" "rec_apiserver_requests" {
 # (refId "C") referencing "A".
 
 resource "grafana_rule_group" "five_xx_rate" {
+  count            = var.enable_observability ? 1 : 0
   name             = "5xx-rate"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -181,7 +191,7 @@ resource "grafana_rule_group" "five_xx_rate" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -221,7 +231,7 @@ resource "grafana_rule_group" "five_xx_rate" {
     # any drift between alert and panel visible at a click.
     annotations = {
       summary          = "aegis-greeter 5xx rate exceeded 5% over 5 min in {{ $labels.region }}"
-      __dashboardUid__ = grafana_dashboard.greeter_overview.uid
+      __dashboardUid__ = grafana_dashboard.greeter_overview[0].uid
       __panelId__      = "2"
     }
     labels = {
@@ -231,8 +241,9 @@ resource "grafana_rule_group" "five_xx_rate" {
 }
 
 resource "grafana_rule_group" "p95_latency" {
+  count            = var.enable_observability ? 1 : 0
   name             = "p95-latency"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -244,7 +255,7 @@ resource "grafana_rule_group" "p95_latency" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -280,7 +291,7 @@ resource "grafana_rule_group" "p95_latency" {
 
     annotations = {
       summary          = "aegis-greeter p95 request latency exceeded 1 s over 5 min in {{ $labels.region }}"
-      __dashboardUid__ = grafana_dashboard.greeter_overview.uid
+      __dashboardUid__ = grafana_dashboard.greeter_overview[0].uid
       __panelId__      = "3"
     }
     labels = {
@@ -290,8 +301,9 @@ resource "grafana_rule_group" "p95_latency" {
 }
 
 resource "grafana_rule_group" "pod_ready" {
+  count            = var.enable_observability ? 1 : 0
   name             = "pod-ready"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -303,7 +315,7 @@ resource "grafana_rule_group" "pod_ready" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 60
         to   = 0
@@ -339,7 +351,7 @@ resource "grafana_rule_group" "pod_ready" {
 
     annotations = {
       summary          = "aegis-greeter Deployment has 0 ready pods in {{ $labels.region }}"
-      __dashboardUid__ = grafana_dashboard.greeter_overview.uid
+      __dashboardUid__ = grafana_dashboard.greeter_overview[0].uid
       __panelId__      = "6"
     }
     labels = {
@@ -349,8 +361,9 @@ resource "grafana_rule_group" "pod_ready" {
 }
 
 resource "grafana_rule_group" "memory_near_limit" {
+  count            = var.enable_observability ? 1 : 0
   name             = "memory-near-limit"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -362,7 +375,7 @@ resource "grafana_rule_group" "memory_near_limit" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -398,7 +411,7 @@ resource "grafana_rule_group" "memory_near_limit" {
 
     annotations = {
       summary          = "aegis-greeter container memory exceeded 90% of limit over 5 min in {{ $labels.region }} — OOMKill imminent"
-      __dashboardUid__ = grafana_dashboard.greeter_overview.uid
+      __dashboardUid__ = grafana_dashboard.greeter_overview[0].uid
       __panelId__      = "7"
     }
     labels = {
@@ -408,8 +421,9 @@ resource "grafana_rule_group" "memory_near_limit" {
 }
 
 resource "grafana_rule_group" "node_memory_pressure" {
+  count            = var.enable_observability ? 1 : 0
   name             = "node-memory-pressure"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -421,7 +435,7 @@ resource "grafana_rule_group" "node_memory_pressure" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -457,7 +471,7 @@ resource "grafana_rule_group" "node_memory_pressure" {
 
     annotations = {
       summary          = "an aegis-platform-aws node in {{ $labels.region }} exceeded 85% memory utilization over 5 min"
-      __dashboardUid__ = grafana_dashboard.greeter_overview.uid
+      __dashboardUid__ = grafana_dashboard.greeter_overview[0].uid
       __panelId__      = "9"
     }
     labels = {
@@ -467,8 +481,9 @@ resource "grafana_rule_group" "node_memory_pressure" {
 }
 
 resource "grafana_rule_group" "apiserver_error_rate" {
+  count            = var.enable_observability ? 1 : 0
   name             = "apiserver-error-rate"
-  folder_uid       = grafana_folder.aegis_stateless.uid
+  folder_uid       = grafana_folder.aegis_stateless[0].uid
   interval_seconds = 60
 
   rule {
@@ -480,7 +495,7 @@ resource "grafana_rule_group" "apiserver_error_rate" {
 
     data {
       ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
+      datasource_uid = data.grafana_data_source.prometheus[0].uid
       relative_time_range {
         from = 300
         to   = 0
@@ -516,7 +531,7 @@ resource "grafana_rule_group" "apiserver_error_rate" {
 
     annotations = {
       summary          = "EKS apiserver 5xx rate exceeded 5% over 5 min in {{ $labels.region }} — control-plane degradation"
-      __dashboardUid__ = grafana_dashboard.greeter_overview.uid
+      __dashboardUid__ = grafana_dashboard.greeter_overview[0].uid
       __panelId__      = "11"
     }
     labels = {

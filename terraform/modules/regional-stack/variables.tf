@@ -93,59 +93,77 @@ variable "operator_principal_arn" {
   type        = string
 }
 
+# ---- observability toggle -------------------------------------------------
+variable "enable_observability" {
+  description = "Whether to deploy the in-cluster Grafana Alloy collector (DaemonSet), the monitoring namespace, the node-exporter + kube-state-metrics subcharts, and the grafana-cloud-credentials Secret. Default true. Set false to skip the entire alloy.tf surface — the gc_* vars are then unused and default to \"\"."
+  type        = bool
+  default     = true
+}
+
 # ---- Grafana Cloud creds (sensitive) -------------------------------------
+# Default "" so the module applies cleanly with enable_observability=false
+# (the gc_* values are only consumed by the gated alloy.tf Secret).
 variable "gc_api_token" {
   description = "Grafana Cloud API token (admin on the aegis stack). Embedded in a K8s Secret used by Alloy."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_mimir_url" {
   description = "Mimir remote_write endpoint."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_mimir_username" {
   description = "Mimir remote_write username (GC Prometheus instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_loki_url" {
   description = "Loki push endpoint."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_loki_username" {
   description = "Loki push username (GC Loki instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_tempo_url" {
   description = "Tempo OTLP endpoint."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_tempo_username" {
   description = "Tempo OTLP username (GC Tempo instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_pyroscope_url" {
   description = "Pyroscope ingest endpoint."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "gc_pyroscope_username" {
   description = "Pyroscope username (GC Pyroscope instance ID)."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # ---- tags -----------------------------------------------------------------
