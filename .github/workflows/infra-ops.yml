@@ -80,6 +80,9 @@ jobs:
           export TF_VAR_platform_region="$(jq -r '.platform_region' regions.auto.tfvars.json)"
           eval "$(jq -r --arg r "$r" '.regions[$r] | "TF_VAR_vpc_cidr=\(.cidr); TF_VAR_node_instance=\(.node_instance); TF_VAR_node_min=\(.node_min); TF_VAR_node_max=\(.node_max)"' regions.auto.tfvars.json)"
           export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
+          # registries.auto.tfvars.json is gitignored — materialise it from the
+          # REGISTRIES_JSON repo variable (same as infra-apply / infra-plan).
+          printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
           cd terraform/envs/regional
           terraform init -reconfigure \
             -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
