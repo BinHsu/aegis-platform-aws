@@ -10,11 +10,12 @@ module "eks" {
 
   # Core addons — install the CNI BEFORE the node group joins (vpc-cni
   # before_compute=true) so it is initialised when nodes register and they come
-  # up Ready. Without cluster_addons the EKS module installs NONE, so nodes stay
+  # up Ready. Without the addons map the EKS module installs NONE, so nodes stay
   # NotReady ("cni plugin not initialized") and every in-cluster helm_release
   # times out. (Surfaced live on the first prod regional apply — the running
   # cluster needed a manual `aws eks create-addon vpc-cni/kube-proxy/coredns`.)
-  cluster_addons = {
+  # NOTE: v21 renamed this from `cluster_addons` (v20) to `addons`.
+  addons = {
     coredns    = {}
     kube-proxy = {}
     vpc-cni = {
