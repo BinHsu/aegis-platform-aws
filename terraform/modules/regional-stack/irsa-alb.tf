@@ -2,7 +2,10 @@ module "irsa_alb_controller" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts"
   version = "~> 6.0"
 
-  name = "aegis-platform-aws-alb-controller-${var.region}"
+  # use_name_prefix=false: fixed role name (≤ 64) — name_prefix is capped at 38
+  # and "aegis-platform-aws-alb-controller-<region>" overflows it.
+  name            = "aegis-platform-aws-alb-controller-${var.region}"
+  use_name_prefix = false
 
   attach_load_balancer_controller_policy = true
 
