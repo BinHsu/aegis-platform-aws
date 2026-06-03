@@ -126,6 +126,10 @@ jobs:
           TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
           TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
         run: |
+          # registries.auto.tfvars.json is gitignored (per-workload ECR account
+          # IDs) so it is not in the checkout — materialise it from the
+          # REGISTRIES_JSON repo variable for CI.
+          printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
           cd terraform/envs/regional
           terraform init -reconfigure \
             -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
