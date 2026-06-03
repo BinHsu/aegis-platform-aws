@@ -3,7 +3,13 @@ data "aws_availability_zones" "available" {
 }
 
 locals {
-  cluster_name = "aegis-platform-aws-${var.region}"
+  # NOTE: keep this short. The EKS module derives the cluster IAM role from it as
+  # name_prefix = "${cluster_name}-cluster-", and IAM name_prefix is capped at 38.
+  # "aegis-platform-aws-eu-central-1-cluster-" is 40 → over the cap. Dropping the
+  # "-aws" segment ("aegis-platform-eu-central-1" = 27, +"-cluster-" = 36) fits
+  # every current AWS region (≤ 14 chars → ≤ 38). The repo + account already
+  # carry the "aws" marker; the cluster name does not need it.
+  cluster_name = "aegis-platform-${var.region}"
 
   azs = slice(data.aws_availability_zones.available.names, 0, 3)
 
