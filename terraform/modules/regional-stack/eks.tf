@@ -8,6 +8,20 @@ module "eks" {
   endpoint_public_access = true
   enable_irsa            = true
 
+  # Core addons — install the CNI BEFORE the node group joins (vpc-cni
+  # before_compute=true) so it is initialised when nodes register and they come
+  # up Ready. Without cluster_addons the EKS module installs NONE, so nodes stay
+  # NotReady ("cni plugin not initialized") and every in-cluster helm_release
+  # times out. (Surfaced live on the first prod regional apply — the running
+  # cluster needed a manual `aws eks create-addon vpc-cni/kube-proxy/coredns`.)
+  cluster_addons = {
+    coredns    = {}
+    kube-proxy = {}
+    vpc-cni = {
+      before_compute = true
+    }
+  }
+
   # All 5 control-plane log types → CloudWatch (audit / forensics
   # side-effect; never dashboarded). Per ADR-04 — CW retained
   # for audit only.
