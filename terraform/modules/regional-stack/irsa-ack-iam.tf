@@ -99,7 +99,11 @@ module "irsa_ack_iam" {
 
   # PREFIX is load-bearing — see the SCP coupling note above. Do not reorder
   # to put the region first without updating the fabric SCP glob.
-  name = "aegis-platform-aws-ack-iam-${var.region}"
+  # use_name_prefix=false: use this as the EXACT role name (≤ 64) rather than an
+  # IAM name_prefix (capped at 38) — "aegis-platform-aws-ack-iam-<region>" is 39,
+  # and the SCP glob needs the exact prefix preserved, so a fixed name is required.
+  name            = "aegis-platform-aws-ack-iam-${var.region}"
+  use_name_prefix = false
 
   policies = {
     ack = aws_iam_policy.ack_iam.arn
