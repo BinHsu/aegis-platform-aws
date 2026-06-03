@@ -95,9 +95,9 @@ variable "operator_principal_arn" {
 
 # ---- observability toggle -------------------------------------------------
 variable "enable_observability" {
-  description = "Whether to deploy the in-cluster Grafana Alloy collector (DaemonSet), the monitoring namespace, the node-exporter + kube-state-metrics subcharts, and the grafana-cloud-credentials Secret. Default true. Set false to skip the entire alloy.tf surface — the gc_* vars are then unused and default to \"\"."
+  description = "Whether to deploy the in-cluster Grafana Alloy collector (DaemonSet), the monitoring namespace, the node-exporter + kube-state-metrics subcharts, and the grafana-cloud-credentials Secret. Default FALSE (the regional env passes this explicitly; the default just makes a bare module use observability-free). Set true to deploy the entire alloy.tf surface — the gc_* vars are then required."
   type        = bool
-  default     = true
+  default     = false
 }
 
 # ---- Grafana Cloud creds (sensitive) -------------------------------------

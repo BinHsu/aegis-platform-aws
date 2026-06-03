@@ -83,9 +83,9 @@ variable "workload_registries" {
 
 # ---- observability toggle -------------------------------------------------
 variable "enable_observability" {
-  description = "Whether to wire the in-cluster Grafana Alloy collector. Default true. Set false to skip the SSM lookups of the Grafana Cloud creds (which do not exist when the platform env was applied with enable_observability=false) and to skip Alloy + its credential Secret in the regional-stack module. Must match the platform env's enable_observability for a coherent deploy."
+  description = "Whether to wire the in-cluster Grafana Alloy collector. Default FALSE (matches the platform env default). Set false to skip the SSM lookups of the Grafana Cloud creds (which do not exist when the platform env was applied with enable_observability=false) and to skip Alloy + its credential Secret in the regional-stack module. MUST match the platform env's enable_observability — a precondition (observability-guard.tf) fails loud if this is true while the platform stored no creds."
   type        = bool
-  default     = true
+  default     = false
 }
 
 # ---- tags -----------------------------------------------------------------
