@@ -33,6 +33,21 @@ resource "helm_release" "kyverno" {
   chart            = "kyverno"
   version          = "3.2.6" # pinned — verify at bootstrap
 
+  # Kyverno 3.2.6's cleanup cronjobs default to docker.io/bitnami/kubectl:1.28.5,
+  # which Bitnami removed from Docker Hub (2025 catalog deprecation) -> the cleanup
+  # pods ImagePullBackOff on a fresh deploy. Repoint to Bitnami's legacy archive of
+  # the same image. (Durable follow-up: bump the kyverno chart to a release that
+  # uses a maintained kubectl image.) Surfaced on the first prod regional apply.
+  values = [yamlencode({
+    cleanupJobs = {
+      admissionReports        = { image = { repository = "bitnamilegacy/kubectl" } }
+      clusterAdmissionReports = { image = { repository = "bitnamilegacy/kubectl" } }
+      ephemeralReports        = { image = { repository = "bitnamilegacy/kubectl" } }
+      clusterEphemeralReports = { image = { repository = "bitnamilegacy/kubectl" } }
+      updateRequests          = { image = { repository = "bitnamilegacy/kubectl" } }
+    }
+  })]
+
   depends_on = [module.eks]
 }
 
