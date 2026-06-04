@@ -99,7 +99,12 @@ resource "helm_release" "argocd" {
 locals {
   workload_list_elements = [
     for repo, cfg in var.workload_registries : {
-      repository           = repo
+      repository = repo
+      # url + branch were previously supplied by the SCM-provider generator; the
+      # List generator now carries them (see the generators block) so discovery
+      # works on a personal GitHub account too (the SCM provider is org-only).
+      url                  = "https://github.com/${var.github_owner}/${repo}"
+      branch               = "HEAD"
       ecrAccountId         = cfg.ecr_account_id
       ecrRegion            = cfg.ecr_region
       engineServiceAccount = try(cfg.engine_irsa.service_account, "")
@@ -136,7 +141,7 @@ resource "helm_release" "argocd_apps" {
         aegis-workloads = {
           namespace   = "argocd"
           description = "All aegis-workload-tagged deploy repos. Destinations locked to aegis-* namespaces; sources locked to the org. ADR-07 enforcement #1. E2E PENDING bootstrap."
-          sourceRepos = ["https://github.com/BinHsu/*"]
+          sourceRepos = ["https://github.com/${var.github_owner}/*"]
           destinations = [{
             server    = "https://kubernetes.default.svc"
             namespace = "aegis-*"
@@ -155,46 +160,21 @@ resource "helm_release" "argocd_apps" {
           goTemplate        = true
           goTemplateOptions = ["missingkey=error"]
 
+          # User-account fix: ArgoCD's github SCM-provider generator only lists
+          # ORG repos (GET /orgs/<org>/repos) and 404s for a personal account, so
+          # topic-discovery never produced an Application on prod (github_owner is a
+          # user, not an org). Drive the workload set from the registries-backed
+          # List generator instead — each element carries the repo + its registry
+          # params + (now) its url + branch. Works for users and orgs alike; the
+          # platform's workload set is the registries SoT. Per ADR-07, a deploy
+          # repo's argocd/application.yaml marker is still its opt-in intent
+          # (enforced out-of-band); the effective Application is RENDERED by the
+          # template below, which injects region + registry the repo cannot know.
+          # The org-only SCM topic-discovery is dropped (cannot work for a personal
+          # account); re-add a merge with scmProvider if you move to a GitHub org.
           generators = [{
-            # Merge discovery (SCM) with per-workload params (List) on the repo
-            # name. SCM is the base set → discovery is authoritative; List adds
-            # registry + IRSA params for the workloads the operator has
-            # registered.
-            merge = {
-              mergeKeys = ["repository"]
-              generators = [
-                {
-                  scmProvider = {
-                    cloneProtocol = "https"
-                    github = {
-                      organization = "BinHsu"
-                      tokenRef = {
-                        secretName = kubernetes_secret.scm_token.metadata[0].name
-                        key        = "token"
-                      }
-                    }
-                    filters = [{
-                      # Two gates: the `aegis-workload` TOPIC (labelMatch is
-                      # topic-match for the github SCM provider) AND the repo's
-                      # own self-registration marker, argocd/application.yaml.
-                      # The marker is the repo's explicit opt-in — tagging alone
-                      # does not enrol it. (The marker file declares the
-                      # workload's ArgoCD intent; the effective Application is
-                      # RENDERED by this template, which injects region +
-                      # registry the repo cannot know — platform owns base +
-                      # policy, dev owns intent, per ADR-07. Authority split
-                      # flagged for review.)
-                      labelMatch = "aegis-workload"
-                      pathsExist = ["argocd/application.yaml", "k8s/overlays/prod"]
-                    }]
-                  }
-                },
-                {
-                  list = {
-                    elements = local.workload_list_elements
-                  }
-                },
-              ]
+            list = {
+              elements = local.workload_list_elements
             }
           }]
 
