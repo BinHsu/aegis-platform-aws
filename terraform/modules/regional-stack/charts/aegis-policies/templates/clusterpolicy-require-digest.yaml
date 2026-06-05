@@ -54,7 +54,7 @@ spec:
         # cannot contain literal Helm delimiters or the Go-template parser breaks,
         # so this note describes them without quoting them.
         foreach:
-          - list: "{{ `{{ request.object.spec.containers[] }}` }}"
+          - list: "{{ `request.object.spec.containers[]` }}"
             deny:
               conditions:
                 all:
@@ -64,7 +64,7 @@ spec:
                     value: false
           # initContainers are validated identically — an un-pinned init image
           # is the same supply-chain gap as an un-pinned app image.
-          - list: "{{ `{{ request.object.spec.initContainers[] || [] }}` }}"
+          - list: "{{ `request.object.spec.initContainers[] || []` }}"
             deny:
               conditions:
                 all:
