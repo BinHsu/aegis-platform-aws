@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Six thematic records. Each consolidates one area of the architecture into a
+Nine thematic records. Each consolidates one area of the architecture into a
 single narrative — context, the decision, the consequences accepted — written
 result-first: the final decision and why, not a log of the stages it passed
 through. Format follows Michael Nygard's template (Status / Context / Decision /
@@ -23,6 +23,7 @@ signal, not ceremony.
 | [ADR-06](06-security-and-runtime.md) | Security & runtime | IRSA, OIDC, EKS access entries, scoped deploy keys; PodSecurity `restricted`; secrets kept out of git. |
 | [ADR-07](07-workload-self-ownership.md) | Workload self-ownership | *Accepted.* Continues the boundary discipline of ADR-01 + ADR-03 (and ldz ADR-017): application catalog moves to `ApplicationSet` with an SCM-provider generator; workload IAM moves to ACK CRDs in each deploy repo; guardrails (AppProject, Kyverno trust-subject, org SCP) are the precondition. |
 | [ADR-08](08-cluster-multi-tenancy.md) | Cluster multi-tenancy | *Accepted.* Shared cluster by default (namespace + NetworkPolicy + Kyverno); dedicated Karpenter NodePool as first escape hatch; dedicated cluster via a paved `modules/dedicated-cluster/` as second; the platform contract is invariant across isolation tiers. |
+| [ADR-10](10-release-model-build-once-promote-by-digest.md) | Release model — build once, promote by digest | *Accepted.* Image built once → immutable digest; one shared registry in a dedicated `aegis-deployment` (Deployments OU) account; promote by copying the staging-verified digest into the prod overlay, gated by a `prod` Environment; env differences live in config, not the artifact; Kyverno enforces digest pins. |
 
 ## Reading order by audience
 
