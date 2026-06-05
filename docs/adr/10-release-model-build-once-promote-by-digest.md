@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-06-05). Refines [ADR-03](03-delivery-cicd-gitops.md) (Delivery — CI/CD & GitOps).
+Accepted (2026-06-05). Refines [ADR-03](03-delivery-cicd-gitops.md) (Delivery — CI/CD & GitOps).
 
 ## Context
 
