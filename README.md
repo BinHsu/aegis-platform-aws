@@ -94,6 +94,56 @@ flowchart TB
 See [`docs/adr/`](docs/adr/README.md) for the reasoning behind each decision and
 [`docs/tradeoffs.md`](docs/tradeoffs.md) for what was deliberately deferred.
 
+## Release model
+
+How a workload image reaches production: **build once, promote the immutable
+artifact by digest, serve every environment from one registry.** A rebuilt image
+— even from the same git sha — is not provably the image staging verified, so prod
+never rebuilds; it runs the exact digest staging passed. Full reasoning in
+[ADR-10](docs/adr/10-release-model-build-once-promote-by-digest.md).
+
+```mermaid
+flowchart LR
+  subgraph build["workload repo — build once"]
+    A[push to main] --> B[docker build]
+    B --> C["push ONE image<br/>record digest sha256:…"]
+  end
+  subgraph reg["shared / artifacts account"]
+    R[("ECR — IMMUTABLE tags<br/>one image, one digest")]
+  end
+  subgraph cfg["deploy repo — GitOps config"]
+    S["overlays/staging<br/>pin @digest"]
+    P["overlays/prod<br/>pin SAME @digest"]
+  end
+  subgraph run["this platform — per-cluster ArgoCD"]
+    SC["staging cluster<br/>sync → verify"]
+    PC["prod cluster<br/>sync → serve"]
+  end
+
+  C -->|push| R
+  C -->|CI bumps| S
+  S --> SC
+  R -.cross-account pull.-> SC
+  SC -->|"digest verified"| G{{"promotion PR<br/>+ prod Environment gate"}}
+  G -->|"set prod = same digest"| P
+  P --> PC
+  R -.cross-account pull.-> PC
+```
+
+- **Build once** — the workload repo builds and pushes one image on merge to its
+  `main`, recording the digest; ECR tags are `IMMUTABLE`.
+- **One registry** — a neutral shared/artifacts account holds the image; every
+  cluster (staging, prod, each region) pulls it cross-account. High-isolation
+  estates may instead replicate per account — same digest, different topology.
+- **Promote by digest** — staging verifies a digest; a promotion PR copies *that*
+  digest into the prod overlay. No rebuild, no re-push.
+- **Prod trigger** — the promotion PR's merge, gated by branch protection plus a
+  GitHub `prod` Environment; prod ArgoCD auto-syncs the merged digest. Git is the
+  audit record of what prod runs.
+- **Config holds the difference** — replicas, limits, hostnames, role trust live
+  in deploy-repo overlays + per-cluster injected params; the artifact is
+  environment-agnostic. Credentials and ARNs are per-account; the artifact is not.
+
 ## Repository layout
 
 ```
