@@ -88,6 +88,24 @@ per-environment GitHub Environments for its push step — it pushes to the singl
 Deployment-account ECR. The environment split lives entirely in the deploy /
 promotion layer (overlays), not the build.
 
+### Access to the Deployment account
+
+Two roles, mirroring the org's existing `gh-tf-apply-*` OIDC pattern, with **zero
+SCP change**:
+
+- **`gh-tf-apply-deployment`** — Terraform (platform CI) creates and manages the
+  ECR repositories and the cross-account pull policy in `aegis-deployment`. The
+  name falls under the org-root `deny-iam-privilege-escalation` SCP's existing
+  `gh-tf-*` carve-out, so no SCP edit is needed.
+- A workload **push role** — the build repo's GitHub Actions assumes a scoped
+  OIDC role in `aegis-deployment` to `ecr:PutImage` its own repository.
+
+The Deployments OU **inherits the org-root SCPs** (IAM-escalation guardrail,
+Region restriction, security-service protection). AWS publishes no canned
+Deployments-OU SCP (only the Suspended OU gets a prescribed deny-all); a bespoke
+"lock the account to ECR/CI-CD only" hardening SCP is **deferred** to
+`tradeoffs.md` — defense-in-depth, not required to realize the model.
+
 A single shared registry is the *primary* choice, not the only defensible one.
 "Build once, promote by digest" is near-universal best practice; "one shared
 registry vs per-account registries fed by replication" is where mature
@@ -199,8 +217,16 @@ overlays, optionally gated by a GitHub `prod` Environment protection rule.
   Infrastructure. No existing account is a clean home (management/security/log are
   out; a workload account would couple the registry to one environment), which is
   itself the signal to create the Deployment account.
-- **Digest vs immutable-tag pin** — pin `name@sha256:…` (airtight) vs rely on
-  ECR `IMMUTABLE` tags with a git-sha tag (simpler, slightly weaker).
+- **Digest vs immutable-tag pin — RESOLVED (2026-06-05): pin by digest
+  (`name@sha256:…`).** Industry consensus (Kubernetes image-by-digest guidance,
+  SLSA deploy-by-digest, GitOps tools — Flux image-automation, Argo CD Image
+  Updater `digest` strategy, Kargo Freight-by-digest) is that production pins the
+  content-addressed digest; a tag is mutable and is not an immutability guarantee.
+  The git-sha tag is retained as a human-readable label; ECR `IMMUTABLE` is kept
+  as defense-in-depth. The platform already runs **Kyverno**, so a `require-digest`
+  admission policy enforces this at near-zero cost. Build CI captures the digest
+  from the push (`docker buildx --metadata-file` / `crane digest`) and writes
+  `images[].digest` into the deploy-repo overlay.
 - **Attestation depth** — whether cosign signing + SBOM/provenance and
   admission-time verification land now or in a later phase.
 
