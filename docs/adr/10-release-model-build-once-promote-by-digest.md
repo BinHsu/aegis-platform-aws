@@ -63,16 +63,30 @@ The workload repo's CI builds and pushes the image **one time**, on merge to its
 rebuilds. ECR repositories set `imageTagMutability = IMMUTABLE`, so a tag cannot
 be re-pointed under a verified digest.
 
-### Single shared registry, neutral account
+### Single shared registry in a dedicated Deployment account
 
-One ECR repository per workload lives in a **neutral shared account** (the
-account-fabric's shared-services account, or a dedicated artifacts account — see
-Open sub-decisions). Every cluster — staging and prod, every region — pulls from
-it through a cross-account ECR repository policy. The registry account is its own
-trust boundary; it does not inherit any single environment's posture.
-`registries.auto.tfvars.json` points `ecr_account_id` at the shared account for
-**all** clusters; the existing injection then resolves the same registry
+One ECR repository per workload lives in a **dedicated Deployment (CI/CD)
+account** under its own **Deployments OU**, per AWS's *Organizing Your AWS
+Environment* guidance. A container registry holds the *production candidate
+artifacts* that CI/CD publishes and promotes and that workloads pull read-only —
+the build / validate / promote / release lifecycle, which AWS places in the
+**Deployments OU**, not the **Infrastructure OU** (whose Shared Services account
+holds resources that *run or manage* the environment, not release artifacts).
+Co-locating the registry with the Infrastructure account's IPAM/RAM and fabric
+state would put the supply-chain root of trust in an account that already
+broadcasts cross-account — the opposite of what this model argues for.
+
+Every cluster — staging and prod, every region — pulls from the Deployment
+account through a cross-account ECR repository policy. The registry account is its
+own trust boundary; it does not inherit any single environment's posture.
+`registries.auto.tfvars.json` points `ecr_account_id` at the Deployment account
+for **all** clusters; the existing injection then resolves the same registry
 everywhere with zero deploy-repo change.
+
+Because there is now **one** registry target, the build repo needs no
+per-environment GitHub Environments for its push step — it pushes to the single
+Deployment-account ECR. The environment split lives entirely in the deploy /
+promotion layer (overlays), not the build.
 
 A single shared registry is the *primary* choice, not the only defensible one.
 "Build once, promote by digest" is near-universal best practice; "one shared
@@ -148,9 +162,9 @@ overlays, optionally gated by a GitHub `prod` Environment protection rule.
 
 ## Consequences
 
-- A shared/artifacts account gains an ECR repository per workload plus a
-  cross-account pull policy enumerating the cluster accounts. Landing-zone /
-  account-fabric work.
+- A new `aegis-deployment` account (Deployments OU) gains an ECR repository per
+  workload plus a cross-account pull policy enumerating the cluster accounts.
+  Landing-zone / account-fabric work, including the account-factory creation.
 - The workload `publish.yml` moves from repo-level account variables to one
   shared-registry target; the dev → prod distinction leaves the build entirely.
   The destructive repo-var clobber done during the current campaign is reverted
@@ -172,9 +186,19 @@ overlays, optionally gated by a GitHub `prod` Environment protection rule.
 
 ## Open sub-decisions
 
-- **Registry home** — the existing shared-services account vs a dedicated
-  artifacts account. Dedicated is the cleaner trust boundary; shared-services is
-  less new fabric.
+- **Registry home — RESOLVED (2026-06-05): a dedicated Deployment (CI/CD) account
+  `aegis-deployment` in a new Deployments OU.** The org already mirrors AWS's
+  foundational layout (Security, Infrastructure, Workloads OUs); Deployments is
+  the missing fourth core OU and the canonical home for a shared release-artifact
+  registry. Rejected co-locating in the existing `aegis-shared` (Infrastructure /
+  Shared Services) account as a category mismatch — a release artifact is not a
+  run/manage-the-environment resource — and because it would concentrate the
+  supply-chain root with IPAM/RAM + fabric state. AWS's "external CI/CD may not
+  need a Deployments OU" note covers not housing the *pipeline* (this org's CI/CD
+  is GitHub Actions, external); it does not reclassify the *artifact store* as
+  Infrastructure. No existing account is a clean home (management/security/log are
+  out; a workload account would couple the registry to one environment), which is
+  itself the signal to create the Deployment account.
 - **Digest vs immutable-tag pin** — pin `name@sha256:…` (airtight) vs rely on
   ECR `IMMUTABLE` tags with a git-sha tag (simpler, slightly weaker).
 - **Attestation depth** — whether cosign signing + SBOM/provenance and
@@ -184,9 +208,11 @@ overlays, optionally gated by a GitHub `prod` Environment protection rule.
 
 1. **Record (this ADR).** Decision hardened; the in-flight verify proceeds on
    current topology.
-2. **Shared registry.** Pick the host account; create per-workload ECR +
-   cross-account pull policy; repoint `registries.auto.tfvars.json` for all
-   clusters; revert the build repo's repo-var clobber to one shared target.
+2. **Shared registry.** Create the `aegis-deployment` account (Deployments OU) via
+   the account factory; per-workload ECR (`IMMUTABLE`) + cross-account pull policy
+   for the cluster accounts; repoint `registries.auto.tfvars.json` for all
+   clusters; revert the build repo's repo-var clobber to the one Deployment-account
+   target.
 3. **Digest pinning + staging overlay.** Deploy repos pin `@sha256:…`; add a
    staging overlay; build CI bumps the staging overlay to the freshly-built
    digest.
