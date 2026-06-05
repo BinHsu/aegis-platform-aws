@@ -22,11 +22,19 @@
     "onto the named Ingress so the cert ARN (which embeds an account ID) stays",
     "out of the public deploy repo. cert_arn must be a region-correct,",
     "cluster-account ACM cert; a single value is single-region only (multi-region",
-    "wants a per-region lookup — E2E PENDING refinement)."
+    "wants a per-region lookup — E2E PENDING refinement).",
+    "",
+    "ADR-10 — ONE shared registry for ALL clusters. ecr_account_id now points",
+    "at the dedicated aegis-deployment account (Deployments OU), NOT a per-",
+    "environment workload account. Staging + prod, every region, inject the SAME",
+    "registry here and pull the same immutable digest the build pushed once. The",
+    "old per-account model (ecr_account_id = each env's own account) is replaced;",
+    "the build-once/promote-by-digest invariant means every cluster resolves the",
+    "same <deployment-account-id>.dkr.ecr.<region>.amazonaws.com/<repo>."
   ],
   "workload_registries": {
     "aegis-greeter-deploy": {
-      "ecr_account_id": "<workload-account-id>",
+      "ecr_account_id": "<deployment-account-id>",
       "ecr_region": "eu-central-1"
     },
     "aegis-core-deploy": {

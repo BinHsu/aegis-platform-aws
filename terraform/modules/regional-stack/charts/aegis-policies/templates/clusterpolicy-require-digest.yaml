@@ -1,0 +1,73 @@
+# ADR-10 enforcement — require image references to be pinned by sha256 digest.
+#
+# ADR-10 ("Promote by digest, not by rebuild") pins every running artifact by
+# content digest (name@sha256:…), not by a mutable tag. This admission policy is
+# the cluster-side guardrail: it rejects (or audits) any Pod whose container
+# image is tag-only, so a workload cannot silently run an un-pinned, re-pointable
+# tag under a verified digest. ECR IMMUTABLE tags are the registry-side half;
+# this is the runtime half — defense in depth.
+#
+# Scope: workload namespaces only (the same glob the default-deny baseline and
+# the workloadidentity restriction use). System namespaces (kube-system,
+# kyverno, argocd, crossplane-system, ack-system, …) run platform/vendor charts
+# that are NOT under our build-once/promote-by-digest model and routinely ship
+# tag-pinned images — enforcing digest there would block the platform itself.
+#
+# validationFailureAction is Audit by DEFAULT (see the chart value
+# requireDigestAction, wired from kyverno.tf). Audit means: log a
+# PolicyReport / event for any tag-only image but ADMIT it. Switching to Enforce
+# is an OPERATIONAL step — it hard-rejects every tag-only Pod cluster-wide,
+# including anything in a workload namespace that has not yet migrated to digest
+# pinning. Flip to Enforce only AFTER the deploy repos pin @sha256 (ADR-10
+# phase 3) and an Audit run shows zero violations. Default Audit so landing this
+# policy cannot wedge an existing workload mid-migration.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    aegis.binhsu.org/enforcement: "adr-10-promote-by-digest"
+    aegis.binhsu.org/status: "implemented, default Audit, E2E PENDING platform bootstrap"
+spec:
+  # Audit by default; flip to Enforce post-migration (see header + kyverno.tf).
+  validationFailureAction: {{ .Values.requireDigestAction | default "Audit" }}
+  background: true
+  rules:
+    - name: require-digest-pinned-image
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - {{ .Values.workloadNamespaceGlob | quote }}
+      validate:
+        message: >-
+          Container images must be pinned by sha256 digest (image: name@sha256:…),
+          not by a mutable tag. ADR-10 promote-by-digest — the bits staging
+          verified are the bits prod runs. Re-pin the deploy-repo overlay to the
+          built image's digest.
+        # Kyverno resolves the JMESPath substitutions below at admission time.
+        # They are emitted verbatim via Go backtick raw strings so Helm does not
+        # render the inner action delimiters at chart-render time (same plumbing
+        # pattern as clusterpolicy-trust-subject.yaml). NOTE: a plain YAML comment
+        # cannot contain literal Helm delimiters or the Go-template parser breaks,
+        # so this note describes them without quoting them.
+        foreach:
+          - list: "{{ `{{ request.object.spec.containers[] }}` }}"
+            deny:
+              conditions:
+                all:
+                  # Reject when the image reference contains NO "@sha256:".
+                  - key: "{{ `{{ regex_match('^.+@sha256:[a-fA-F0-9]{64}$', '{{element.image}}') }}` }}"
+                    operator: Equals
+                    value: false
+          # initContainers are validated identically — an un-pinned init image
+          # is the same supply-chain gap as an un-pinned app image.
+          - list: "{{ `{{ request.object.spec.initContainers[] || [] }}` }}"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ `{{ regex_match('^.+@sha256:[a-fA-F0-9]{64}$', '{{element.image}}') }}` }}"
+                    operator: Equals
+                    value: false
