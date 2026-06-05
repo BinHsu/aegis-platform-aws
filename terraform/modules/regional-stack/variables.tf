@@ -3,6 +3,12 @@ variable "region" {
   type        = string
 }
 
+variable "github_owner" {
+  description = "GitHub org/user that owns the deploy repos. Used to build each workload's repoURL and the ArgoCD AppProject sourceRepos allow-list. Default BinHsu. (A personal account cannot use ArgoCD's org-only SCM-provider generator, so workloads are enumerated from the registries-backed List generator instead.)"
+  type        = string
+  default     = "BinHsu"
+}
+
 variable "vpc_cidr" {
   description = "VPC CIDR block. Provisioned across 3 AZs with public+private subnets."
   type        = string
