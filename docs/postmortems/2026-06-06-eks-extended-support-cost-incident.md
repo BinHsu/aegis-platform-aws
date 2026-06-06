@@ -248,7 +248,7 @@ knowledge that a resource exists (it is what fired in this incident).
 | A9 | **Escalate the budget alarm from email → action (AWS Budget Actions).** On breach, apply a restrictive policy / stop resources. **Deliberately P2 — not "no time."** The postmortem's "machine acts" thesis is realized by L1/L2/L3 acting on *scoped, ephemeral* resources. The budget layer is the **worst** place to apply it: an automatic Budget Action in the payer account has org-wide blast radius (a restrictive SCP can freeze prod), so the only safe form is *approval-required* — which is barely more than the email that already works. High-blast-radius autonomy + low marginal value over the existing alarm = P2. | G1 depth | P2 (rationale, not backlog) |
 | A10 | **DONE 2026-06-06.** Migrated the CI/Makefile security scanner from the **EOL tfsec to trivy** — tfsec's HCL parser rejects the TF 1.5 `check` block that L1 relies on. `trivy config … --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL` (install-tools.sh pins trivy 0.71.0, SHA256-verified). Our code is clean at MEDIUM+; 2 pre-existing LOW S3-logging findings are informational. Inline `#tfsec:ignore` comments are now no-ops (trivy uses `#trivy:ignore:<AVD-ID>`) but harmless — none of those rules fire at the gate severity; converting them is a cosmetic follow-up. | L1 enablement | ✅ Done |
 | A11 | **DECISION (seam, not a footnote): the TTL reaper is EKS-only.** It scans `aws eks list-clusters`; an RDS instance, an idle NAT gateway, or a runaway Fargate task is **invisible to L3's reaper** and falls only to the budget alarm (which catches by $ symptom, slowly). **Chosen v1 scope = EKS-only** (the incident's driver + the $0.60/hr control-plane is the worst leak). **Open decision:** generalize the reaper to a **tag-based sweep over all billable types** (find anything tagged ephemeral past TTL) vs. accept "EKS reaped, everything else on budget." Code deferred — multi-API (RDS/EC2/ECS/ELB) and unverifiable without live resources; not landing it blind. | G3 coverage | P1 (decision) / P2 (code) |
-| A12 | **DECISION (seam): version-age detection has two sources of truth** — the L1 terraform `check` (A3) and the CI gate's AWS-CLI re-derivation (A3b). They will drift. **Single-source target:** the CI gate parses `terraform show -json` `.checks[]` so the terraform `check` is the only detector. **Why duplicated initially (conscious carrying cost):** the single-source gate must run a full `terraform plan` in CI (all vars/secrets wired into the gate job) — heavier; the CLI re-derivation was the lightweight v1. **Pay-down trigger:** when the gate job is next touched, or before any second `check`-based gate is added. Code deferred here — it changes the gate substantially and is only verifiable on a `main` push; landing it broken is worse than the duplication. | G4 / G7 | P1 (decision) / P2 (code) |
+| A12 | **DONE 2026-06-06 (static).** Single-sourced the version-age detection: the CI `version-gate` now runs a `terraform plan` (platform region) and reads the in-module `check` block's status from `terraform show -json` `.checks[]`, instead of re-deriving the age in AWS CLI. The terraform `check` is now the **only** detector — no drift. Fail-safe: any plan/parse error → gate=true. Cost: a full plan per apply (heavier than the old CLI check) — accepted for single-source. `actionlint` clean; live-verifiable only on a `main` push (6/12). | G4 / G7 | ✅ Static |
 
 ---
 
@@ -349,15 +349,15 @@ apply-regional:
 ```
 
 **Status: implemented + statically validated, NOT live-verified.** `actionlint` (pinned
-`rhysd/actionlint:1.7.7`) passes; the `awk` extraction and the AWS query shape were run
-against the live API. It is **not** end-to-end proven because GitHub Environment required
-reviewers need repo Settings → Environments (`prod-apply-gated` with reviewers,
-`prod-apply` without) and the gate only exercises on a `main` push (OIDC trust is
-main-only). Two known limits: (1) **whole-wave, not per-region** — GitHub matrix cells
-cannot each select an environment, so any aging version gates the whole wave (one
-approval releases it); (2) detection is **duplicated** (CLI here vs the terraform `check`
-in the module) — a single-source variant would parse `terraform show -json` `.checks[]`
-from a full plan.
+`rhysd/actionlint:1.7.7`) passes. The required-reviewer environments now exist
+(`prod-apply-gated` with reviewer = BinHsu, `prod-apply` without). It is **not** end-to-end
+proven because the gate only exercises on a `main` push (OIDC trust is main-only) — the
+planned teardown/apply cycle verifies it. The snippet above shows the original CLI gate;
+per **A12 it was since single-sourced** — the gate now runs a `terraform plan` and reads
+the in-module `check` block's status from `terraform show -json` `.checks[]`, so the
+version-age logic is no longer duplicated. One remaining limit: **whole-wave, not
+per-region** — GitHub matrix cells cannot each select an environment, so any aging version
+gates the whole apply wave (one approval releases it).
 
 **Why this is cheap here but a storm in real production:**
 

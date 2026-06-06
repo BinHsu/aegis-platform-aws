@@ -41,14 +41,17 @@ jobs:
           echo "list=${list}" >> "$GITHUB_OUTPUT"
 
   # EKS version cost gate (incident 2026-06-06). Checks the pinned cluster
-  # version against its end-of-standard-support date. If it has aged out (or is
-  # unlisted), gate=true and apply-regional routes through a required-approval
-  # environment — a human must approve before a cluster bills at the +$0.50/hr
-  # extended-support rate. Mirrors the in-module `check` block in
-  # regional-stack/eks-version-guard.tf (that warns on LOCAL apply; this turns
-  # the same signal into a CI approval gate). Detection is duplicated here (CLI)
-  # vs the module (terraform check) by design (see postmortem §7); a
-  # single-source variant would parse `terraform show -json` .checks[].
+  # version against its end-of-standard-support date. If it has aged out,
+  # gate=true and apply-regional routes through a required-approval environment
+  # — a human must approve before a cluster bills at the +$0.50/hr
+  # extended-support rate.
+  #
+  # A12 single-source: the detector is the in-module terraform `check` block
+  # (regional-stack/eks-version-guard.tf). This job runs a `terraform plan` for
+  # the platform region (cluster_version is module-wide, so one plan suffices)
+  # and reads that check's status from `terraform show -json` `.checks[]` — so
+  # version-age logic lives in ONE place, not duplicated in CI. Fail-safe: any
+  # error → gate=true (require approval rather than silently skip).
   version-gate:
     name: eks-version-cost-gate
     needs: setup
@@ -58,33 +61,43 @@ jobs:
       gate: ${{ steps.check.outputs.gate }}
     steps:
       - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_INFRA_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - id: check
+        env:
+          TF_VAR_tfstate_bucket:         ${{ secrets.TFSTATE_BUCKET }}
+          TF_VAR_tfstate_region:         ${{ secrets.TFSTATE_REGION }}
+          TF_VAR_github_token:           ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
         run: |
-          set -euo pipefail
-          # Pinned version = the module default (no env/tfvar override exists).
-          # Anchor on the `default =` assignment line (not a comment that
-          # merely contains the word "default").
-          ver=$(awk '/variable "cluster_version"/{f=1} f&&/^[[:space:]]*default[[:space:]]*=/{gsub(/[",]/,"",$3); print $3; exit}' \
-            terraform/modules/regional-stack/variables.tf)
-          echo "pinned EKS version: ${ver}"
-          eos=$(aws eks describe-cluster-versions \
-            --query "clusterVersions[?clusterVersion=='${ver}'].endOfStandardSupportDate | [0]" \
-            --output text)
-          echo "end of standard support: ${eos}"
-          gate=false
-          if [ "${eos}" = "None" ] || [ -z "${eos}" ]; then
-            gate=true # unlisted / too old to report → gate
-          elif [ "$(date -u +%s)" -ge "$(date -u -d "${eos}" +%s)" ]; then
-            gate=true # past end of standard support → gate
+          set -uo pipefail
+          r="$(jq -r '.platform_region' regions.auto.tfvars.json)"
+          export TF_VAR_region="$r" TF_VAR_platform_region="$r"
+          eval "$(jq -r --arg r "$r" '.regions[$r] | "export TF_VAR_vpc_cidr=\(.cidr) TF_VAR_node_instance=\(.node_instance) TF_VAR_node_min=\(.node_min) TF_VAR_node_max=\(.node_max)"' regions.auto.tfvars.json)"
+          printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
+          gate=true # fail-safe default
+          cd terraform/envs/regional
+          if terraform init -reconfigure \
+               -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+               -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+               -backend-config="key=regional/${r}/terraform.tfstate" \
+               -backend-config="encrypt=true" \
+             && terraform plan -out=tfplan -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
+             && terraform show -json tfplan > /tmp/plan.json; then
+            status=$(jq -r '[.checks[]? | select(.address.name=="eks_version_in_standard_support") | .status] | (.[0] // "unknown")' /tmp/plan.json)
+            echo "terraform check status: ${status}"
+            [ "${status}" = "pass" ] && gate=false
+          else
+            echo "::warning::version-gate plan failed — defaulting gate=true (fail-safe)"
           fi
           echo "gate=${gate}" >> "$GITHUB_OUTPUT"
-          if [ "${gate}" = "true" ]; then
-            echo "::warning::EKS ${ver} past standard support (${eos}); apply-regional needs manual approval (extended-support \$0.50/hr). Bump cluster_version."
-          fi
+          [ "${gate}" = "true" ] && echo "::warning::EKS version check did not pass; apply-regional needs manual approval. Bump var.cluster_version."
 
   apply-platform:
     name: apply-platform
