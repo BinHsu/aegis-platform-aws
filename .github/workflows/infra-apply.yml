@@ -1,23 +1,25 @@
 name: infra-apply
 
-# Push to main → apply platform then regional matrix (in parallel per region).
-# Bootstrap is NOT in this path — it's one-shot via infra-ops.yml.
+# A13 (incident 2026-06-06): ON-DEMAND only — NOT auto-apply-on-merge.
+# This previously ran on every push to main touching terraform/**, so a merge
+# was a real PROD deploy (an auto-apply on merge is what stood the incident
+# cluster up — the workload/greeter is staging-first via ADR-10 promotion, but
+# the *infra* layer was not gated). It is now workflow_dispatch only: the
+# operator deliberately triggers a prod apply inside a deploy window. PR-time
+# validation still runs via infra-plan; the version-gate + prod-apply-gated
+# environment still gate the dispatched apply.
 #
-# Role assumed: gh-tf-apply-platform (AdministratorAccess, trust scoped to
-# refs/heads/main only — PRs cannot assume this role). Combined with branch
-# protection (status checks + linear history, see
-# platform/branch-protection.tf), this means an apply only happens via a
-# reviewed commit landing on main.
+# Dispatch from main (gh-tf-apply-platform OIDC trust = refs/heads/main only).
+# Bootstrap is NOT in this path — it's one-shot via infra-ops.yml.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'regions.auto.tfvars.json'
-      - 'registries.auto.tfvars.json'
-      - 'terraform/**'
-      - 'grafana/**'
-      - '.github/workflows/infra-apply.yml'
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "apply" to confirm a real PROD infrastructure apply
+        required: true
+        type: string
+        default: ""
 
 permissions:
   id-token: write
@@ -35,6 +37,12 @@ jobs:
       enabled_regions: ${{ steps.regions.outputs.list }}
     steps:
       - uses: actions/checkout@v6
+      - name: confirm intent
+        run: |
+          if [ "${{ inputs.confirm }}" != "apply" ]; then
+            echo "::error::This dispatches a REAL prod infrastructure apply. Type 'apply' in the confirm input to proceed."
+            exit 1
+          fi
       - id: regions
         run: |
           list=$(jq -c '[.regions | to_entries[] | select(.value.enabled) | .key]' regions.auto.tfvars.json)
@@ -203,4 +211,20 @@ jobs:
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="key=regional/${{ matrix.region }}/terraform.tfstate" \
             -backend-config="encrypt=true"
-          terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"
+          # A6: self-reap on failed apply. A failed apply can leave billable
+          # resources (the incident: EKS created, apply then failed on kyverno).
+          # Destroy the partial stack unless ALLOW_PARTIAL_APPLY=true (keep it for
+          # debugging). Re-raise the failure either way. The kyverno teardown
+          # deadlock that this would have hit is fixed by A4 (wait=false +
+          # pre-destroy webhook cleanup).
+          if ! terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"; then
+            echo "::error::apply failed for ${{ matrix.region }}"
+            if [ "${{ vars.ALLOW_PARTIAL_APPLY }}" = "true" ]; then
+              echo "::warning::ALLOW_PARTIAL_APPLY=true — leaving the partial stack for debugging (it may be billing)."
+            else
+              echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
+              terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
+                || echo "::error::self-reap destroy ALSO failed — resources may still be billing; ttl-reaper + budget are the backstops."
+            fi
+            exit 1
+          fi

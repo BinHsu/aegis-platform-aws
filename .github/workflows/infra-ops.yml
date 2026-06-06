@@ -33,6 +33,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  issues: write # A6: open an alert issue if a teardown fails (still billing)
 
 env:
   AWS_REGION: eu-central-1
@@ -136,3 +137,17 @@ jobs:
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="encrypt=true"
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
+
+      # A6: a FAILED destroy means resources may still be billing — escalate
+      # loudly instead of letting a red run sit unnoticed (the incident: a failed
+      # destroy was never re-actioned). Opens an issue; the ttl-reaper + budget
+      # are the backstops.
+      - name: escalate on failed teardown
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "infra-ops teardown FAILED (${{ inputs.operation }} ${{ inputs.region }}) — resources may still be billing" \
+            --body "The ${{ inputs.operation }} run failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Resources from this stack may still exist and be billing. Check the run log, re-run the teardown, and verify with the ttl-reaper. (A6 escalation; budget alarm is the \$ backstop.)" \
+            || echo "::warning::issue create failed (non-fatal); check the run log manually"
