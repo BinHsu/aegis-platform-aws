@@ -14,7 +14,7 @@
 #
 # aegis-platform-aws is the platform tier — Terraform + CI only. It carries no
 # Kubernetes manifests (those live in the per-workload deploy repos) and no
-# Dockerfile, so the toolchain is tflint / tfsec / jq / gitleaks. It does not
+# Dockerfile, so the toolchain is tflint / trivy / jq / gitleaks. It does not
 # install kubeconform / kustomize (manifest validation belongs in the deploy
 # repos) or hadolint (no Dockerfile here).
 #
@@ -28,7 +28,7 @@ mkdir -p "$BIN"
 
 # ---- pinned versions -------------------------------------------------------
 TFLINT_VERSION=v0.53.0
-TFSEC_VERSION=v1.28.11
+TRIVY_VERSION=v0.71.0 # IaC misconfig scanner; successor to the EOL tfsec
 JQ_VERSION=1.7.1
 GITLEAKS_VERSION=8.24.3
 
@@ -71,16 +71,27 @@ verify_sha256 "$TFLINT_ZIP" tflint_checksums.txt
 unzip -o -q "$TFLINT_ZIP" tflint -d "$BIN"
 chmod +x "$BIN/tflint"
 
-# ---- tfsec -----------------------------------------------------------------
-echo ">>> tfsec ${TFSEC_VERSION} (${OS}/${ARCH})"
-TFSEC_BIN="tfsec-${OS}-${ARCH}"
-curl -fsSL -o "$TFSEC_BIN" \
-  "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/${TFSEC_BIN}"
-curl -fsSL -o tfsec_checksums.txt \
-  "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec_checksums.txt"
-verify_sha256 "$TFSEC_BIN" tfsec_checksums.txt
-mv "$TFSEC_BIN" "$BIN/tfsec"
-chmod +x "$BIN/tfsec"
+# ---- trivy (IaC misconfig scanner; successor to the EOL tfsec) --------------
+# tfsec is end-of-life and its HCL parser rejects Terraform 1.5 `check` blocks
+# (incident 2026-06-06). trivy is the maintained successor and parses modern TF.
+# Asset naming differs: trivy_<ver>_macOS-ARM64.tar.gz / trivy_<ver>_Linux-64bit.tar.gz.
+echo ">>> trivy ${TRIVY_VERSION} (${OS}/${ARCH})"
+case "$OS" in
+  darwin) TRIVY_OS=macOS ;;
+  linux) TRIVY_OS=Linux ;;
+esac
+case "$ARCH" in
+  amd64) TRIVY_ARCH=64bit ;;
+  arm64) TRIVY_ARCH=ARM64 ;;
+esac
+TRIVY_TGZ="trivy_${TRIVY_VERSION#v}_${TRIVY_OS}-${TRIVY_ARCH}.tar.gz"
+curl -fsSL -o "$TRIVY_TGZ" \
+  "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/${TRIVY_TGZ}"
+curl -fsSL -o trivy_checksums.txt \
+  "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_checksums.txt"
+verify_sha256 "$TRIVY_TGZ" trivy_checksums.txt
+tar -xzf "$TRIVY_TGZ" -C "$BIN" trivy
+chmod +x "$BIN/trivy"
 
 # ---- jq -------------------------------------------------------------------
 # Used by Makefile + GH Actions workflows to parse regions.auto.tfvars.json

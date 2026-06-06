@@ -178,7 +178,13 @@ variable "cost_center_tag" {
 }
 
 variable "cluster_version" {
-  description = "EKS Kubernetes version."
+  # Explicit, human-bumped pin (NOT auto-latest — see eks-version-guard.tf).
+  # The guard warns when this ages out of standard support ($0.50/hr extended-
+  # support penalty). On a long-lived cluster a bump is a control-plane upgrade:
+  # verify addon compatibility (kyverno/argocd/ACK/crossplane/alb-controller) +
+  # scan deprecated APIs (kubent/pluto) first. Was "1.30" (standard support
+  # ended 2025-07-23 — the incident default).
+  description = "EKS Kubernetes version (explicit pin; guarded by eks-version-guard.tf)."
   type        = string
-  default     = "1.30"
+  default     = "1.35"
 }

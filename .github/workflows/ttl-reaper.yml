@@ -1,0 +1,97 @@
+name: ttl-reaper
+
+# Layer-3 unattended backstop (incident 2026-06-06). Presence-independent: this
+# runs on a schedule, so it bounds a leaked ephemeral cluster's lifetime to <=
+# TTL hours even if every agent/session is gone and no other CI ever re-runs.
+# It is what would have caught the incident regardless of who left the cluster.
+#
+# Default is ALERT-ONLY (REAPER_AUTODESTROY != 'true'): it reports + warns but
+# does not destroy, because auto-destroy currently hits the kyverno teardown
+# hang (postmortem A4). Once A4 lands, set the repo variable
+# REAPER_AUTODESTROY=true to let it dispatch infra-ops destroy-region.
+#
+# Override: tag a cluster `ttl-exempt=true` (or `keep=true`) and the reaper
+# skips it — the explicit human opt-out for a deliberately long-lived cluster.
+#
+# Scheduled runs execute on the default branch (main), so the main-only
+# gh-tf-apply OIDC trust is satisfied.
+
+on:
+  schedule:
+    - cron: "0 */4 * * *" # every 4h → max orphan exposure ~TTL+4h
+  workflow_dispatch:
+    inputs:
+      ttl_hours:
+        description: Max cluster age in hours before it is reaped
+        required: false
+        type: string
+        default: "8"
+      dry_run:
+        description: Report only, never dispatch a destroy (overrides REAPER_AUTODESTROY)
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write # to dispatch infra-ops destroy-region
+  issues: write # to open an alert issue
+
+env:
+  AWS_REGION: eu-central-1
+  TTL_HOURS: ${{ inputs.ttl_hours || '8' }}
+
+jobs:
+  reap:
+    name: ttl-reaper
+    runs-on: ubuntu-latest
+    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: scan for over-TTL billable resources
+        id: scan
+        # A11: scans EKS (auto-destroy candidates, ttl-exempt honoured) + NAT /
+        # RDS / load balancers (alert-only). Emits found / eks_list / other_list.
+        run: ./scripts/ttl-reap-scan.sh regions.auto.tfvars.json
+
+      - name: alert (open issue)
+        if: ${{ steps.scan.outputs.found == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Over-TTL billable resources (>${TTL_HOURS}h) detected by ttl-reaper:"
+            echo ""
+            echo "EKS clusters (auto-destroy candidates):"
+            printf '%b\n' "${{ steps.scan.outputs.eks_list }}"
+            echo "Other (alert-only — NAT / RDS / load balancers):"
+            printf '%b\n' "${{ steps.scan.outputs.other_list }}"
+            echo ""
+            echo "EKS auto-destroy is ${{ (github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true') && 'ENABLED' || 'OFF (alert-only)' }}. Tag a resource ttl-exempt=true (or keep=true) to skip it. Non-EKS resources are always alert-only — tear them down manually."
+          } > /tmp/body.md
+          gh issue create --repo "${{ github.repository }}" \
+            --title "ttl-reaper: over-TTL billable resource(s) detected" \
+            --body-file /tmp/body.md || echo "::warning::issue create failed (non-fatal)"
+
+      - name: dispatch destroy (EKS only; if enabled and not dry-run)
+        if: ${{ steps.scan.outputs.eks_list != '' && github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
+        run: |
+          set -euo pipefail
+          # Auto-destroy is EKS-only (A11): NAT/RDS/ELB are alert-only, no safe
+          # generic teardown. Depends on the kyverno fix (A4); until verified a
+          # dispatched destroy may still hang on helm_release.kyverno.
+          printf '%b' "${{ steps.scan.outputs.eks_list }}" | sed 's:/.*::' | sort -u | while read -r r; do
+            [ -z "$r" ] && continue
+            echo "dispatching destroy-region for $r"
+            gh workflow run infra-ops.yml --ref main \
+              -f operation=destroy-region -f region="$r" || echo "::warning::dispatch failed for $r"
+          done

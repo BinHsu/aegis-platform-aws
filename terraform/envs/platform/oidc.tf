@@ -12,9 +12,9 @@
 # its ADR-0052.)
 #
 # DEPENDENCY: platform's target account MUST already have this provider, created
-# by the landing-zone bootstrap, before `terraform apply` here. LZ owns it today
-# in staging / shared / management; prod has none yet, so deploying platform to
-# prod needs an LZ prod-OIDC bootstrap first.
+# by the landing-zone bootstrap, before `terraform apply` here. LZ owns it in
+# staging / shared / management, and in prod since the ADR-0051 governance work
+# (the prod joint-strike bootstrapped prod OIDC + gh-tf-apply-platform there).
 #
 # NOTE: the per-cluster EKS IRSA OIDC providers (oidc.eks.<region>...) are a
 # DIFFERENT thing — workload artifacts, one per cluster, created and owned by
@@ -179,4 +179,64 @@ resource "aws_iam_role" "infra_apply" {
 resource "aws_iam_role_policy_attachment" "infra_apply_admin" {
   role       = aws_iam_role.infra_apply.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
+# ---- Role D: gh-tf-destroy-platform — teardown, gated by HUMAN approval (A7) --
+# The apply role above trusts ONLY refs/heads/main, so a teardown dispatched from
+# a feature branch is OIDC-denied (this caused the 2026-06-06 incident's failed
+# teardown attempt #2 and recurs every feature-branch verify). A7 fixes that
+# WITHOUT letting any branch delete prod: the boundary is a human, not a branch.
+#
+# Trust = the GitHub Environment subject `environment:destroy` (NOT a branch).
+# GitHub only mints an OIDC token with that subject AFTER the `destroy`
+# environment's required reviewer (the operator) approves the run — see
+# infra-ops.yml's destroy job. So this role can be assumed from ANY branch, but
+# only by a destroy run the operator has approved. (Why environment, not
+# `refs/heads/*`: a destroy-scoped IAM policy still *deletes* prod by design, so
+# a wide branch trust would let any branch nuke prod; the human gate is the real
+# control.)
+#
+# Permissions = AdministratorAccess for now (the human gate is primary control).
+# Follow-up (optional, needs a live destroy to tune): a destroy-scoped policy
+# (allow Delete*/Detach*/Describe* + the Modify/Schedule calls a real destroy
+# needs, deny Create*/Run*) — authored empirically from AccessDenied on a real
+# teardown, not from theory.
+data "aws_iam_policy_document" "infra_destroy_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # Branch-agnostic: gated by the `destroy` environment's required reviewer.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_owner}/aegis-platform-aws:environment:destroy"]
+    }
+  }
+}
+
+resource "aws_iam_role" "infra_destroy" {
+  name               = "gh-tf-destroy-platform"
+  assume_role_policy = data.aws_iam_policy_document.infra_destroy_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "infra_destroy_admin" {
+  role       = aws_iam_role.infra_destroy.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
+output "infra_destroy_role_arn" {
+  description = "ARN of gh-tf-destroy-platform — set as the AWS_DESTROY_ROLE_ARN repo secret."
+  value       = aws_iam_role.infra_destroy.arn
 }

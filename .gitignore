@@ -62,3 +62,7 @@ credentials
 .idea/
 *.swp
 .DS_Store
+
+# Layer-2 cloud-mutation hook transient state (incident 2026-06-06)
+.claude/.cloud-mutation-open
+.claude/.abandon-ok

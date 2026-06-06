@@ -33,6 +33,20 @@ resource "helm_release" "kyverno" {
   chart            = "kyverno"
   version          = "3.2.6" # pinned — verify at bootstrap
 
+  # A4 (incident 2026-06-06): kyverno's admission webhooks + finalizers deadlock
+  # the helm uninstall, which with the default wait=true blocked `terraform
+  # destroy` for 5 min before it reached aws_eks_cluster — leaving the cluster
+  # billing. wait=false makes uninstall return without waiting for the
+  # webhook-blocked deletion, so destroy proceeds to delete the cluster (which
+  # takes kyverno with it). timeout bounds any residual wait. The apply-time
+  # readiness hang was a separate root cause (NotReady nodes), already fixed by
+  # the CNI addons in eks.tf (#20). Trade-off: apply no longer blocks on kyverno
+  # being Ready — acceptable here (policies are Audit-mode; CRDs are still
+  # applied synchronously before the wait phase, so aegis_policies ordering
+  # holds). NOT yet live-verified on a real teardown.
+  wait    = false
+  timeout = 300
+
   depends_on = [module.eks]
 }
 
@@ -48,6 +62,47 @@ resource "helm_release" "aegis_policies" {
   set {
     name  = "workloadNamespaceGlob"
     value = "aegis-*"
+  }
+
+  # A4: same destroy-hang mitigation as the kyverno release — deleting these
+  # policy CRs on teardown can be blocked by kyverno's own webhook.
+  wait    = false
+  timeout = 300
+
+  depends_on = [helm_release.kyverno]
+}
+
+# A4 root-cause fix (incident 2026-06-06). The teardown deadlock's source is
+# kyverno's admission webhooks: during destroy the API server tries to reach the
+# (terminating) kyverno backend, so deletions hang and the helm uninstall blocks.
+# `wait = false` above stops terraform from blocking on it; this removes the
+# webhook configurations BEFORE kyverno is uninstalled, breaking the deadlock at
+# its source.
+#
+# depends_on => on DESTROY this null_resource is torn down FIRST (reverse order),
+# so its destroy-time provisioner runs before helm uninstalls kyverno. Fully
+# best-effort (set +e / exit 0): if kubectl or creds are absent it falls back to
+# the wait=false behavior — it can never make a teardown worse, and never runs on
+# apply (when = destroy). NOT yet live-verified; the planned teardown will.
+resource "null_resource" "kyverno_webhook_predestroy_cleanup" {
+  triggers = {
+    cluster_name = local.cluster_name
+    region       = var.region
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      set +e
+      aws eks update-kubeconfig --name "${self.triggers.cluster_name}" --region "${self.triggers.region}" --kubeconfig "/tmp/kc-${self.triggers.cluster_name}" >/dev/null 2>&1 || exit 0
+      export KUBECONFIG="/tmp/kc-${self.triggers.cluster_name}"
+      for kind in validatingwebhookconfiguration mutatingwebhookconfiguration; do
+        kubectl get "$kind" -o name 2>/dev/null | grep -i kyverno | while read -r n; do
+          [ -n "$n" ] && kubectl delete "$n" --ignore-not-found --timeout=60s >/dev/null 2>&1
+        done
+      done
+      exit 0
+    EOT
   }
 
   depends_on = [helm_release.kyverno]

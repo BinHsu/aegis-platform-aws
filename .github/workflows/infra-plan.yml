@@ -65,7 +65,7 @@ jobs:
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
-      - name: install project-local tools (tflint / tfsec / jq / gitleaks)
+      - name: install project-local tools (tflint / trivy / jq / gitleaks)
         run: ./scripts/install-tools.sh "$PWD/bin"
       - name: fmt-check
         run: terraform fmt -recursive -check terraform/
@@ -77,7 +77,12 @@ jobs:
       - name: lint
         run: ./bin/tflint --recursive --chdir=terraform/
       - name: sec
-        run: ./bin/tfsec terraform/ --exclude-downloaded-modules
+        # trivy (successor to the EOL tfsec, which cannot parse TF 1.5 `check`
+        # blocks). --tf-exclude-downloaded-modules drops findings in registry
+        # modules; --skip-dirs drops the example k8s manifests bundled inside
+        # them. Gate on MEDIUM+ (our code is clean at that bar; 2 pre-existing
+        # LOW S3-logging findings are informational).
+        run: ./bin/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
 
   plan-platform:
     name: plan-platform
