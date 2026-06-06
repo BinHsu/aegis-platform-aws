@@ -1,0 +1,52 @@
+name: infra-staging
+
+# W3 caller — STAGING floats on main. A merge to main touching infra applies the
+# staging account at its pin (`main` = HEAD). Ephemeral by cost design: staging
+# clusters carry no `keep` tag, so the A11 ttl-reaper auto-destroys them after
+# TTL_HOURS (REAPER_AUTODESTROY=true). version-gate is warn-only here (gate_blocks=false).
+# See docs/runbooks/2026-06-12-joint-strike.md §W3.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - 'regions.auto.tfvars.json'
+      - 'accounts.json'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  resolve:
+    name: resolve-staging (from HEAD accounts.json)
+    runs-on: ubuntu-latest
+    outputs:
+      account_id:     ${{ steps.acc.outputs.account_id }}
+      ref:            ${{ steps.acc.outputs.ref }}
+      regions_json:   ${{ steps.acc.outputs.regions_json }}
+      overrides_json: ${{ steps.acc.outputs.overrides_json }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: acc
+        run: |
+          a="$(jq -c '.accounts.staging' accounts.json)"
+          {
+            echo "account_id=$(echo "$a" | jq -r '.account_id')"
+            echo "ref=$(echo "$a" | jq -r '.pin')"
+            echo "regions_json=$(echo "$a" | jq -c '.enabled_regions')"
+            echo "overrides_json=$(echo "$a" | jq -c '.overrides // {}')"
+          } >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: resolve
+    uses: ./.github/workflows/infra-apply-account.yml
+    with:
+      account_id:     ${{ needs.resolve.outputs.account_id }}
+      ref:            ${{ needs.resolve.outputs.ref }}
+      regions_json:   ${{ needs.resolve.outputs.regions_json }}
+      overrides_json: ${{ needs.resolve.outputs.overrides_json }}
+      gate_blocks:    false
+      environment:    staging
+    secrets: inherit

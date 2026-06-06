@@ -1,0 +1,67 @@
+name: infra-prod
+
+# W3 caller — PROD is promotion-driven. A merge to main that CHANGES the prod pin in
+# accounts.json (the promotion PR) checks out that release tag and applies the prod
+# account, gated by `prod-apply-gated` when the EKS version aged out (gate_blocks=true).
+# A change to anything else (or a no-op pin) does not deploy prod. The A13
+# `workflow_dispatch` infra-apply.yml remains as break-glass only.
+# See docs/runbooks/2026-06-12-joint-strike.md §W3.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'accounts.json'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  detect:
+    name: detect-prod-pin-change
+    runs-on: ubuntu-latest
+    outputs:
+      pin_changed:    ${{ steps.d.outputs.pin_changed }}
+      account_id:     ${{ steps.d.outputs.account_id }}
+      ref:            ${{ steps.d.outputs.ref }}
+      regions_json:   ${{ steps.d.outputs.regions_json }}
+      overrides_json: ${{ steps.d.outputs.overrides_json }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2   # need HEAD^ to diff the prod pin
+      - id: d
+        run: |
+          new="$(jq -r '.accounts.prod.pin' accounts.json)"
+          old="$(git show HEAD^:accounts.json 2>/dev/null | jq -r '.accounts.prod.pin' 2>/dev/null || echo '')"
+          # Deploy prod ONLY on a real pin CHANGE. Skip when:
+          #  - old is empty: accounts.json is being introduced (the W3 merge itself), not a promotion.
+          #  - new is the placeholder: no real release tag pinned yet.
+          if [ -n "$old" ] && [ "$new" != "$old" ] && [ "$new" != "v0.0.0-PLACEHOLDER" ]; then
+            echo "prod pin changed: '${old}' -> '${new}'"
+            echo "pin_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prod pin not a deployable change (old='${old}' new='${new}') — prod deploy skipped"
+            echo "pin_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          a="$(jq -c '.accounts.prod' accounts.json)"
+          {
+            echo "account_id=$(echo "$a" | jq -r '.account_id')"
+            echo "ref=$(echo "$a" | jq -r '.pin')"
+            echo "regions_json=$(echo "$a" | jq -c '.enabled_regions')"
+            echo "overrides_json=$(echo "$a" | jq -c '.overrides // {}')"
+          } >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: detect
+    if: ${{ needs.detect.outputs.pin_changed == 'true' }}
+    uses: ./.github/workflows/infra-apply-account.yml
+    with:
+      account_id:     ${{ needs.detect.outputs.account_id }}
+      ref:            ${{ needs.detect.outputs.ref }}
+      regions_json:   ${{ needs.detect.outputs.regions_json }}
+      overrides_json: ${{ needs.detect.outputs.overrides_json }}
+      gate_blocks:    true
+      environment:    prod-apply
+    secrets: inherit

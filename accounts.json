@@ -1,0 +1,19 @@
+{
+  "_comment": "W3 account dimension — CI orchestration config (read by the infra-staging / infra-prod callers via jq). NOT a *.auto.tfvars.json, so terraform never auto-loads it. HEAD-vs-tag: this file (topology + pins) is read from HEAD; tf code + regions.auto.tfvars.json (scalars) come from the pinned ref. See docs/runbooks/2026-06-12-joint-strike.md §W3.",
+
+  "platform_region": "eu-central-1",
+
+  "accounts": {
+    "staging": {
+      "account_id": "251774439261",
+      "pin": "main",
+      "enabled_regions": ["eu-central-1"],
+      "overrides": { "node_min": 1, "node_max": 1 }
+    },
+    "prod": {
+      "account_id": "506221082337",
+      "pin": "v0.0.0-PLACEHOLDER",
+      "enabled_regions": ["eu-central-1"]
+    }
+  }
+}
