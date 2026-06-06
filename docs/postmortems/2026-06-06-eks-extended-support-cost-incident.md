@@ -432,6 +432,40 @@ The pattern: the parts that could be validated locally are live-proven; the part
 require GitHub Environment settings, a `main` push, or a real cluster are
 static/unit-validated and explicitly flagged for a live pass.
 
+### 7e. Live-verification runbook (next deploy window)
+
+Everything above is static/unit-validated; the next real deploy→verify→destroy cycle
+proves it end-to-end. Run in this order — the A7 destroy-scoped policy (the one item that
+*must* be authored from observed data) is folded in as step 6:
+
+1. **Deploy.** Dispatch `infra-apply` (`confirm: apply`) from main. Confirms A13
+   (on-demand apply), the version-gate (A12: 1.35 healthy → `prod-apply`, no approval),
+   and that `apply-platform` creates `gh-tf-destroy-platform` (A7) + the budget action
+   (A9) + the CE monitor (A2).
+2. **A2 member-CE-access check.** If `apply-platform` fails on `aws_ce_anomaly_*` →
+   enable member-account Cost Explorer access in the management account, re-apply. (Budget
+   is unaffected either way.)
+3. **A12 aging-path check (optional).** Temporarily set `cluster_version` to a past-support
+   value on a branch, dispatch → confirm the gate routes to `prod-apply-gated` and waits
+   for approval. Revert.
+4. **A6 self-reap check (optional).** Inject a deliberate apply failure → confirm
+   `apply-regional` destroys the partial stack and the run still goes red.
+5. **Teardown via the human gate.** Dispatch `infra-ops` `destroy-region` **from any
+   branch** → confirm it pauses on the `destroy` environment for approval (A7), approve →
+   confirm the teardown reaches `aws_eks_cluster` with **no kyverno hang** (A4) and
+   completes. This first teardown runs with the destroy role's **admin** policy.
+6. **A7 destroy-scoped policy — author from this teardown's CloudTrail.** With the step-5
+   destroy captured: run **IAM Access Analyzer → generate policy from CloudTrail** (or grep
+   the destroy's API calls) to get the exact `Delete*/Detach*/Modify*/Schedule*/Describe*`
+   set a real destroy uses, write it as a `gh-tf-destroy-platform` policy that denies
+   `Create*/Run*`, attach it (replacing admin), and re-run a teardown to confirm it
+   completes with no `AccessDenied`. This is why it could not be authored from theory.
+7. **A11 reaper check.** Leave a tagged-ephemeral cluster past `TTL_HOURS`, run the
+   `ttl-reaper` (dispatch, `dry_run=false`, `REAPER_AUTODESTROY=true` once A4 is proven) →
+   confirm it alerts and (if enabled) dispatches the destroy.
+8. **Confirm zero + cost.** `aws eks list-clusters` empty in all regions; Cost Explorer
+   shows the burn bounded.
+
 ## 8. Data gaps / caveats
 
 - **CloudTrail principal forensics unavailable** — `cloudtrail lookup-events` was
