@@ -12,9 +12,9 @@
 # its ADR-0052.)
 #
 # DEPENDENCY: platform's target account MUST already have this provider, created
-# by the landing-zone bootstrap, before `terraform apply` here. LZ owns it today
-# in staging / shared / management; prod has none yet, so deploying platform to
-# prod needs an LZ prod-OIDC bootstrap first.
+# by the landing-zone bootstrap, before `terraform apply` here. LZ owns it in
+# staging / shared / management, and in prod since the ADR-0051 governance work
+# (the prod joint-strike bootstrapped prod OIDC + gh-tf-apply-platform there).
 #
 # NOTE: the per-cluster EKS IRSA OIDC providers (oidc.eks.<region>...) are a
 # DIFFERENT thing — workload artifacts, one per cluster, created and owned by
