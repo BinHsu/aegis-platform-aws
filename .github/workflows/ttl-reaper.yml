@@ -54,43 +54,11 @@ jobs:
           role-to-assume: ${{ secrets.AWS_INFRA_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: scan for over-TTL clusters
+      - name: scan for over-TTL billable resources
         id: scan
-        run: |
-          set -euo pipefail
-          regions=$(jq -r '[.regions | to_entries[] | select(.value.enabled) | .key] | .[]' regions.auto.tfvars.json)
-          now=$(date -u +%s)
-          ttl_secs=$(( TTL_HOURS * 3600 ))
-          reap_list=""
-          for r in $regions; do
-            clusters=$(aws eks list-clusters --region "$r" --query 'clusters[]' --output text 2>/dev/null || true)
-            for c in $clusters; do
-              created=$(aws eks describe-cluster --name "$c" --region "$r" \
-                --query 'cluster.createdAt' --output text 2>/dev/null || echo "")
-              [ -z "$created" ] && continue
-              # explicit human opt-out
-              exempt=$(aws eks describe-cluster --name "$c" --region "$r" \
-                --query 'cluster.tags."ttl-exempt" || cluster.tags.keep' --output text 2>/dev/null || echo "None")
-              if [ "$exempt" = "true" ]; then
-                echo "skip $r/$c (ttl-exempt/keep)"
-                continue
-              fi
-              age=$(( now - $(date -u -d "$created" +%s) ))
-              if [ "$age" -ge "$ttl_secs" ]; then
-                hrs=$(( age / 3600 ))
-                echo "::warning::OVER-TTL cluster $r/$c age=${hrs}h (>${TTL_HOURS}h) — costing ~\$0.10-0.60/hr"
-                reap_list="${reap_list}${r}/${c} (${hrs}h)\n"
-              else
-                echo "ok $r/$c age=$(( age / 3600 ))h"
-              fi
-            done
-          done
-          if [ -n "$reap_list" ]; then
-            { echo "found=true"; echo "list<<EOF"; printf '%b' "$reap_list"; echo "EOF"; } >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No over-TTL clusters."
-          fi
+        # A11: scans EKS (auto-destroy candidates, ttl-exempt honoured) + NAT /
+        # RDS / load balancers (alert-only). Emits found / eks_list / other_list.
+        run: ./scripts/ttl-reap-scan.sh regions.auto.tfvars.json
 
       - name: alert (open issue)
         if: ${{ steps.scan.outputs.found == 'true' }}
@@ -99,25 +67,29 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Over-TTL ephemeral EKS clusters (>${TTL_HOURS}h) detected by ttl-reaper:"
+            echo "Over-TTL billable resources (>${TTL_HOURS}h) detected by ttl-reaper:"
             echo ""
-            printf '%b\n' "${{ steps.scan.outputs.list }}"
+            echo "EKS clusters (auto-destroy candidates):"
+            printf '%b\n' "${{ steps.scan.outputs.eks_list }}"
+            echo "Other (alert-only — NAT / RDS / load balancers):"
+            printf '%b\n' "${{ steps.scan.outputs.other_list }}"
             echo ""
-            echo "Auto-destroy is ${{ (github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true') && 'ENABLED' || 'OFF (alert-only)' }}. Tag a cluster ttl-exempt=true (or keep=true) to skip it."
+            echo "EKS auto-destroy is ${{ (github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true') && 'ENABLED' || 'OFF (alert-only)' }}. Tag a resource ttl-exempt=true (or keep=true) to skip it. Non-EKS resources are always alert-only — tear them down manually."
           } > /tmp/body.md
           gh issue create --repo "${{ github.repository }}" \
-            --title "ttl-reaper: over-TTL EKS cluster(s) detected" \
+            --title "ttl-reaper: over-TTL billable resource(s) detected" \
             --body-file /tmp/body.md || echo "::warning::issue create failed (non-fatal)"
 
-      - name: dispatch destroy (only if enabled and not dry-run)
-        if: ${{ steps.scan.outputs.found == 'true' && github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true' }}
+      - name: dispatch destroy (EKS only; if enabled and not dry-run)
+        if: ${{ steps.scan.outputs.eks_list != '' && github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
         run: |
           set -euo pipefail
-          # NOTE: auto-destroy depends on the kyverno teardown fix (A4); until
-          # then a dispatched destroy may hang on helm_release.kyverno.
-          printf '%b' "${{ steps.scan.outputs.list }}" | sed 's:/.*::' | sort -u | while read -r r; do
+          # Auto-destroy is EKS-only (A11): NAT/RDS/ELB are alert-only, no safe
+          # generic teardown. Depends on the kyverno fix (A4); until verified a
+          # dispatched destroy may still hang on helm_release.kyverno.
+          printf '%b' "${{ steps.scan.outputs.eks_list }}" | sed 's:/.*::' | sort -u | while read -r r; do
             [ -z "$r" ] && continue
             echo "dispatching destroy-region for $r"
             gh workflow run infra-ops.yml --ref main \
