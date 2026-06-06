@@ -39,7 +39,9 @@ env:
   TF_IN_AUTOMATION: "1"
 
 jobs:
+  # Bootstrap only — apply role, not gated (creates the state backend).
   ops:
+    if: ${{ inputs.operation == 'bootstrap' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -53,13 +55,33 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: bootstrap
-        if: ${{ inputs.operation == 'bootstrap' }}
         run: |
           cd terraform/envs/bootstrap
           terraform init && terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
           terraform output -raw backend_hcl
           echo ""
           echo "::warning::Capture the bucket_name + region above and set them as GH Actions secrets TFSTATE_BUCKET + TFSTATE_REGION."
+
+  # Teardown — HUMAN-GATED (A7, incident 2026-06-06). The `destroy` environment
+  # has a required reviewer (the operator); this job pauses for approval before
+  # assuming the destroy role, so ANY branch can dispatch a teardown but prod is
+  # never deleted without an explicit human approval. Uses gh-tf-destroy-platform
+  # (OIDC trust = environment:destroy), NOT the main-only apply role — that is
+  # what unblocks feature-branch teardowns (the incident's failed attempt #2).
+  destroy:
+    if: ${{ inputs.operation == 'destroy-region' || inputs.operation == 'destroy-platform' }}
+    runs-on: ubuntu-latest
+    environment: destroy
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DESTROY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: destroy-region
         if: ${{ inputs.operation == 'destroy-region' }}
@@ -77,7 +99,8 @@ jobs:
           r='${{ inputs.region }}'
           # Per-region scalars + platform_region — all from the single
           # SoT, regions.auto.tfvars.json.
-          export TF_VAR_platform_region="$(jq -r '.platform_region' regions.auto.tfvars.json)"
+          TF_VAR_platform_region="$(jq -r '.platform_region' regions.auto.tfvars.json)"
+          export TF_VAR_platform_region
           eval "$(jq -r --arg r "$r" '.regions[$r] | "TF_VAR_vpc_cidr=\(.cidr); TF_VAR_node_instance=\(.node_instance); TF_VAR_node_min=\(.node_min); TF_VAR_node_max=\(.node_max)"' regions.auto.tfvars.json)"
           export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
           # registries.auto.tfvars.json is gitignored — materialise it from the
