@@ -118,7 +118,7 @@ scripts/install-tools.sh    Pinned project-local toolchain → ./bin/
 - A Grafana Cloud stack (free tier is sufficient).
 - `terraform` ≥ 1.11 (`.terraform-version` pins 1.14.8 for `tfenv`/`tenv`).
 - `make`, `git`, `bash`, `aws` CLI, `kubectl`, `gh` (GitHub CLI — used to set
-  the Actions secrets/variables during setup). All other tools (tflint, tfsec,
+  the Actions secrets/variables during setup). All other tools (tflint, trivy,
   jq, gitleaks) install into `./bin/` via `make dev-setup`.
 
 ## First-time setup
@@ -207,7 +207,7 @@ make help          # list every target
 make fmt           # terraform fmt -recursive
 make validate      # terraform validate, all envs
 make lint          # tflint
-make sec           # tfsec
+make sec           # trivy config (MEDIUM+)
 make platform      # apply the platform env
 make regional      # apply every enabled region
 make regional-one REGION=eu-central-1   # apply a single region
@@ -295,7 +295,7 @@ sum by (pod) (count_over_time(
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `infra-plan` | PR / push to `main` | fmt, validate, tflint, tfsec, gitleaks, `terraform plan` per env; posts the plan diff as a PR comment |
+| `infra-plan` | PR / push to `main` | fmt, validate, tflint, trivy, gitleaks, `terraform plan` per env; posts the plan diff as a PR comment |
 | `infra-apply` | push to `main` | `terraform apply` per env (platform + regional matrix) |
 | `infra-ops` | `workflow_dispatch` | `bootstrap` / `destroy-region` / `destroy-platform` (the DR drill) |
 

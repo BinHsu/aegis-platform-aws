@@ -53,7 +53,7 @@ help:
 	@echo "  fmt                    terraform fmt -recursive terraform/"
 	@echo "  validate               terraform validate in each env (no backend init)"
 	@echo "  lint                   tflint --recursive --chdir=terraform/"
-	@echo "  sec                    tfsec terraform/"
+	@echo "  sec                    trivy config terraform/ (MEDIUM+)"
 	@echo "  bootstrap              Apply bootstrap (one-time; LOCAL state; creates remote backend)"
 	@echo "  regenerate-backend     Re-emit ./backend.hcl from bootstrap outputs (run after bootstrap)"
 	@echo "  platform               Apply platform env (slow lifecycle; survives DR drill)"
@@ -92,11 +92,12 @@ lint:
 	$(BIN)/tflint --recursive --chdir=terraform/
 
 sec:
-	# --exclude-downloaded-modules: scan our code, not third-party module
-	# internals (terraform-aws-modules/*). Their config choices that we
-	# rely on (EKS public endpoint, VPC flow logs) are deliberate + noted
-	# in docs/tradeoffs.md; tfsec scanning their source is just noise.
-	$(BIN)/tfsec terraform/ --exclude-downloaded-modules
+	# trivy (successor to the EOL tfsec, which can't parse TF 1.5 `check`).
+	# --tf-exclude-downloaded-modules: scan our code, not third-party module
+	# internals (terraform-aws-modules/*) whose deliberate choices (EKS public
+	# endpoint, VPC flow logs) are noted in docs/tradeoffs.md. --skip-dirs drops
+	# the example k8s manifests bundled inside those modules. Gate on MEDIUM+.
+	$(BIN)/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
 
 # ----------------------------------------------------------------------------
 # Apply pipeline (local override path; CI is canonical)

@@ -43,6 +43,19 @@ The budget alarm caught it at ~$29 actual. Left to 2026-06-30 the trajectory was
 EKS billed 30.5 cluster-hours over the window at $0.60/hr (exact 5:1 ext:base ratio
 every single day — the smoking gun for the version penalty).
 
+### Impact & detection/response metrics
+
+- **Impact:** cost only (~$22 incident-attributable burn). **No availability, data, or
+  security impact**; single account (prod `506221082337`), single region. Not pursuing an
+  AWS credit — documented as sunk.
+- **TTD (time to detect):** ~24h machine / ~36h human. Cluster created 2026-06-04 17:04
+  UTC; the org **daily** budget (`aegis-daily-usd10`) tripped on 06-05 when daily spend
+  crossed $10; the operator noticed the email ~06-06 morning. **Detection latency was the
+  real weakness — not resolution.**
+- **TTR (time to resolve):** ~minutes once acted on. The successful CI destroy ran
+  05:18→05:31 UTC (cluster gone in 2m17s). The cost driver is the ~2 days the stack sat
+  *before* detection, not the teardown itself.
+
 ---
 
 ## 2. Timeline (UTC)
@@ -199,6 +212,10 @@ source.**
 Ordered by leverage. The theme: **lower the prose disciplines into machine-enforced
 depth — make them all look like the budget alarm (G1).**
 
+**A4 is the keystone** (now done): it is the cheapest fix and it *unlocks* the others —
+without a teardown that doesn't deadlock, the L3 reaper's auto-destroy (A5) and the CI
+self-reap (A6) would just re-trigger the original hang. Sequence anything else after A4.
+
 ### Prevention model — three layers, orthogonal axes, each with a human override
 
 Defense-in-depth that **caps blast radius** (it does not claim zero — it bounds loss).
@@ -226,9 +243,12 @@ knowledge that a resource exists (it is what fired in this incident).
 | A4 | **DONE 2026-06-06 (static).** Two-part: (1) `wait = false` + `timeout = 300` on both kyverno helm releases so the uninstall stops blocking terraform; (2) **root-cause** — a destroy-time `null_resource` (`depends_on` kyverno → torn down first) that `kubectl delete`s kyverno's validating/mutating webhookconfigurations *before* the uninstall, breaking the deadlock at its source. Fully best-effort (zero apply risk; falls back to wait=false if kubectl/creds absent). Apply-time NotReady-nodes hang was separate, already fixed by CNI addons (`eks.tf` #20). `disable_webhooks` was **rejected** — it touches the install path (could break a real apply) and is redundant with the null_resource. `terraform validate` clean; **live verification deferred to the planned 6/12 teardown.** Unblocks A5 auto-destroy + A6. | G5 | ✅ Static |
 | A5 | **DONE 2026-06-06 (static).** TTL reaper `.github/workflows/ttl-reaper.yml` — scheduled (every 4h), scans EKS clusters older than `TTL_HOURS` (default 8), **presence-independent**. Default **alert-only** (opens an issue + warns); set `REAPER_AUTODESTROY=true` after A4 to auto-dispatch destroy-region. Override: `ttl-exempt`/`keep` tag. `actionlint` clean + scan logic run against live (empty) API; **not live-verified on a real over-TTL cluster**. | G3, agent-presence gap | ✅ Static |
 | A6 | **CI self-reap on failed apply + escalate on failed destroy.** `if: failure()` cleanup on the apply job so a red apply cannot leave billable resources (override: human-set `ALLOW_PARTIAL_APPLY=true`); `if: failure()` SNS/issue on destroy so a failed teardown alerts without anyone polling. **Caveat:** auto-destroy is safe only for ephemeral clusters — for stateful prod, escalate, don't destroy; and the reap must avoid the kyverno hang (depends on A4). | G2, G7 | P1 |
-| A7 | **Teardown-only OIDC subject** (or a `gh-tf-destroy-*` role) admitting feature branches for `destroy-region` only, so verify stacks can self-destroy. | G6 | P2 |
+| A7 | **Teardown-only OIDC subject** (or a `gh-tf-destroy-*` role) admitting feature branches for `destroy-region` only, so verify stacks can self-destroy. **Recurring friction, not nice-to-have:** the main-only OIDC trust caused this incident's failed teardown attempt #2 and lengthened MTTR, and it re-bites every time a feature-branch verify stack needs tearing down. | G6 | **P1** |
 | A8 | **DONE 2026-06-06 (validated, project-scoped).** Default-deny-on-red agent contract enforced by a PreToolUse sentinel (`.claude/hooks/cloud-mutation-sentinel.sh`) + Stop gate (`cloud-mutation-stop-gate.sh`), wired in `.claude/settings.json`. A cloud-mutating Bash command writes a sentinel; the Stop hook blocks session end until it is cleared (drive to green / reap) or a human drops `.abandon-ok`. 6/6 unit tests pass. Scoped to this repo (agent-presence layer); the unattended path is A5's job. Loud-nudge-not-wall (allows through on re-stop to avoid trapping unattended sessions). | G7, agent-presence gap | ✅ Done |
-| A9 | **Escalate the budget alarm from email → action (AWS Budget Actions).** On breach, apply a restrictive policy / stop resources, in approval-required or automatic mode — graduating the one guardrail that worked from "notify a human" to "machine acts." | G1 depth | P2 |
+| A9 | **Escalate the budget alarm from email → action (AWS Budget Actions).** On breach, apply a restrictive policy / stop resources. **Deliberately P2 — not "no time."** The postmortem's "machine acts" thesis is realized by L1/L2/L3 acting on *scoped, ephemeral* resources. The budget layer is the **worst** place to apply it: an automatic Budget Action in the payer account has org-wide blast radius (a restrictive SCP can freeze prod), so the only safe form is *approval-required* — which is barely more than the email that already works. High-blast-radius autonomy + low marginal value over the existing alarm = P2. | G1 depth | P2 (rationale, not backlog) |
+| A10 | **DONE 2026-06-06.** Migrated the CI/Makefile security scanner from the **EOL tfsec to trivy** — tfsec's HCL parser rejects the TF 1.5 `check` block that L1 relies on. `trivy config … --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL` (install-tools.sh pins trivy 0.71.0, SHA256-verified). Our code is clean at MEDIUM+; 2 pre-existing LOW S3-logging findings are informational. Inline `#tfsec:ignore` comments are now no-ops (trivy uses `#trivy:ignore:<AVD-ID>`) but harmless — none of those rules fire at the gate severity; converting them is a cosmetic follow-up. | L1 enablement | ✅ Done |
+| A11 | **DECISION (seam, not a footnote): the TTL reaper is EKS-only.** It scans `aws eks list-clusters`; an RDS instance, an idle NAT gateway, or a runaway Fargate task is **invisible to L3's reaper** and falls only to the budget alarm (which catches by $ symptom, slowly). **Chosen v1 scope = EKS-only** (the incident's driver + the $0.60/hr control-plane is the worst leak). **Open decision:** generalize the reaper to a **tag-based sweep over all billable types** (find anything tagged ephemeral past TTL) vs. accept "EKS reaped, everything else on budget." Code deferred — multi-API (RDS/EC2/ECS/ELB) and unverifiable without live resources; not landing it blind. | G3 coverage | P1 (decision) / P2 (code) |
+| A12 | **DECISION (seam): version-age detection has two sources of truth** — the L1 terraform `check` (A3) and the CI gate's AWS-CLI re-derivation (A3b). They will drift. **Single-source target:** the CI gate parses `terraform show -json` `.checks[]` so the terraform `check` is the only detector. **Why duplicated initially (conscious carrying cost):** the single-source gate must run a full `terraform plan` in CI (all vars/secrets wired into the gate job) — heavier; the CLI re-derivation was the lightweight v1. **Pay-down trigger:** when the gate job is next touched, or before any second `check`-based gate is added. Code deferred here — it changes the gate substantially and is only verifiable on a `main` push; landing it broken is worse than the duplication. | G4 / G7 | P1 (decision) / P2 (code) |
 
 ---
 
