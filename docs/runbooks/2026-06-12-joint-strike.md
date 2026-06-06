@@ -79,13 +79,89 @@ member-CE access, A6 self-reap, A4 kyverno teardown, A7 human-gated destroy + th
 
 ---
 
+## W3 — infra-tier multi-account GitOps promotion (design; staging-float / prod-tag-pin)
+
+> Added 2026-06-06 (design session). The **infra-tier analogue of W1**: it evolves the
+> platform apply from A13 manual `workflow_dispatch` → a staging-float / prod-tag-pin GitOps
+> promotion, so the account dimension is **git-declared** (`accounts.json` — CI orchestration config, read by the callers via jq; NOT a
+`*.auto.tfvars.json`, so terraform never auto-loads it), not a
+> single secret. **NOT YET BUILT** — the four files below do not exist. Scope vs 6/12 is an
+> open decision (end of section).
+
+**Model.** staging account (251774439261) **floats on main** — merge → auto-apply (version-gate
+warn-only). prod account (506221082337) is **pinned to a release tag**; a promotion PR bumps the
+pin → gated apply of the tagged tf. Same shape as W1/greeter, one tier down.
+
+**The artifact difference vs W1 — the crux.** W1 (workload) pins prod to an immutable **image
+digest** (external blob in ECR). W3 (infra) has no external blob — **the tf code IS the
+artifact**, so prod pins a **git tag**, and CI must `git checkout <tag>` and apply *that* tree,
+never HEAD. HEAD-vs-tag split: `accounts.json` (topology + pins) is read from
+**HEAD**; tf code + `regions.auto.tfvars.json` (scalars) from the **tag**.
+
+**Decisions (locked 2026-06-06 — do not re-litigate; a fresh agent will be tempted).**
+
+| Decision | Chosen | Why |
+|---|---|---|
+| Versioning | Model A / **Option A — CI `git checkout <tag>`** (not module `?ref=`) | no module restructure; industry norm for deployment versioning (TFC / Spacelift / Atlantis all track a git ref) |
+| Tag form | **semantic release tag** (not a SHA transition) | human-readable + release notes; avoids the long-lived env-branch anti-pattern |
+| staging vs prod | **staging floats main / prod pins tag** | mirrors greeter overlays; staging leaner = faster + cheaper |
+| prod trigger | **promotion PR + `prod-apply-gated` approve** (replaces A13 dispatch) | more GitOps; adds the staging-verify→promote step dispatch lacks; **preserves A13's prod protection** |
+| role / bucket | **derive from account_id** (no per-account secret) | role `gh-tf-apply-platform` already exists per account, same name; derive shrinks the secret surface |
+| Option B (module `?ref=`) | **rejected** | single repo, regional-stack has one consumer; B only pays off on cross-repo module reuse |
+| sizing | **base (`regions`) + per-account `overrides`** (cidr always base) | mirrors greeter base+patch; stores only the env *difference*, no duplicate-and-drift |
+| version-gate | **block prod / warn staging** (`gate_blocks` input) | staging must stay fast; prod must not silently bill extended-support |
+
+**Files to build (4 + 1 kept).**
+- `accounts.json` — account dimension + per-env pin (`staging.pin: main`, `prod.pin: vX.Y.Z`) + `enabled_regions` + per-account `overrides` (sizing only; cidr stays in `regions`).
+- `infra-apply-account.yml` — **reusable** (`workflow_call`): the current `version-gate → apply-platform → apply-regional` jobs, parameterised by `account_id, ref, regions_json, overrides_json, gate_blocks`. Checks out `ref`; derives bucket `aegis-platform-aws-tfstate-<account_id>` + role `arn:aws:iam::<account_id>:role/gh-tf-apply-platform`; staging routes to an ungated env regardless of gate.
+- `infra-staging.yml` — **caller**: on push to main (`terraform/**` + the two tfvars) → reads staging from HEAD `accounts.json` → calls the reusable with `ref=main`, `gate_blocks=false`.
+- `infra-prod.yml` — **caller**: on push to main → `git diff` to detect whether `accounts.prod.pin` changed; if so → calls the reusable with prod account, `ref=<the pin tag>`, `gate_blocks=true`.
+- `infra-apply.yml` (existing) — **kept as break-glass** manual dispatch (forker / emergency override of promotion).
+
+**Staging cost model — ephemeral (option 1; operator 2026-06-06).** "staging floats on main"
+would otherwise mean a *persistent* staging EKS billing ~$0.10–0.60/hr — over the ~$30 budget,
+the same always-on cost the 2026-06-06 incident was about. Resolution: staging is **ephemeral,
+reaped by the existing A11 TTL reaper** — no new teardown code. A cluster with no
+`keep=true` / `ttl-exempt=true` tag is auto-destroyed after `TTL_HOURS` once
+`REAPER_AUTODESTROY=true`. So staging is up while you iterate (re-applied each merge) and
+auto-gone after a quiet `TTL_HOURS`. Requirements: (1) `REAPER_AUTODESTROY=true`; (2) staging
+clusters carry **no** `keep` tag (the default); (3) staging `TTL_HOURS` tuned to the dev
+rhythm. Prod persistence (a `keep` tag) is a separate post-6/12 steady-state decision; for the
+6/12 window **both** envs are ephemeral/reaped.
+
+**6/12 prerequisites (all done before the window — none of these is the live merge).**
+- [ ] The four files written + reviewed in a PR — **NOT merged** (the merge is the live event: it applies staging).
+- [ ] New CI validated: `actionlint` clean; `workflow_call` wiring + prod-pin diff-detection + checkout-`ref` dry-checked.
+- [ ] `REAPER_AUTODESTROY=true` is set (else ephemeral staging never auto-tears-down → the cost trap returns).
+- [ ] A `staging` GitHub Environment exists (the reusable routes staging to an ungated env).
+- [ ] staging platform state bucket `aegis-platform-aws-tfstate-251774439261` bootstrapped; `BOOTSTRAP_COMPLETE` handled per-account.
+- [ ] Account-agnostic secrets/vars confirmed present for the staging-account context.
+
+**Scope vs 6/12 — DECISION: (a) build + ship W3 on 6/12 (operator, 2026-06-06).**
+6/12 goes full. The four files are built, reviewed, and merged **first** (a prerequisite
+stage — see the Unified order's step 0), then the deploy runs **through W3**: staging
+auto-applies on the merge, prod is reached via a promotion PR + `prod-apply-gated` approve.
+**A13 `workflow_dispatch` is demoted to break-glass only** (forker / emergency) — it is no
+longer the normal prod path. This supersedes the Unified execution order's original step 1;
+the order below is updated to match.
+
+---
+
 ## Unified 6/12 execution order
 
-Run W1 and W2 on one cluster cycle. Order:
+Run W1 and W2 on one cluster cycle. **Per the W3 (a) decision, build W3 first, then deploy
+through it — not the A13 dispatch.** Order:
 
-1. **Deploy (on-demand).** Dispatch `infra-apply` (`confirm: apply`) from main →
-   `apply-platform` creates the destroy role (A7) + budget action (A9) + CE monitor (A2);
-   `apply-regional` stands up EKS. Confirms A13 (dispatch, not merge) + the A12 gate path.
+0. **Build W3 (prerequisite).** Write → review → merge the four files (W3 §Files): the account
+   dimension (`accounts.json`) + the reusable `infra-apply-account.yml` + the two
+   callers. Once merged, a merge to main auto-applies **staging** (warn-only gate); **prod** is
+   reached only via a promotion PR.
+
+1. **Deploy via W3.** staging floats up on step 0's merge and verifies; cut a release tag at the
+   verified commit; open the promotion PR (`accounts.prod.pin` → that tag) → `infra-prod` checks
+   out the tag → `apply-platform` creates the destroy role (A7) + budget action (A9) + CE monitor
+   (A2) and `apply-regional` stands up prod EKS, gated by `prod-apply-gated`. Confirms the A12
+   gate path on the prod promotion. (A13 `workflow_dispatch` stays as break-glass only.)
    - If `apply-platform` fails on `aws_ce_anomaly_*` → enable member-account Cost Explorer
      access in the management account, re-apply (A2 caveat).
 2. **W1 promotion.** Bring greeter up via ArgoCD; run the promotion-by-digest verify per
