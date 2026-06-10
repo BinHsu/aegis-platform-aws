@@ -2,9 +2,10 @@ name: infra-prod
 
 # W3 caller — PROD is promotion-driven. A merge to main that CHANGES the prod pin in
 # accounts.json (the promotion PR) checks out that release tag and applies the prod
-# account, gated by `prod-apply-gated` when the EKS version aged out (gate_blocks=true).
-# A change to anything else (or a no-op pin) does not deploy prod. The A13
-# `workflow_dispatch` infra-apply.yml remains as break-glass only.
+# account. apply-regional ALWAYS runs in the required-reviewer `prod-apply-gated`
+# environment; an aged-out EKS version hard-fails the run before any apply
+# (gate_blocks=true). A change to anything else (or a no-op pin) does not deploy prod.
+# The A13 `workflow_dispatch` infra-apply.yml remains as break-glass only.
 # See docs/runbooks/2026-06-12-joint-strike.md §W3.
 
 on:
@@ -30,11 +31,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2   # need HEAD^ to diff the prod pin
+          fetch-depth: 0   # need the push-range base (github.event.before) to diff the prod pin
       - id: d
         run: |
           new="$(jq -r '.accounts.prod.pin' accounts.json)"
-          old="$(git show HEAD^:accounts.json 2>/dev/null | jq -r '.accounts.prod.pin' 2>/dev/null || echo '')"
+          # Diff across the WHOLE push range (before..sha), not just HEAD^ — a
+          # multi-commit push would otherwise mis-detect the pin change. Fall back
+          # to HEAD^ when `before` is the zero SHA (first push) or unfetchable.
+          base='${{ github.event.before }}'
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base" 2>/dev/null; then
+            echo "push-range base unusable ('$base') — falling back to HEAD^"
+            base="HEAD^"
+          fi
+          old="$(git show "${base}:accounts.json" 2>/dev/null | jq -r '.accounts.prod.pin' 2>/dev/null || echo '')"
           # Deploy prod ONLY on a real pin CHANGE. Skip when:
           #  - old is empty: accounts.json is being introduced (the W3 merge itself), not a promotion.
           #  - new is the placeholder: no real release tag pinned yet.
@@ -63,5 +72,4 @@ jobs:
       regions_json:   ${{ needs.detect.outputs.regions_json }}
       overrides_json: ${{ needs.detect.outputs.overrides_json }}
       gate_blocks:    true
-      environment:    prod-apply
     secrets: inherit

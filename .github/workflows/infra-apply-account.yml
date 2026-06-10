@@ -17,8 +17,7 @@ on:
       ref:            { type: string,  required: true }    # main (staging) | release tag (prod)
       regions_json:   { type: string,  required: true }    # JSON array, e.g. ["eu-central-1"]
       overrides_json: { type: string,  required: false, default: '{}' }  # sizing override object
-      gate_blocks:    { type: boolean, required: false, default: false }  # true=prod (gate routes to approval), false=staging (warn-only)
-      environment:    { type: string,  required: false, default: 'staging' }  # ungated env name for this account
+      gate_blocks:    { type: boolean, required: false, default: false }  # true=prod (gate HARD-FAILS the run before any apply), false=staging (warn-only)
 
 permissions:
   id-token: write
@@ -39,8 +38,9 @@ jobs:
 
   # EKS version cost gate (A12 single-source). Plans the platform region against the
   # in-module `check` block and reads its status from `terraform show -json`. gate=true
-  # (aged-out, or any error → fail-safe) routes apply-regional through approval for prod;
-  # for staging (gate_blocks=false) it is warn-only.
+  # (aged-out, or any error → fail-safe) HARD-FAILS this workflow for prod
+  # (gate_blocks=true) BEFORE any apply — extended-support never reaches prod, not even
+  # behind an approval. For staging (gate_blocks=false) it is warn-only.
   version-gate:
     name: eks-version-cost-gate
     needs: setup
@@ -98,7 +98,8 @@ jobs:
           echo "gate=${gate}" >> "$GITHUB_OUTPUT"
           if [ "${gate}" = "true" ]; then
             if [ "${{ inputs.gate_blocks }}" = "true" ]; then
-              echo "::warning::EKS version aged out — apply-regional needs approval (prod). Bump var.cluster_version."
+              echo "::error::EKS version aged out (or gate plan failed) — HARD-FAIL before any apply (prod). Bump var.cluster_version, re-verify on staging, then re-promote."
+              exit 1
             else
               echo "::warning::EKS version aged out on staging — warn-only, apply proceeds. Bump var.cluster_version."
             fi
@@ -152,10 +153,11 @@ jobs:
     needs: [setup, apply-platform, version-gate]
     runs-on: ubuntu-latest
     if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' && needs.setup.outputs.enabled_regions != '[]' }}
-    # Prod (gate_blocks=true): an aged-out version routes to the required-reviewer
-    # `prod-apply-gated`; otherwise the ungated `prod-apply`. Staging (gate_blocks=false):
-    # always the caller-supplied ungated `environment`, gate is warn-only.
-    environment: ${{ (inputs.gate_blocks && needs.version-gate.outputs.gate == 'true') && 'prod-apply-gated' || inputs.environment }}
+    # Prod (gate_blocks=true) ALWAYS runs in the required-reviewer `prod-apply-gated`
+    # environment — merging a promotion PR never applies prod without a human approval.
+    # (An aged-out EKS version never even reaches here: version-gate hard-fails first.)
+    # Staging (gate_blocks=false): always the ungated `staging` environment, gate warn-only.
+    environment: ${{ inputs.gate_blocks && 'prod-apply-gated' || 'staging' }}
     strategy:
       fail-fast: false
       matrix:

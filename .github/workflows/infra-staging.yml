@@ -48,5 +48,4 @@ jobs:
       regions_json:   ${{ needs.resolve.outputs.regions_json }}
       overrides_json: ${{ needs.resolve.outputs.overrides_json }}
       gate_blocks:    false
-      environment:    staging
     secrets: inherit
