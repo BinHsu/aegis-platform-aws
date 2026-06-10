@@ -40,6 +40,7 @@ jobs:
       overrides_json:     ${{ steps.d.outputs.overrides_json }}
       environment:        ${{ steps.d.outputs.environment }}
       bootstrap_complete: ${{ steps.d.outputs.bootstrap_complete }}
+      operator_principal_arn: ${{ steps.d.outputs.operator_principal_arn }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -75,6 +76,7 @@ jobs:
             echo "overrides_json=$(echo "$a" | jq -c '.overrides // {}')"
             echo "environment=$(echo "$a" | jq -r '.environment // "prod"')"
             echo "bootstrap_complete=$(echo "$a" | jq -r '.bootstrap_complete // false')"
+            echo "operator_principal_arn=$(echo "$a" | jq -r '.operator_principal_arn // ""')"
           } >> "$GITHUB_OUTPUT"
 
   apply:
@@ -91,5 +93,6 @@ jobs:
       overrides_json:     ${{ needs.detect.outputs.overrides_json }}
       environment:        ${{ needs.detect.outputs.environment }}
       bootstrap_complete: ${{ needs.detect.outputs.bootstrap_complete == 'true' }}
+      operator_principal_arn: ${{ needs.detect.outputs.operator_principal_arn }}
       gate_blocks:        true
     secrets: inherit
