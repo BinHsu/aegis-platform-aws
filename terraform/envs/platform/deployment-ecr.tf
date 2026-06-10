@@ -15,22 +15,27 @@
 # Terraform/ECR role IN the deployment account.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# ⚠️ NOT YET APPLYABLE — the `aegis-deployment` account does NOT exist yet.
-#   `var.deployment_account_id` is a PLACEHOLDER. Apply order (ADR-10 phase 2):
-#     1. Landing zone vends the `aegis-deployment` account (Deployments OU) via
-#        the account factory, and seeds the `gh-tf-apply-deployment` role +
-#        the GitHub Actions OIDC provider in it (chicken-and-egg: the role's own
+# ⚠️ COUNT-GATED OFF BY DEFAULT — two gates remain before flipping it on.
+#   The `aegis-deployment` account WAS vended 2026-06-10 (Deployments OU; the
+#   account display NAME is `aegis-deployments`, plural — cosmetic only, every
+#   key stays `deployment` singular per landing-zone ADR-018). Remaining gates:
+#     1. The `gh-tf-apply-deployment` role + the GitHub Actions OIDC provider
+#        must be seeded in that account (chicken-and-egg: the role's own
 #        iam:CreateRole is SCP-gated for a human, so it is seeded via
-#        break-glass — same bootstrap pattern as gh-tf-apply-platform, oidc.tf).
-#     2. Set `deployment_account_id` to the real 12-digit id (gitignored tfvars
-#        or CI var), and the assume-role ARN below resolves.
-#     3. THEN this file's resources apply.
-#   Until step 1+2, leaving this in plan would try to assume a role in a
-#   non-existent account. `count = var.deployment_account_id == "" ? 0 : 1`
-#   gates every resource OFF by default so the rest of the platform still
-#   plans / applies cleanly on the current per-account topology. Flip it on by
-#   supplying the account id. (Mirrors the enable_* count-gate pattern used for
-#   observability + cloudwatch-datasource in this env.)
+#        break-glass — same bootstrap pattern as gh-tf-apply-platform, oidc.tf;
+#        the OIDC provider itself lands via the landing zone's
+#        deployment/bootstrap layer).
+#     2. W3 ownership: envs/platform is now applied ONCE PER CLUSTER ACCOUNT
+#        (infra-apply-account.yml — per-account gh-tf-apply-platform role and
+#        per-account state). Enabling this file in BOTH applies would manage
+#        the same deployment-account ECR from two states. Enable it from
+#        exactly ONE apply context (or extract to a dedicated env) — decided
+#        at merge time by the operator, not defaulted here.
+#   Until then, `count = var.deployment_account_id == "" ? 0 : 1` gates every
+#   resource OFF so the rest of the platform plans / applies cleanly on the
+#   current per-account topology. Flip it on by supplying the account id via
+#   gitignored tfvars / CI var. (Mirrors the enable_* count-gate pattern used
+#   for observability + cloudwatch-datasource in this env.)
 # ─────────────────────────────────────────────────────────────────────────────
 
 locals {

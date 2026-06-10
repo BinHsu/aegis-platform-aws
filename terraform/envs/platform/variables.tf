@@ -30,7 +30,7 @@ variable "ecr_repository_name" {
 
 # ---- ADR-10: shared release registry (dedicated aegis-deployment account) ---
 variable "deployment_account_id" {
-  description = "12-digit account id of the NEW dedicated aegis-deployment account (Deployments OU) that holds the single shared ECR registry per ADR-10. PLACEHOLDER — the account does not exist yet; it is vended by the landing-zone account factory. Default \"\" keeps the entire shared-registry path (deployment-ecr.tf) count-gated OFF so the rest of the platform plans/applies on the current per-account topology. Set the real id (gitignored tfvars / CI var) once the account exists + its gh-tf-apply-deployment role and GitHub OIDC provider are seeded. NEVER commit a real id."
+  description = "12-digit account id of the dedicated aegis-deployment account (Deployments OU) that holds the single shared ECR registry per ADR-10. The account was vended by the landing-zone account factory on 2026-06-10 (landing-zone ADR-018; the account display NAME is aegis-deploymentS, plural — cosmetic, all keys stay singular). Default \"\" keeps the entire shared-registry path (deployment-ecr.tf) count-gated OFF so the rest of the platform plans/applies on the current per-account topology. Set the real id (gitignored tfvars / CI var) only once the gh-tf-apply-deployment role + GitHub OIDC provider are seeded AND one owning apply context is chosen (W3 note in deployment-ecr.tf). NEVER commit a real id."
   type        = string
   default     = ""
 
