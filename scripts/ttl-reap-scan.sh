@@ -10,14 +10,21 @@
 # Emits `found`, `eks_list`, `other_list` to $GITHUB_OUTPUT (stdout if unset).
 # Fully best-effort: every AWS call is guarded, the script never exits non-zero.
 #
-# Env: TTL_HOURS (default 8). Arg 1: regions SoT json (default regions.auto.tfvars.json).
+# Env: TTL_HOURS (default 8). SCAN_REGIONS (optional, space-separated) overrides the
+# region list — the multi-account ttl-reaper matrix passes one region per job from
+# accounts.json (the accounts-dimension ADR's single source of topology).
+# Arg 1: regions SoT json (default regions.auto.tfvars.json; ignored when SCAN_REGIONS set).
 set -uo pipefail
 
 TTL_HOURS="${TTL_HOURS:-8}"
 SOT="${1:-regions.auto.tfvars.json}"
 OUT="${GITHUB_OUTPUT:-/dev/stdout}"
 
-regions=$(jq -r '[.regions|to_entries[]|select(.value.enabled)|.key]|.[]' "$SOT" 2>/dev/null || true)
+if [ -n "${SCAN_REGIONS:-}" ]; then
+  regions="$SCAN_REGIONS"
+else
+  regions=$(jq -r '[.regions|to_entries[]|select(.value.enabled)|.key]|.[]' "$SOT" 2>/dev/null || true)
+fi
 now=$(date -u +%s)
 ttl=$(( TTL_HOURS * 3600 ))
 

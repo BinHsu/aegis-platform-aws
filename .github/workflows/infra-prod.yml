@@ -1,0 +1,95 @@
+name: infra-prod
+
+# W3 caller — PROD is promotion-driven. A merge to main that CHANGES the prod pin in
+# accounts.json (the promotion PR) checks out that release tag and applies the prod
+# account. apply-regional ALWAYS runs in the required-reviewer `prod-apply-gated`
+# environment; an aged-out EKS version hard-fails the run before any apply
+# (gate_blocks=true). A change to anything else (or a no-op pin) does not deploy prod.
+# The A13 `workflow_dispatch` infra-apply.yml remains as break-glass only.
+# See docs/runbooks/2026-06-12-joint-strike.md §W3.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'accounts.json'
+
+# Workflow-level stays read-only; id-token is granted only to the job that
+# calls the reusable workflow (the reusable's OIDC ceiling is the caller
+# job's permissions — it cannot elevate, so the grant must sit there, and
+# only there).
+permissions:
+  contents: read
+
+# One prod run at a time (this caller targets exactly the prod account);
+# queue, never cancel, a running apply. Per-account+region serialization is
+# enforced again at job level inside the reusable.
+concurrency:
+  group: infra-prod
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: detect-prod-pin-change
+    runs-on: ubuntu-latest
+    outputs:
+      pin_changed:        ${{ steps.d.outputs.pin_changed }}
+      account_id:         ${{ steps.d.outputs.account_id }}
+      ref:                ${{ steps.d.outputs.ref }}
+      regions_json:       ${{ steps.d.outputs.regions_json }}
+      overrides_json:     ${{ steps.d.outputs.overrides_json }}
+      environment:        ${{ steps.d.outputs.environment }}
+      bootstrap_complete: ${{ steps.d.outputs.bootstrap_complete }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # need the push-range base (github.event.before) to diff the prod pin
+          persist-credentials: false
+      - id: d
+        run: |
+          new="$(jq -r '.accounts.prod.pin' accounts.json)"
+          # Diff across the WHOLE push range (before..sha), not just HEAD^ — a
+          # multi-commit push would otherwise mis-detect the pin change. Fall back
+          # to HEAD^ when `before` is the zero SHA (first push) or unfetchable.
+          base='${{ github.event.before }}'
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base" 2>/dev/null; then
+            echo "push-range base unusable ('$base') — falling back to HEAD^"
+            base="HEAD^"
+          fi
+          old="$(git show "${base}:accounts.json" 2>/dev/null | jq -r '.accounts.prod.pin' 2>/dev/null || echo '')"
+          # Deploy prod ONLY on a real pin CHANGE. Skip when:
+          #  - old is empty: accounts.json is being introduced (the W3 merge itself), not a promotion.
+          #  - new is the placeholder: no real release tag pinned yet.
+          if [ -n "$old" ] && [ "$new" != "$old" ] && [ "$new" != "v0.0.0-PLACEHOLDER" ]; then
+            echo "prod pin changed: '${old}' -> '${new}'"
+            echo "pin_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prod pin not a deployable change (old='${old}' new='${new}') — prod deploy skipped"
+            echo "pin_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          a="$(jq -c '.accounts.prod' accounts.json)"
+          {
+            echo "account_id=$(echo "$a" | jq -r '.account_id')"
+            echo "ref=$(echo "$a" | jq -r '.pin')"
+            echo "regions_json=$(echo "$a" | jq -c '.enabled_regions')"
+            echo "overrides_json=$(echo "$a" | jq -c '.overrides // {}')"
+            echo "environment=$(echo "$a" | jq -r '.environment // "prod"')"
+            echo "bootstrap_complete=$(echo "$a" | jq -r '.bootstrap_complete // false')"
+          } >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: detect
+    if: ${{ needs.detect.outputs.pin_changed == 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/infra-apply-account.yml
+    with:
+      account_id:         ${{ needs.detect.outputs.account_id }}
+      ref:                ${{ needs.detect.outputs.ref }}
+      regions_json:       ${{ needs.detect.outputs.regions_json }}
+      overrides_json:     ${{ needs.detect.outputs.overrides_json }}
+      environment:        ${{ needs.detect.outputs.environment }}
+      bootstrap_complete: ${{ needs.detect.outputs.bootstrap_complete == 'true' }}
+      gate_blocks:        true
+    secrets: inherit

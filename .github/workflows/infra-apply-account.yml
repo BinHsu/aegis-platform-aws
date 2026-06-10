@@ -1,0 +1,258 @@
+name: infra-apply-account
+
+# W3 reusable engine — applies the platform + regional stacks to ONE account at a
+# pinned git ref. Callers (infra-staging.yml, infra-prod.yml) supply the account
+# dimension; this workflow does version-gate -> apply-platform -> apply-regional.
+#
+# HEAD-vs-tag: the caller reads accounts.json from HEAD and passes account_id / ref /
+# regions_json / overrides_json here; THIS workflow `checkout`s `ref` (main for staging,
+# a release tag for prod) and applies that tree. role + state bucket are DERIVED from
+# account_id (no per-account secret), inlined at each use — reusable top-level `env`
+# cannot reliably read `inputs`. See docs/runbooks/2026-06-12-joint-strike.md §W3.
+
+on:
+  workflow_call:
+    inputs:
+      account_id:     { type: string,  required: true }   # target AWS account
+      ref:            { type: string,  required: true }    # main (staging) | release tag (prod)
+      regions_json:   { type: string,  required: true }    # JSON array, e.g. ["eu-central-1"]
+      overrides_json: { type: string,  required: false, default: '{}' }  # sizing override object
+      gate_blocks:    { type: boolean, required: false, default: false }  # true=prod (gate HARD-FAILS the run before any apply), false=staging (warn-only)
+      environment:    { type: string,  required: false, default: 'prod' }   # workload overlay selector (staging|prod) → TF_VAR_environment; from HEAD accounts.json
+      bootstrap_complete: { type: boolean, required: false, default: false } # per-account flag from HEAD accounts.json; false → skip all applies (fail-safe default)
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  setup:
+    name: setup-matrix
+    runs-on: ubuntu-latest
+    outputs:
+      enabled_regions: ${{ inputs.regions_json }}
+    steps:
+      - run: |
+          echo "regions=${{ inputs.regions_json }} account=${{ inputs.account_id }} ref=${{ inputs.ref }} environment=${{ inputs.environment }}"
+          if [ "${{ inputs.bootstrap_complete }}" != "true" ]; then
+            echo "::warning::bootstrap_complete=false for account ${{ inputs.account_id }} in accounts.json — SKIPPING all apply jobs (state bucket / CI roles not bootstrapped yet). Bootstrap the account, then flip bootstrap_complete=true."
+          fi
+
+  # EKS version cost gate (A12 single-source). Plans the platform region against the
+  # in-module `check` block and reads its status from `terraform show -json`. gate=true
+  # (aged-out, or any error → fail-safe) HARD-FAILS this workflow for prod
+  # (gate_blocks=true) BEFORE any apply — extended-support never reaches prod, not even
+  # behind an approval. For staging (gate_blocks=false) it is warn-only.
+  version-gate:
+    name: eks-version-cost-gate
+    needs: setup
+    runs-on: ubuntu-latest
+    # Per-account bootstrap flag from HEAD accounts.json (passed by the caller),
+    # NOT the repo-level BOOTSTRAP_COMPLETE var (that one stays only on the
+    # legacy break-glass infra-apply.yml).
+    if: ${{ inputs.bootstrap_complete }}
+    outputs:
+      gate: ${{ steps.check.outputs.gate }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-apply-platform
+          aws-region: ${{ env.AWS_REGION }}
+      - id: check
+        env:
+          TF_VAR_environment:            ${{ inputs.environment }}  # workload overlay selector (accounts-dimension ADR)
+          TF_VAR_tfstate_bucket:         aegis-platform-aws-tfstate-${{ inputs.account_id }}
+          TF_VAR_tfstate_region:         ${{ secrets.TFSTATE_REGION }}
+          TF_VAR_github_token:           ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+          OVERRIDES_JSON:                ${{ inputs.overrides_json }}
+        run: |
+          set -uo pipefail
+          BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
+          r="$(jq -r '.platform_region' regions.auto.tfvars.json)"
+          export TF_VAR_region="$r" TF_VAR_platform_region="$r"
+          # effective scalars = base regions[r] * overrides (override wins)
+          eff="$(jq -c --arg r "$r" --argjson ov "$OVERRIDES_JSON" '.regions[$r] * $ov' regions.auto.tfvars.json)"
+          TF_VAR_vpc_cidr="$(echo "$eff" | jq -r '.cidr')"
+          TF_VAR_node_instance="$(echo "$eff" | jq -r '.node_instance')"
+          TF_VAR_node_min="$(echo "$eff" | jq -r '.node_min')"
+          TF_VAR_node_max="$(echo "$eff" | jq -r '.node_max')"
+          export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
+          printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
+          gate=true # fail-safe default
+          cd terraform/envs/regional
+          if terraform init -reconfigure \
+               -backend-config="bucket=${BKT}" \
+               -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+               -backend-config="key=regional/${r}/terraform.tfstate" \
+               -backend-config="encrypt=true" \
+             && terraform plan -out=tfplan -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
+             && terraform show -json tfplan > /tmp/plan.json; then
+            status=$(jq -r '[.checks[]? | select(.address.name=="eks_version_in_standard_support") | .status] | (.[0] // "unknown")' /tmp/plan.json)
+            echo "terraform check status: ${status}"
+            [ "${status}" = "pass" ] && gate=false
+          else
+            echo "::warning::version-gate plan failed — defaulting gate=true (fail-safe)"
+          fi
+          echo "gate=${gate}" >> "$GITHUB_OUTPUT"
+          if [ "${gate}" = "true" ]; then
+            if [ "${{ inputs.gate_blocks }}" = "true" ]; then
+              echo "::error::EKS version aged out (or gate plan failed) — HARD-FAIL before any apply (prod). Bump var.cluster_version, re-verify on staging, then re-promote."
+              exit 1
+            else
+              echo "::warning::EKS version aged out on staging — warn-only, apply proceeds. Bump var.cluster_version."
+            fi
+          fi
+
+  apply-platform:
+    name: apply-platform
+    needs: version-gate
+    runs-on: ubuntu-latest
+    if: ${{ inputs.bootstrap_complete }}
+    timeout-minutes: 90
+    # Serialize per account: a second run (or an infra-ops destroy-platform on the
+    # same account) queues instead of racing this apply on the same state.
+    concurrency:
+      group: infra-${{ inputs.account_id }}-platform
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-apply-platform
+          aws-region: ${{ env.AWS_REGION }}
+      - name: apply
+        env:
+          TF_VAR_grafana_cloud_api_token:             ${{ secrets.GRAFANA_CLOUD_API_TOKEN }}
+          TF_VAR_grafana_auth_token:                  ${{ secrets.GRAFANA_AUTH_TOKEN }}
+          TF_VAR_grafana_cloud_mimir_username:        ${{ secrets.GRAFANA_CLOUD_MIMIR_USERNAME }}
+          TF_VAR_grafana_cloud_loki_username:         ${{ secrets.GRAFANA_CLOUD_LOKI_USERNAME }}
+          TF_VAR_grafana_cloud_tempo_username:        ${{ secrets.GRAFANA_CLOUD_TEMPO_USERNAME }}
+          TF_VAR_grafana_cloud_pyroscope_username:    ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_USERNAME }}
+          TF_VAR_grafana_cloud_mimir_url:             ${{ secrets.GRAFANA_CLOUD_MIMIR_URL }}
+          TF_VAR_grafana_cloud_loki_url:              ${{ secrets.GRAFANA_CLOUD_LOKI_URL }}
+          TF_VAR_grafana_cloud_tempo_url:             ${{ secrets.GRAFANA_CLOUD_TEMPO_URL }}
+          TF_VAR_grafana_cloud_pyroscope_url:         ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_URL }}
+          TF_VAR_budget_alert_email:                  ${{ secrets.BUDGET_ALERT_EMAIL }}
+          TF_VAR_github_token:                        ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_enable_cloudwatch_datasource:        ${{ vars.ENABLE_CLOUDWATCH_DATASOURCE || 'false' }}
+          TF_VAR_grafana_cloud_aws_account_id:        ${{ secrets.GRAFANA_CLOUD_AWS_ACCOUNT_ID }}
+          TF_VAR_grafana_cloud_external_id:           ${{ secrets.GRAFANA_CLOUD_EXTERNAL_ID }}
+        run: |
+          BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
+          cd terraform/envs/platform
+          terraform init -reconfigure \
+            -backend-config="bucket=${BKT}" \
+            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+            -backend-config="encrypt=true"
+          terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
+
+  apply-regional:
+    name: "apply-regional (${{ matrix.region }})"
+    needs: [setup, apply-platform, version-gate]
+    runs-on: ubuntu-latest
+    if: ${{ inputs.bootstrap_complete && needs.setup.outputs.enabled_regions != '[]' }}
+    # Prod (gate_blocks=true) ALWAYS runs in the required-reviewer `prod-apply-gated`
+    # environment — merging a promotion PR never applies prod without a human approval.
+    # (An aged-out EKS version never even reaches here: version-gate hard-fails first.)
+    # Staging (gate_blocks=false): always the ungated `staging` environment, gate warn-only.
+    environment: ${{ inputs.gate_blocks && 'prod-apply-gated' || 'staging' }}
+    timeout-minutes: 90
+    # Serialize per account+region: a second apply (or an infra-ops destroy-region
+    # on the same account+region) queues instead of racing this run on the same state.
+    concurrency:
+      group: infra-${{ inputs.account_id }}-${{ matrix.region }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
+    # Secret/static TF vars at job level so apply AND self-reap destroy see the
+    # same variable set; region-derived scalars land in GITHUB_ENV (step below).
+    env:
+      TF_VAR_environment:     ${{ inputs.environment }}  # workload overlay selector (accounts-dimension ADR)
+      TF_VAR_tfstate_bucket:  aegis-platform-aws-tfstate-${{ inputs.account_id }}
+      TF_VAR_tfstate_region:  ${{ secrets.TFSTATE_REGION }}
+      TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
+      TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-apply-platform
+          aws-region: ${{ matrix.region }}
+      - name: effective per-region scalars (base * overrides) -> GITHUB_ENV
+        env:
+          OVERRIDES_JSON: ${{ inputs.overrides_json }}
+        run: |
+          r='${{ matrix.region }}'
+          eff="$(jq -c --arg r "$r" --argjson ov "$OVERRIDES_JSON" '.regions[$r] * $ov' regions.auto.tfvars.json)"
+          {
+            echo "TF_VAR_region=$r"
+            echo "TF_VAR_vpc_cidr=$(echo "$eff" | jq -r '.cidr')"
+            echo "TF_VAR_node_instance=$(echo "$eff" | jq -r '.node_instance')"
+            echo "TF_VAR_node_min=$(echo "$eff" | jq -r '.node_min')"
+            echo "TF_VAR_node_max=$(echo "$eff" | jq -r '.node_max')"
+            echo "TF_VAR_platform_region=$(jq -r '.platform_region' regions.auto.tfvars.json)"
+          } >> "$GITHUB_ENV"
+      - name: init
+        run: |
+          BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
+          printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
+          cd terraform/envs/regional
+          terraform init -reconfigure \
+            -backend-config="bucket=${BKT}" \
+            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+            -backend-config="key=regional/${{ matrix.region }}/terraform.tfstate" \
+            -backend-config="encrypt=true"
+      - name: apply
+        id: apply
+        working-directory: terraform/envs/regional
+        run: |
+          # A6 blast-radius bound: flag that terraform apply is ABOUT to mutate the
+          # account. Self-reap below fires only when this flag is set, so a pre-apply
+          # failure (checkout / init / state lock / provider download) never destroys
+          # a healthy stack.
+          echo "apply_started=true" >> "$GITHUB_OUTPUT"
+          terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"
+      - name: self-reap partial stack (A6)
+        # Only after a FAILED apply that actually started (a failed apply can leave
+        # billable resources). ALLOW_PARTIAL_APPLY=true keeps the stack for debugging.
+        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY != 'true' }}
+        working-directory: terraform/envs/regional
+        run: |
+          echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
+          echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
+          terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
+            || echo "::error::self-reap destroy ALSO failed — ttl-reaper + budget are the backstops."
+      - name: partial stack kept (ALLOW_PARTIAL_APPLY)
+        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY == 'true' }}
+        run: |
+          echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
+          echo "::warning::ALLOW_PARTIAL_APPLY=true — leaving the partial stack (it may be billing)."

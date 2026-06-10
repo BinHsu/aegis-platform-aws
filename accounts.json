@@ -1,0 +1,23 @@
+{
+  "_comment": "W3 account dimension — CI orchestration config (read by the infra-staging / infra-prod callers and the ttl-reaper via jq). NOT a *.auto.tfvars.json, so terraform never auto-loads it. HEAD-vs-tag: this file (topology + pins) is read from HEAD; tf code + regions.auto.tfvars.json (scalars) come from the pinned ref. Per-account fields: bootstrap_complete = state bucket + CI roles exist (replaces the repo-level BOOTSTRAP_COMPLETE var for the W3 path); environment = workload overlay selector, passed to terraform as TF_VAR_environment. See docs/runbooks/2026-06-12-joint-strike.md §W3 and the accounts-dimension ADR.",
+
+  "platform_region": "eu-central-1",
+
+  "accounts": {
+    "staging": {
+      "account_id": "251774439261",
+      "environment": "staging",
+      "pin": "main",
+      "enabled_regions": ["eu-central-1"],
+      "overrides": { "node_min": 1, "node_max": 1 },
+      "bootstrap_complete": false
+    },
+    "prod": {
+      "account_id": "506221082337",
+      "environment": "prod",
+      "pin": "v0.0.0-PLACEHOLDER",
+      "enabled_regions": ["eu-central-1"],
+      "bootstrap_complete": true
+    }
+  }
+}
