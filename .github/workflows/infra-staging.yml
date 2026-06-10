@@ -40,6 +40,8 @@ jobs:
       environment:        ${{ steps.acc.outputs.environment }}
       bootstrap_complete: ${{ steps.acc.outputs.bootstrap_complete }}
       operator_principal_arn: ${{ steps.acc.outputs.operator_principal_arn }}
+      deployment_account_id: ${{ steps.acc.outputs.deployment_account_id }}
+      cluster_pull_account_ids: ${{ steps.acc.outputs.cluster_pull_account_ids }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -55,6 +57,8 @@ jobs:
             echo "environment=$(echo "$a" | jq -r '.environment // "prod"')"
             echo "bootstrap_complete=$(echo "$a" | jq -r '.bootstrap_complete // false')"
             echo "operator_principal_arn=$(echo "$a" | jq -r '.operator_principal_arn // ""')"
+            echo "deployment_account_id=$(echo "$a" | jq -r '.deployment_account_id // ""')"
+            echo "cluster_pull_account_ids=$(jq -c '[.accounts[].account_id]' accounts.json)"
           } >> "$GITHUB_OUTPUT"
 
   apply:
@@ -71,5 +75,7 @@ jobs:
       environment:        ${{ needs.resolve.outputs.environment }}
       bootstrap_complete: ${{ needs.resolve.outputs.bootstrap_complete == 'true' }}
       operator_principal_arn: ${{ needs.resolve.outputs.operator_principal_arn }}
+      deployment_account_id: ${{ needs.resolve.outputs.deployment_account_id }}
+      cluster_pull_account_ids: ${{ needs.resolve.outputs.cluster_pull_account_ids }}
       gate_blocks:        false
     secrets: inherit

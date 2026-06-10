@@ -20,7 +20,9 @@ on:
       gate_blocks:    { type: boolean, required: false, default: false }  # true=prod (gate HARD-FAILS the run before any apply), false=staging (warn-only)
       environment:    { type: string,  required: false, default: 'prod' }   # workload overlay selector (staging|prod) → TF_VAR_environment; from HEAD accounts.json
       bootstrap_complete: { type: boolean, required: false, default: false } # per-account flag from HEAD accounts.json; false → skip all applies (fail-safe default)
-      operator_principal_arn: { type: string, required: true }  # per-account SSO PlatformAdmin ARN (EKS operator access entry) — from HEAD accounts.json; a single repo secret cannot serve two accounts (account id + SSO name hash both differ)
+      operator_principal_arn: { type: string, required: true }
+      deployment_account_id: { type: string, required: false, default: '' }   # non-empty on exactly ONE account (single-owner gate, deployment-ecr.tf): that apply owns the shared-registry resources
+      cluster_pull_account_ids: { type: string, required: false, default: '[]' } # JSON array of cluster account ids granted read-only pull on the shared registry  # per-account SSO PlatformAdmin ARN (EKS operator access entry) — from HEAD accounts.json; a single repo secret cannot serve two accounts (account id + SSO name hash both differ)
 
 permissions:
   id-token: write
@@ -143,6 +145,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: apply
         env:
+          # ADR-10 shared registry (deployment-ecr.tf): empty id = gated off.
+          TF_VAR_deployment_account_id:    ${{ inputs.deployment_account_id }}
+          TF_VAR_cluster_pull_account_ids: ${{ inputs.cluster_pull_account_ids }}
           TF_VAR_grafana_cloud_api_token:             ${{ secrets.GRAFANA_CLOUD_API_TOKEN }}
           TF_VAR_grafana_auth_token:                  ${{ secrets.GRAFANA_AUTH_TOKEN }}
           TF_VAR_grafana_cloud_mimir_username:        ${{ secrets.GRAFANA_CLOUD_MIMIR_USERNAME }}
