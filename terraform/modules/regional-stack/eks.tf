@@ -63,33 +63,22 @@ module "eks" {
   # principal.
   enable_cluster_creator_admin_permissions = false
 
-  # Every principal that needs cluster access is listed explicitly. The CI
-  # roles read/manage Helm release state (stored in K8s Secrets, which the
-  # EKS View policy cannot read) so they get ClusterAdmin; the AWS-side
-  # trust scoping (ci = read-only AWS / any ref; apply = admin AWS /
-  # refs/heads/main) is the real blast-radius boundary. Scaling this to a
-  # team of operators (IAM group / SSO-mapped entries) is in tradeoffs.md.
+  # Every principal that needs cluster access is listed explicitly — declared
+  # ONCE in var.cluster_admin_principals (the env wires role outputs into it),
+  # not as N copy-pasted blocks. A role missing from the map gets K8s
+  # `Unauthorized` on every helm_release operation: that is exactly how the
+  # destroy role stranded a billing cluster in the 2026-06-06 incident shape
+  # (terraform destroy reaches helm_release.kyverno → Unauthorized → destroy
+  # fails → cluster keeps billing). The CI roles read/manage Helm release
+  # state (stored in K8s Secrets, which the EKS View policy cannot read) so
+  # they all get ClusterAdmin; the AWS-side trust scoping (ci = read-only AWS
+  # / any ref; apply = admin AWS / main + apply environments; destroy =
+  # destroy/reaper-destroy environments) is the real blast-radius boundary.
+  # Scaling this to a team of operators (IAM group / SSO-mapped entries) is
+  # in tradeoffs.md.
   access_entries = {
-    operator = {
-      principal_arn = var.operator_principal_arn
-      policy_associations = {
-        cluster_admin = {
-          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-          access_scope = { type = "cluster" }
-        }
-      }
-    }
-    infra_ci = {
-      principal_arn = var.ci_role_arn
-      policy_associations = {
-        cluster_admin = {
-          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-          access_scope = { type = "cluster" }
-        }
-      }
-    }
-    infra_apply = {
-      principal_arn = var.apply_role_arn
+    for name, arn in var.cluster_admin_principals : name => {
+      principal_arn = arn
       policy_associations = {
         cluster_admin = {
           policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"

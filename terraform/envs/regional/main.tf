@@ -20,9 +20,16 @@ module "stack" {
   scm_token           = var.github_token
   workload_registries = var.workload_registries
 
-  ci_role_arn            = data.terraform_remote_state.platform.outputs.infra_ci_role_arn
-  apply_role_arn         = data.terraform_remote_state.platform.outputs.infra_apply_role_arn
-  operator_principal_arn = var.operator_principal_arn
+  # One map = the full cluster-access roster (each entry becomes an EKS
+  # ClusterAdmin access entry in the module). The destroy role MUST be here:
+  # a terraform destroy that can delete AWS resources but not helm_release
+  # (K8s Unauthorized) strands a billing cluster (2026-06-06 incident shape).
+  cluster_admin_principals = {
+    operator      = var.operator_principal_arn
+    infra_ci      = data.terraform_remote_state.platform.outputs.infra_ci_role_arn
+    infra_apply   = data.terraform_remote_state.platform.outputs.infra_apply_role_arn
+    infra_destroy = data.terraform_remote_state.platform.outputs.infra_destroy_role_arn
+  }
 
   zone_id   = data.terraform_remote_state.platform.outputs.zone_id
   zone_name = data.terraform_remote_state.platform.outputs.zone_name
