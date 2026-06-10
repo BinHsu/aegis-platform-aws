@@ -225,7 +225,7 @@ The layers sit on orthogonal axes, so each closes the next's blind spot:
 |---|---|---|---|---|
 | **L1 — prevent at apply time** | configuration | A bad/aging version can't create an extended-support cluster without a human approving: explicit pin + terraform `check` warning (A3) + CI required-approval gate (A3b). | bump the pin / approve the gated env | ✅ A3 live, A3b static |
 | **L2 — attended runtime catch** | presence (is a human watching?) | While a human is in the loop, an agent cannot silently leave a cloud-mutating run unreconciled at session end: PreToolUse sentinel + Stop hook (A8). | `.abandon-ok` marker | ✅ implemented (this PR) |
-| **L3 — unattended backstop** | resource lifetime + $ (presence-independent) | Anything that gets past L1/L2 with no human present: TTL reaper caps any orphan to ≤N h (A5); the budget alarm/actions (G1/A9) catch by *bill* whatever the reaper's scope doesn't know about (untagged, non-EKS, new service). | `keep`/`ttl-exempt` tag; budget approval mode | ✅ reaper (this PR); budget live |
+| **L3 — unattended backstop** | resource lifetime + $ (presence-independent) | Anything that gets past L1/L2 with no human present — with the honest caveat that the reaper caps an orphan's lifetime **only when `REAPER_AUTODESTROY=true`**: it then dispatches an UNGATED but tag-guarded destroy (the `reaper-destroy` environment, no required reviewers — the unattended case is the point; only clusters without `keep`/`ttl-exempt` tags, re-verified in-job; ADR-11). Without that flag it is **alert-only** (issue + warning, nothing torn down). The budget alarm/actions (G1/A9) catch by *bill* whatever the reaper's scope doesn't know about (untagged, non-EKS, new service). | `keep`/`ttl-exempt` tag; budget approval mode | ✅ reaper (this PR); budget live |
 
 L2 covers "human present, walking away"; L3 covers "human gone, nothing reconciled" —
 together they seal both the **attended** and **unattended** paths. L3 is the only
@@ -413,9 +413,11 @@ false-trap / false-release / override-reflex without becoming presence-independe
 `.github/workflows/ttl-reaper.yml` — a scheduled workflow (every 4h + `workflow_dispatch`)
 that assumes the apply OIDC role, scans EKS clusters in the enabled regions, and flags any
 older than `TTL_HOURS` (default 8) that is not tagged `ttl-exempt`/`keep`. Presence- and
-repo-independent: it bounds a leaked cluster's life to ≤ TTL+4h even if every session is
-gone. Default is **alert-only** (opens a GitHub issue + `::warning::`); set repo variable
-`REAPER_AUTODESTROY=true` (after A4 is live-verified) to auto-dispatch `destroy-region`.
+repo-independent: **with `REAPER_AUTODESTROY=true`** it bounds a leaked cluster's life to
+≤ TTL+4h even if every session is gone, by dispatching an ungated but tag-guarded destroy
+(the `reaper-destroy` environment; tags re-verified in-job — ADR-11). Default is
+**alert-only** (opens a GitHub issue + `::warning::` — nothing is torn down); set the
+repo variable `REAPER_AUTODESTROY=true` (after A4 is live-verified) to arm auto-destroy.
 
 ### 7d. Validation matrix — what is proven, to what depth
 
