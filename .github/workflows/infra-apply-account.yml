@@ -255,8 +255,11 @@ jobs:
         run: |
           echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
           echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
+          # NEVER mask the destroy exit ("|| echo" made a failed reap report a
+          # green step while the cluster kept billing — caught live 2026-06-10,
+          # staging rehearsal round 2). A failed reap must be LOUD.
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
-            || echo "::error::self-reap destroy ALSO failed — ttl-reaper + budget are the backstops."
+            || { echo "::error::self-reap destroy ALSO failed — resources may STILL BE BILLING. Dispatch infra-ops destroy-region (account ${{ inputs.account_id }}, ${{ matrix.region }}) NOW; ttl-reaper + budget are only the backstops."; exit 1; }
       - name: partial stack kept (ALLOW_PARTIAL_APPLY)
         if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY == 'true' }}
         run: |
