@@ -1,15 +1,28 @@
 name: infra-ops
 
-# Workflow-dispatch only — operator-triggered one-shots and DR drill.
+# Workflow-dispatch only — operator-triggered one-shots, DR drill, and the
+# ttl-reaper's auto-destroy target.
 #
 # Available operations:
 #   - bootstrap         : create S3 bucket + DynamoDB lock table (one-time)
-#   - destroy-region    : destroy a single region's regional stack (DR drill)
+#   - destroy-region    : destroy a single region's regional stack (DR drill / reaper)
 #   - destroy-platform  : destroy platform env (post-submission cleanup)
+#
+# MULTI-ACCOUNT (W3 / accounts-dimension ADR): the destroy paths derive the
+# state bucket (aegis-platform-aws-tfstate-<account_id>) and the destroy role
+# (arn:aws:iam::<account_id>:role/gh-tf-destroy-platform) from the account_id
+# input — no per-account TFSTATE_BUCKET / AWS_DESTROY_ROLE_ARN secret.
+# Two destroy paths:
+#   - human dispatch (reaper=false, default): environment `destroy` — required
+#     reviewer, unchanged (A7, incident 2026-06-06).
+#   - reaper dispatch (reaper=true): environment `reaper-destroy` — NO
+#     reviewers (unattended), but an in-job guard re-verifies the target
+#     cluster exists, carries no keep/ttl-exempt tag, and is past ttl_hours
+#     BEFORE terraform runs. Ungated but safe-by-construction.
 #
 # Bootstrap uses LOCAL state, applied in CI's ephemeral runner — operator
 # uploads the resulting state to a one-off artifact + manually configures
-# the GH Actions secrets TFSTATE_BUCKET / TFSTATE_REGION afterwards.
+# the GH Actions secret TFSTATE_REGION afterwards.
 # (For take-home, applying bootstrap from operator's laptop is also fine
 # and arguably safer — see backlog Step 6 + Open Questions.)
 
@@ -29,6 +42,21 @@ on:
         required: false
         type: string
         default: ""
+      account_id:
+        description: Target AWS account id (see accounts.json; default = prod for back-compat)
+        required: false
+        type: string
+        default: "506221082337"
+      reaper:
+        description: Reaper-dispatched run (ungated reaper-destroy environment + in-job reapability guard)
+        required: false
+        type: boolean
+        default: false
+      ttl_hours:
+        description: TTL threshold the reaper guard re-verifies (reaper path only)
+        required: false
+        type: string
+        default: "8"
 
 permissions:
   id-token: write
@@ -71,46 +99,103 @@ jobs:
           terraform init && terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
           terraform output -raw backend_hcl
           echo ""
-          echo "::warning::Capture the bucket_name + region above and set them as GH Actions secrets TFSTATE_BUCKET + TFSTATE_REGION."
+          echo "::warning::Set the region above as the GH Actions secret TFSTATE_REGION, then flip this account's bootstrap_complete=true in accounts.json. The bucket name is derived from the account id (aegis-platform-aws-tfstate-<account_id>) — no TFSTATE_BUCKET secret needed (accounts-dimension ADR)."
 
-  # Teardown — HUMAN-GATED (A7, incident 2026-06-06). The `destroy` environment
-  # has a required reviewer (the operator); this job pauses for approval before
-  # assuming the destroy role, so ANY branch can dispatch a teardown but prod is
-  # never deleted without an explicit human approval. Uses gh-tf-destroy-platform
-  # (OIDC trust = environment:destroy), NOT the main-only apply role — that is
-  # what unblocks feature-branch teardowns (the incident's failed attempt #2).
+  # Teardown — HUMAN-GATED by default (A7, incident 2026-06-06). The `destroy`
+  # environment has a required reviewer (the operator); this job pauses for
+  # approval before assuming the destroy role, so ANY branch can dispatch a
+  # teardown but prod is never deleted without an explicit human approval.
+  # Uses the per-account gh-tf-destroy-platform role (OIDC trust =
+  # environment:destroy + environment:reaper-destroy), NOT the main-only apply
+  # role — that is what unblocks feature-branch teardowns (the incident's
+  # failed attempt #2). reaper=true swaps in the UNGATED `reaper-destroy`
+  # environment; the in-job guard below makes that path safe-by-construction.
   destroy:
     if: ${{ inputs.operation == 'destroy-region' || inputs.operation == 'destroy-platform' }}
     runs-on: ubuntu-latest
-    environment: destroy
+    environment: ${{ inputs.reaper && 'reaper-destroy' || 'destroy' }}
     # Ceiling on a hung terraform destroy (the kyverno-deadlock shape). The
     # `destroy` environment's approval wait does NOT count toward this — the
     # job has not started while it waits for the required reviewer.
     timeout-minutes: 90
+    # Same group keys as the W3 apply jobs (infra-apply-account.yml): a destroy
+    # queues behind, never races, an in-flight apply of the same account+region.
+    concurrency:
+      group: ${{ inputs.operation == 'destroy-region' && format('infra-{0}-{1}', inputs.account_id, inputs.region) || format('infra-{0}-platform', inputs.account_id) }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
+      - name: reaper may only destroy-region
+        if: ${{ inputs.reaper && inputs.operation != 'destroy-region' }}
+        run: |
+          echo "::error::reaper=true is only valid with operation=destroy-region (the guard verifies a single regional cluster)"
+          exit 1
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_DESTROY_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-destroy-platform
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: destroy-region
+      - name: destroy-region init
         if: ${{ inputs.operation == 'destroy-region' }}
-        env:
-          TF_VAR_region:         ${{ inputs.region }}
-          TF_VAR_tfstate_bucket: ${{ secrets.TFSTATE_BUCKET }}
-          TF_VAR_tfstate_region: ${{ secrets.TFSTATE_REGION }}
-          TF_VAR_github_token:   ${{ secrets.GH_DEPLOY_KEY_PAT }}
-          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+        working-directory: terraform/envs/regional
         run: |
           if [[ -z "${{ inputs.region }}" ]]; then
             echo "::error::region input is required for destroy-region"
             exit 1
           fi
+          terraform init -reconfigure \
+            -backend-config="bucket=aegis-platform-aws-tfstate-${{ inputs.account_id }}" \
+            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
+            -backend-config="key=regional/${{ inputs.region }}/terraform.tfstate" \
+            -backend-config="encrypt=true"
+
+      - name: reaper guard (re-verify reapability before terraform)
+        if: ${{ inputs.operation == 'destroy-region' && inputs.reaper }}
+        working-directory: terraform/envs/regional
+        run: |
+          set -euo pipefail
+          # The reaper path is UNGATED (no reviewer), so it must be
+          # safe-by-construction: re-verify, against live AWS, that the state's
+          # cluster (a) exists, (b) carries NO keep/ttl-exempt tag, (c) is past
+          # ttl_hours. Abort otherwise — the scan-time decision may be stale.
+          r='${{ inputs.region }}'
+          ttl='${{ inputs.ttl_hours }}'
+          cluster="$(terraform output -raw cluster_name 2>/dev/null || true)"
+          if [ -z "$cluster" ]; then
+            echo "::error::reaper guard: no cluster_name output in the regional state for ${r} — nothing verifiable to reap. Aborting; a human can dispatch destroy-region without reaper=true."
+            exit 1
+          fi
+          created="$(aws eks describe-cluster --name "$cluster" --region "$r" --query 'cluster.createdAt' --output text 2>/dev/null || true)"
+          if [ -z "$created" ] || [ "$created" = "None" ]; then
+            echo "::error::reaper guard: cluster '${cluster}' not found in ${r} (state/reality drift) — aborting."
+            exit 1
+          fi
+          ex="$(aws eks describe-cluster --name "$cluster" --region "$r" --query 'cluster.tags."ttl-exempt" || cluster.tags.keep' --output text 2>/dev/null || echo None)"
+          if [ "$ex" = "true" ]; then
+            echo "::error::reaper guard: cluster '${cluster}' carries keep=true/ttl-exempt=true — aborting."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          e=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
+          if [ "$e" -le 0 ] || [ $(( now - e )) -lt $(( ttl * 3600 )) ]; then
+            echo "::error::reaper guard: cluster '${cluster}' is not past TTL (${ttl}h) — aborting."
+            exit 1
+          fi
+          echo "reaper guard PASSED: '${cluster}' in ${r} exists, is not exempt, age $(( (now - e) / 3600 ))h >= ${ttl}h."
+
+      - name: destroy-region
+        if: ${{ inputs.operation == 'destroy-region' }}
+        env:
+          TF_VAR_region:         ${{ inputs.region }}
+          TF_VAR_tfstate_bucket: aegis-platform-aws-tfstate-${{ inputs.account_id }}
+          TF_VAR_tfstate_region: ${{ secrets.TFSTATE_REGION }}
+          TF_VAR_github_token:   ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+        run: |
           r='${{ inputs.region }}'
           # Per-region scalars + platform_region — all from the single
           # SoT, regions.auto.tfvars.json.
@@ -118,15 +203,14 @@ jobs:
           export TF_VAR_platform_region
           eval "$(jq -r --arg r "$r" '.regions[$r] | "TF_VAR_vpc_cidr=\(.cidr); TF_VAR_node_instance=\(.node_instance); TF_VAR_node_min=\(.node_min); TF_VAR_node_max=\(.node_max)"' regions.auto.tfvars.json)"
           export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
+          # Workload overlay selector for this account, from HEAD accounts.json
+          # (accounts-dimension ADR) — mirrors the apply path's TF_VAR_environment.
+          TF_VAR_environment="$(jq -r --arg id '${{ inputs.account_id }}' '[.accounts[] | select(.account_id == $id) | .environment] | first // "prod"' accounts.json)"
+          export TF_VAR_environment
           # registries.auto.tfvars.json is gitignored — materialise it from the
           # REGISTRIES_JSON repo variable (same as infra-apply / infra-plan).
           printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
           cd terraform/envs/regional
-          terraform init -reconfigure \
-            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
-            -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
-            -backend-config="key=regional/$r/terraform.tfstate" \
-            -backend-config="encrypt=true"
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"
 
       - name: destroy-platform
@@ -147,7 +231,7 @@ jobs:
         run: |
           cd terraform/envs/platform
           terraform init -reconfigure \
-            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="bucket=aegis-platform-aws-tfstate-${{ inputs.account_id }}" \
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="encrypt=true"
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
@@ -162,6 +246,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
         run: |
           gh issue create --repo "${{ github.repository }}" \
-            --title "infra-ops teardown FAILED (${{ inputs.operation }} ${{ inputs.region }}) — resources may still be billing" \
+            --title "infra-ops teardown FAILED (${{ inputs.operation }} ${{ inputs.region }} account ${{ inputs.account_id }}) — resources may still be billing" \
             --body "The ${{ inputs.operation }} run failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Resources from this stack may still exist and be billing. Check the run log, re-run the teardown, and verify with the ttl-reaper. (A6 escalation; budget alarm is the \$ backstop.)" \
             || echo "::warning::issue create failed (non-fatal); check the run log manually"

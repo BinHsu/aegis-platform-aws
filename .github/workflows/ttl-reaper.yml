@@ -5,10 +5,18 @@ name: ttl-reaper
 # TTL hours even if every agent/session is gone and no other CI ever re-runs.
 # It is what would have caught the incident regardless of who left the cluster.
 #
+# MULTI-ACCOUNT (W3 / accounts-dimension ADR): HEAD accounts.json is the single
+# source of topology. A matrix fans out over every bootstrapped account x its
+# enabled_regions; the per-account scan role is derived from the account id
+# (arn:aws:iam::<account_id>:role/gh-tf-apply-platform — created at bootstrap,
+# so accounts with bootstrap_complete=false are skipped). This is what makes
+# W3's ephemeral staging clusters visible to the reaper.
+#
 # Default is ALERT-ONLY (REAPER_AUTODESTROY != 'true'): it reports + warns but
 # does not destroy, because auto-destroy currently hits the kyverno teardown
 # hang (postmortem A4). Once A4 lands, set the repo variable
-# REAPER_AUTODESTROY=true to let it dispatch infra-ops destroy-region.
+# REAPER_AUTODESTROY=true to let it dispatch infra-ops destroy-region
+# (reaper=true -> the ungated reaper-destroy environment, guarded in-job).
 #
 # Override: tag a cluster `ttl-exempt=true` (or `keep=true`) and the reaper
 # skips it — the explicit human opt-out for a deliberately long-lived cluster.
@@ -39,28 +47,61 @@ permissions:
   issues: write # to open an alert issue
 
 env:
-  AWS_REGION: eu-central-1
   TTL_HOURS: ${{ inputs.ttl_hours || '8' }}
 
 jobs:
+  matrix:
+    name: account-region matrix (from HEAD accounts.json)
+    runs-on: ubuntu-latest
+    # Matrix derivation only — seconds. (No repo-var BOOTSTRAP_COMPLETE gate:
+    # per-account bootstrap_complete in accounts.json is the gate now — the jq
+    # below skips unbootstrapped accounts, per the accounts-dimension ADR.)
+    timeout-minutes: 10
+    outputs:
+      include: ${{ steps.m.outputs.include }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: m
+        run: |
+          # accounts.json = single source of topology (accounts-dimension ADR).
+          # Only bootstrapped accounts are scannable: the gh-tf-apply-platform
+          # scan role is created at bootstrap.
+          include="$(jq -c '[.accounts | to_entries[] | select(.value.bootstrap_complete == true) | . as $e | $e.value.enabled_regions[] | {env: $e.key, account_id: $e.value.account_id, region: .}]' accounts.json)"
+          echo "include=${include}" >> "$GITHUB_OUTPUT"
+          echo "scan targets: ${include}"
+          skipped="$(jq -c '[.accounts | to_entries[] | select(.value.bootstrap_complete != true) | .key]' accounts.json)"
+          if [ "${skipped}" != "[]" ]; then
+            echo "::notice::accounts skipped (bootstrap_complete=false in accounts.json): ${skipped}"
+          fi
+
   reap:
-    name: ttl-reaper
+    name: "ttl-reaper (${{ matrix.env }} ${{ matrix.region }})"
+    needs: matrix
+    if: ${{ needs.matrix.outputs.include != '[]' }}
     runs-on: ubuntu-latest
     # Scan + dispatch only (no terraform run in this job) — minutes, not
     # hours; a hung AWS API poll must not hold a runner for the 6h default.
     timeout-minutes: 30
-    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.include) }}
     steps:
       - uses: actions/checkout@v6
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_INFRA_APPLY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          # Per-account scan role, derived from the account id (same convention
+          # as the W3 apply path — no per-account secret).
+          role-to-assume: arn:aws:iam::${{ matrix.account_id }}:role/gh-tf-apply-platform
+          aws-region: ${{ matrix.region }}
 
       - name: scan for over-TTL billable resources
         id: scan
         # A11: scans EKS (auto-destroy candidates, ttl-exempt honoured) + NAT /
         # RDS / load balancers (alert-only). Emits found / eks_list / other_list.
+        # SCAN_REGIONS pins the scan to this matrix leg's region.
+        env:
+          SCAN_REGIONS: ${{ matrix.region }}
         run: ./scripts/ttl-reap-scan.sh regions.auto.tfvars.json
 
       - name: alert (open issue)
@@ -70,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Over-TTL billable resources (>${TTL_HOURS}h) detected by ttl-reaper:"
+            echo "Over-TTL billable resources (>${TTL_HOURS}h) detected by ttl-reaper in account ${{ matrix.account_id }} (${{ matrix.env }}), region ${{ matrix.region }}:"
             echo ""
             echo "EKS clusters (auto-destroy candidates):"
             printf '%b\n' "${{ steps.scan.outputs.eks_list }}"
@@ -80,7 +121,7 @@ jobs:
             echo "EKS auto-destroy is ${{ (github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true') && 'ENABLED' || 'OFF (alert-only)' }}. Tag a resource ttl-exempt=true (or keep=true) to skip it. Non-EKS resources are always alert-only — tear them down manually."
           } > /tmp/body.md
           gh issue create --repo "${{ github.repository }}" \
-            --title "ttl-reaper: over-TTL billable resource(s) detected" \
+            --title "ttl-reaper: over-TTL billable resource(s) in ${{ matrix.env }}/${{ matrix.region }}" \
             --body-file /tmp/body.md || echo "::warning::issue create failed (non-fatal)"
 
       - name: dispatch destroy (EKS only; if enabled and not dry-run)
@@ -92,9 +133,14 @@ jobs:
           # Auto-destroy is EKS-only (A11): NAT/RDS/ELB are alert-only, no safe
           # generic teardown. Depends on the kyverno fix (A4); until verified a
           # dispatched destroy may still hang on helm_release.kyverno.
-          printf '%b' "${{ steps.scan.outputs.eks_list }}" | sed 's:/.*::' | sort -u | while read -r r; do
-            [ -z "$r" ] && continue
-            echo "dispatching destroy-region for $r"
-            gh workflow run infra-ops.yml --ref main \
-              -f operation=destroy-region -f region="$r" || echo "::warning::dispatch failed for $r"
-          done
+          # reaper=true routes infra-ops to the ungated reaper-destroy
+          # environment; its in-job guard re-verifies exists / not-exempt /
+          # over-TTL before terraform runs (accounts-dimension ADR).
+          echo "dispatching destroy-region for ${{ matrix.region }} (account ${{ matrix.account_id }})"
+          gh workflow run infra-ops.yml --ref main \
+            -f operation=destroy-region \
+            -f region='${{ matrix.region }}' \
+            -f account_id='${{ matrix.account_id }}' \
+            -f reaper=true \
+            -f ttl_hours="${TTL_HOURS}" \
+            || echo "::warning::dispatch failed for ${{ matrix.region }} (account ${{ matrix.account_id }})"
