@@ -20,9 +20,9 @@ on:
       gate_blocks:    { type: boolean, required: false, default: false }  # true=prod (gate HARD-FAILS the run before any apply), false=staging (warn-only)
       environment:    { type: string,  required: false, default: 'prod' }   # workload overlay selector (staging|prod) → TF_VAR_environment; from HEAD accounts.json
       bootstrap_complete: { type: boolean, required: false, default: false } # per-account flag from HEAD accounts.json; false → skip all applies (fail-safe default)
-      operator_principal_arn: { type: string, required: true }
+      operator_principal_arn: { type: string, required: true }    # per-account SSO PlatformAdmin ARN (EKS operator access entry) — from HEAD accounts.json; a single repo secret cannot serve two accounts (account id + SSO name hash both differ)
       deployment_account_id: { type: string, required: false, default: '' }   # non-empty on exactly ONE account (single-owner gate, deployment-ecr.tf): that apply owns the shared-registry resources
-      cluster_pull_account_ids: { type: string, required: false, default: '[]' } # JSON array of cluster account ids granted read-only pull on the shared registry  # per-account SSO PlatformAdmin ARN (EKS operator access entry) — from HEAD accounts.json; a single repo secret cannot serve two accounts (account id + SSO name hash both differ)
+      cluster_pull_account_ids: { type: string, required: false, default: '[]' } # JSON array of cluster account ids granted read-only pull on the shared registry
 
 permissions:
   id-token: write
