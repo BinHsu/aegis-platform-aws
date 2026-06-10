@@ -234,6 +234,10 @@ resource "helm_release" "argocd_apps" {
                     # D3 region injection — workload INTENT, region-aware
                     # workloads (greeter) read it via replacements.
                     "aegis.binhsu.org/region" = var.region
+                    # Elements come exclusively from var.workload_registries
+                    # (the List generator above), so ecrAccountId/ecrRegion are
+                    # never absent — a repo with no registry entry is never
+                    # enumerated, it cannot reach this template with empties.
                     # D4 account-ID hide — full ECR repository URL, NO
                     # tag/digest. The deploy repo replaces the registry half
                     # of its image ref (replacement delimiter `@`, index 0)

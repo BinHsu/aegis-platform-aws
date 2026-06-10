@@ -44,7 +44,7 @@ never writes it.**
 - The platform injects the registry as an **annotation**, on the same channel
   as the existing region injection (`aegis.binhsu.org/region`):
 
-  ```
+  ```text
   aegis.binhsu.org/ecr-repository = <acct>.dkr.ecr.<region>.amazonaws.com/<repo>
   ```
 

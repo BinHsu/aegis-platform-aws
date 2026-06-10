@@ -415,7 +415,9 @@ that assumes the apply OIDC role, scans EKS clusters in the enabled regions, and
 older than `TTL_HOURS` (default 8) that is not tagged `ttl-exempt`/`keep`. Presence- and
 repo-independent: **with `REAPER_AUTODESTROY=true`** it bounds a leaked cluster's life to
 ≤ TTL+4h even if every session is gone, by dispatching an ungated but tag-guarded destroy
-(the `reaper-destroy` environment; tags re-verified in-job — ADR-11). Default is
+(the `reaper-destroy` environment; tags re-verified in-job — ADR-11; the reaper→infra-ops
+routing that selects that environment ships with the W3 multi-account change, PR #31 —
+until that merges the dispatch still lands on the human-gated `destroy` environment). Default is
 **alert-only** (opens a GitHub issue + `::warning::` — nothing is torn down); set the
 repo variable `REAPER_AUTODESTROY=true` (after A4 is live-verified) to arm auto-destroy.
 
