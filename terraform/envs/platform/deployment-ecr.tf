@@ -46,14 +46,25 @@ locals {
   # deployment account. Named in the gh-tf-* family on purpose: it falls under
   # the org-root deny-iam-privilege-escalation SCP's existing gh-tf-* carve-out,
   # so NO SCP change is needed (ADR-10 "Access to the Deployment account").
-  deployment_tf_role_arn = "arn:aws:iam::${var.deployment_account_id}:role/gh-tf-apply-deployment"
+  #
+  # NULL when the gate is off. The AWS provider EAGERLY configures every
+  # declared provider block at plan time — even when all of its resources are
+  # count=0 — and it attempts the AssumeRole then (empirically: infra-plan run
+  # 27284078248 failed on the empty-id interpolation `arn:aws:iam:::role/...`).
+  # A null role_arn makes the provider IGNORE the assume_role block entirely
+  # (restored behavior in hashicorp/aws >= 5.68.0, issue #39296; this env locks
+  # 5.100.0), so the disabled path configures as the CI's base credentials and
+  # is never exercised.
+  deployment_tf_role_arn = var.deployment_account_id == "" ? null : "arn:aws:iam::${var.deployment_account_id}:role/gh-tf-apply-deployment"
 }
 
 # Cross-account provider — assumes the Terraform/ECR role in aegis-deployment.
-# Configured unconditionally (a provider block cannot be count-gated), but it is
-# only EXERCISED by resources, and every resource below is count-gated on
-# local.deployment_enabled. With deployment_account_id="" the assume-role ARN is
-# malformed-but-unused, so plan/apply of the rest of the env is unaffected.
+# Configured unconditionally (a provider block cannot be count-gated). With
+# deployment_account_id="" the role_arn local above is NULL, which makes the
+# provider skip the assume_role entirely (see the local's comment) — plan/apply
+# of the rest of the env is unaffected. Every resource below is additionally
+# count-gated on local.deployment_enabled, so the disabled provider is never
+# exercised.
 provider "aws" {
   alias  = "deployment"
   region = var.platform_region
