@@ -20,9 +20,16 @@ resource "aws_ce_anomaly_monitor" "services" {
 }
 
 resource "aws_ce_anomaly_subscription" "alerts" {
-  provider         = aws.us_east_1
-  name             = "aegis-platform-aws-anomaly-alerts"
-  frequency        = "IMMEDIATE" # per-anomaly email as soon as detected
+  provider = aws.us_east_1
+  name     = "aegis-platform-aws-anomaly-alerts"
+  # DAILY, not IMMEDIATE: the CE API rejects IMMEDIATE with an EMAIL
+  # subscriber ("Immediate frequencies only support SNSTopic subscriptions")
+  # — caught live on the 2026-06-10 staging rehearsal; the A2 code had only
+  # ever been statically validated. IMMEDIATE would need an SNS topic +
+  # subscription chain for a marginal latency win on what is already a
+  # daily-granularity ML detector; the fast catch-by-bill path is the budget
+  # alarm (A9/G1), not this subscription.
+  frequency        = "DAILY"
   monitor_arn_list = [aws_ce_anomaly_monitor.services.arn]
 
   subscriber {
@@ -30,9 +37,9 @@ resource "aws_ce_anomaly_subscription" "alerts" {
     address = var.budget_alert_email
   }
 
-  # IMMEDIATE frequency must gate on the per-anomaly absolute dollar impact.
-  # Alert when any single anomaly's total impact is >= $5 (catches an EKS
-  # extended-support surge long before the monthly budget would trip).
+  # Gate on the per-anomaly absolute dollar impact. Alert when any single
+  # anomaly's total impact is >= $5 (catches an EKS extended-support surge
+  # long before the monthly budget would trip).
   threshold_expression {
     dimension {
       key           = "ANOMALY_TOTAL_IMPACT_ABSOLUTE"
