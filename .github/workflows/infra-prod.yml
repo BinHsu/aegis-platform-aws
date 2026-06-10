@@ -23,11 +23,13 @@ jobs:
     name: detect-prod-pin-change
     runs-on: ubuntu-latest
     outputs:
-      pin_changed:    ${{ steps.d.outputs.pin_changed }}
-      account_id:     ${{ steps.d.outputs.account_id }}
-      ref:            ${{ steps.d.outputs.ref }}
-      regions_json:   ${{ steps.d.outputs.regions_json }}
-      overrides_json: ${{ steps.d.outputs.overrides_json }}
+      pin_changed:        ${{ steps.d.outputs.pin_changed }}
+      account_id:         ${{ steps.d.outputs.account_id }}
+      ref:                ${{ steps.d.outputs.ref }}
+      regions_json:       ${{ steps.d.outputs.regions_json }}
+      overrides_json:     ${{ steps.d.outputs.overrides_json }}
+      environment:        ${{ steps.d.outputs.environment }}
+      bootstrap_complete: ${{ steps.d.outputs.bootstrap_complete }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -60,6 +62,8 @@ jobs:
             echo "ref=$(echo "$a" | jq -r '.pin')"
             echo "regions_json=$(echo "$a" | jq -c '.enabled_regions')"
             echo "overrides_json=$(echo "$a" | jq -c '.overrides // {}')"
+            echo "environment=$(echo "$a" | jq -r '.environment // "prod"')"
+            echo "bootstrap_complete=$(echo "$a" | jq -r '.bootstrap_complete // false')"
           } >> "$GITHUB_OUTPUT"
 
   apply:
@@ -67,9 +71,11 @@ jobs:
     if: ${{ needs.detect.outputs.pin_changed == 'true' }}
     uses: ./.github/workflows/infra-apply-account.yml
     with:
-      account_id:     ${{ needs.detect.outputs.account_id }}
-      ref:            ${{ needs.detect.outputs.ref }}
-      regions_json:   ${{ needs.detect.outputs.regions_json }}
-      overrides_json: ${{ needs.detect.outputs.overrides_json }}
-      gate_blocks:    true
+      account_id:         ${{ needs.detect.outputs.account_id }}
+      ref:                ${{ needs.detect.outputs.ref }}
+      regions_json:       ${{ needs.detect.outputs.regions_json }}
+      overrides_json:     ${{ needs.detect.outputs.overrides_json }}
+      environment:        ${{ needs.detect.outputs.environment }}
+      bootstrap_complete: ${{ needs.detect.outputs.bootstrap_complete == 'true' }}
+      gate_blocks:        true
     secrets: inherit

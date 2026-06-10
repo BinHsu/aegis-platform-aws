@@ -18,6 +18,8 @@ on:
       regions_json:   { type: string,  required: true }    # JSON array, e.g. ["eu-central-1"]
       overrides_json: { type: string,  required: false, default: '{}' }  # sizing override object
       gate_blocks:    { type: boolean, required: false, default: false }  # true=prod (gate HARD-FAILS the run before any apply), false=staging (warn-only)
+      environment:    { type: string,  required: false, default: 'prod' }   # workload overlay selector (staging|prod) → TF_VAR_environment; from HEAD accounts.json
+      bootstrap_complete: { type: boolean, required: false, default: false } # per-account flag from HEAD accounts.json; false → skip all applies (fail-safe default)
 
 permissions:
   id-token: write
@@ -34,7 +36,11 @@ jobs:
     outputs:
       enabled_regions: ${{ inputs.regions_json }}
     steps:
-      - run: echo "regions=${{ inputs.regions_json }} account=${{ inputs.account_id }} ref=${{ inputs.ref }}"
+      - run: |
+          echo "regions=${{ inputs.regions_json }} account=${{ inputs.account_id }} ref=${{ inputs.ref }} environment=${{ inputs.environment }}"
+          if [ "${{ inputs.bootstrap_complete }}" != "true" ]; then
+            echo "::warning::bootstrap_complete=false for account ${{ inputs.account_id }} in accounts.json — SKIPPING all apply jobs (state bucket / CI roles not bootstrapped yet). Bootstrap the account, then flip bootstrap_complete=true."
+          fi
 
   # EKS version cost gate (A12 single-source). Plans the platform region against the
   # in-module `check` block and reads its status from `terraform show -json`. gate=true
@@ -45,7 +51,10 @@ jobs:
     name: eks-version-cost-gate
     needs: setup
     runs-on: ubuntu-latest
-    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
+    # Per-account bootstrap flag from HEAD accounts.json (passed by the caller),
+    # NOT the repo-level BOOTSTRAP_COMPLETE var (that one stays only on the
+    # legacy break-glass infra-apply.yml).
+    if: ${{ inputs.bootstrap_complete }}
     outputs:
       gate: ${{ steps.check.outputs.gate }}
     steps:
@@ -62,6 +71,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - id: check
         env:
+          TF_VAR_environment:            ${{ inputs.environment }}  # workload overlay selector (accounts-dimension ADR)
           TF_VAR_tfstate_bucket:         aegis-platform-aws-tfstate-${{ inputs.account_id }}
           TF_VAR_tfstate_region:         ${{ secrets.TFSTATE_REGION }}
           TF_VAR_github_token:           ${{ secrets.GH_DEPLOY_KEY_PAT }}
@@ -109,7 +119,7 @@ jobs:
     name: apply-platform
     needs: version-gate
     runs-on: ubuntu-latest
-    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
+    if: ${{ inputs.bootstrap_complete }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -152,7 +162,7 @@ jobs:
     name: "apply-regional (${{ matrix.region }})"
     needs: [setup, apply-platform, version-gate]
     runs-on: ubuntu-latest
-    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' && needs.setup.outputs.enabled_regions != '[]' }}
+    if: ${{ inputs.bootstrap_complete && needs.setup.outputs.enabled_regions != '[]' }}
     # Prod (gate_blocks=true) ALWAYS runs in the required-reviewer `prod-apply-gated`
     # environment — merging a promotion PR never applies prod without a human approval.
     # (An aged-out EKS version never even reaches here: version-gate hard-fails first.)
@@ -192,6 +202,7 @@ jobs:
         run: echo "platform_region=$(jq -r '.platform_region' regions.auto.tfvars.json)" >> "$GITHUB_OUTPUT"
       - name: apply
         env:
+          TF_VAR_environment:     ${{ inputs.environment }}  # workload overlay selector (accounts-dimension ADR)
           TF_VAR_region:          ${{ matrix.region }}
           TF_VAR_vpc_cidr:        ${{ steps.scalars.outputs.cidr }}
           TF_VAR_node_instance:   ${{ steps.scalars.outputs.node_instance }}
