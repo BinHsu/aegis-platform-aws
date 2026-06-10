@@ -13,6 +13,17 @@ variable "vpc_cidr" {
   type        = string
 }
 
+variable "environment" {
+  description = "Environment name for this cluster (staging | prod). Selects the deploy-repo overlay ArgoCD syncs (k8s/overlays/<environment>). Default prod preserves the pre-multi-account behavior; the W3 account callers inject TF_VAR_environment from accounts.json."
+  type        = string
+  default     = "prod"
+
+  validation {
+    condition     = contains(["staging", "prod"], var.environment)
+    error_message = "environment must be one of: staging, prod."
+  }
+}
+
 variable "node_instance" {
   description = "EC2 instance type for the managed node group."
   type        = string

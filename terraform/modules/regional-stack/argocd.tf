@@ -82,15 +82,20 @@ resource "helm_release" "argocd" {
 
 # Per-workload params the SCM generator cannot know — all ACCOUNT-bound or
 # cluster-bound (the values a public deploy repo must not hardcode):
-#   - the ECR registry to inject (account-ID hide, D4);
+#   - the ECR repository URL to inject (account-ID hide, D4) — injected as the
+#     aegis.binhsu.org/ecr-repository ANNOTATION, never as kustomize.images
+#     (field ownership: kustomize.images belongs exclusively to the deploy
+#     repo's digest pin — ADR-12);
 #   - for workloads with IAM, the engine SA + the ARN of the ACK-provisioned
 #     role (built from the caller identity = the cluster/platform account, so
 #     no account ID lands in any public repo — it lives only in TF state + the
 #     in-cluster ApplicationSet);
 #   - for workloads with a TLS gateway, the ACM cert ARN to inject onto the
 #     Ingress (the cert ARN embeds an account ID — ⑥).
-# Region (workload INTENT, not account-bound) is deliberately NOT here — greeter
-# owns it via its own kustomize replacements off the injected region annotation.
+# Region (workload INTENT, not account-bound) and the registry annotation share
+# one consumption pattern: the platform injects an annotation the cluster
+# knows; the deploy repo's own kustomize replacements apply it to its
+# manifests (greeter owns where it lands).
 #
 # Every element carries every key (empty string when absent) so the
 # ApplicationSet template's `missingkey=error` stays safe while the
@@ -184,8 +189,12 @@ resource "helm_release" "argocd_apps" {
                       # registry the repo cannot know — platform owns base +
                       # policy, dev owns intent, per ADR-07. Authority split
                       # flagged for review.)
+                      # The overlay gate matches THIS cluster's environment:
+                      # a staging cluster enrols a repo only once the repo
+                      # ships a staging overlay (and vice versa) — same path
+                      # the template syncs below.
                       labelMatch = "aegis-workload"
-                      pathsExist = ["argocd/application.yaml", "k8s/overlays/prod"]
+                      pathsExist = ["argocd/application.yaml", "k8s/overlays/${var.environment}"]
                     }]
                   }
                 },
@@ -207,19 +216,29 @@ resource "helm_release" "argocd_apps" {
               source = {
                 repoURL        = "{{.url}}"
                 targetRevision = "{{.branch}}"
-                path           = "k8s/overlays/prod"
+                path           = "k8s/overlays/${var.environment}"
                 kustomize = {
-                  # D4 account-ID hide — registry injected here, so deploy
-                  # repos carry only the bare `name:<tag>` image ref (no
-                  # account ID). newName only; the tag stays in the base
-                  # manifests where workload CI rewrites it.
-                  images = ["{{trimSuffix \"-deploy\" .repository}}={{.ecrAccountId}}.dkr.ecr.{{.ecrRegion}}.amazonaws.com/{{trimSuffix \"-deploy\" .repository}}"]
-                  # D3 region injection — a single generic annotation the
-                  # cluster knows. A region-aware workload (greeter) reads it
-                  # via its own kustomize replacements; the platform does not
-                  # know any workload's internal deployment/container names.
+                  # NO kustomize.images here — that field belongs EXCLUSIVELY
+                  # to the deploy repo (its overlay pins the image by digest,
+                  # ADR-10). Empirically (kustomize v5.8.1): ArgoCD applies an
+                  # images override via `kustomize edit set image`, and a
+                  # newName-only entry REPLACES the overlay's digest-only
+                  # entry — digest deleted, image renders `:latest`,
+                  # ImagePullBackOff. See ADR-12.
+                  #
+                  # Both injections below are annotations — one generic
+                  # channel the cluster knows; the deploy repo's own kustomize
+                  # replacements consume them. The platform never learns any
+                  # workload's internal deployment/container names.
                   commonAnnotations = {
+                    # D3 region injection — workload INTENT, region-aware
+                    # workloads (greeter) read it via replacements.
                     "aegis.binhsu.org/region" = var.region
+                    # D4 account-ID hide — full ECR repository URL, NO
+                    # tag/digest. The deploy repo replaces the registry half
+                    # of its image ref (replacement delimiter `@`, index 0)
+                    # and keeps its own digest. ADR-12.
+                    "aegis.binhsu.org/ecr-repository" = "{{.ecrAccountId}}.dkr.ecr.{{.ecrRegion}}.amazonaws.com/{{trimSuffix \"-deploy\" .repository}}"
                   }
                 }
               }
@@ -238,7 +257,8 @@ resource "helm_release" "argocd_apps" {
           # string so a workload that declares neither — e.g. greeter — renders
           # nothing): the engine SA's role-arn annotation (pointing at the
           # ACK-provisioned role in this account) and the gateway Ingress's ACM
-          # cert-arn (⑥ account-ID hide). Region is NOT here — it is
+          # cert-arn (⑥ account-ID hide). Region and the ECR repository are NOT
+          # here — both ride the commonAnnotations channel above and are
           # workload-owned via the deploy repo's kustomize replacements.
           templatePatch = <<-EOT
             {{- if or .engineRoleArn .certArn }}

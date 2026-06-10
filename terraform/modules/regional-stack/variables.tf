@@ -8,6 +8,17 @@ variable "vpc_cidr" {
   type        = string
 }
 
+variable "environment" {
+  description = "Which deploy-repo overlay this cluster syncs: ArgoCD's ApplicationSet uses k8s/overlays/<environment> as both the discovery gate (pathsExist) and the sync path. Default prod (the original single-environment behavior); the W3 callers pass TF_VAR_environment from accounts.json."
+  type        = string
+  default     = "prod"
+
+  validation {
+    condition     = contains(["staging", "prod"], var.environment)
+    error_message = "environment must be one of: staging, prod."
+  }
+}
+
 variable "node_instance" {
   description = "EC2 instance type for the EKS managed node group."
   type        = string
