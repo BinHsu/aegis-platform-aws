@@ -14,8 +14,11 @@ on:
       - 'regions.auto.tfvars.json'
       - 'accounts.json'
 
+# Workflow-level stays read-only; id-token is granted only to the job that
+# calls the reusable workflow (the reusable's OIDC ceiling is the caller
+# job's permissions — it cannot elevate, so the grant must sit there, and
+# only there).
 permissions:
-  id-token: write
   contents: read
 
 # One staging run at a time (this caller targets exactly the staging account);
@@ -38,6 +41,8 @@ jobs:
       bootstrap_complete: ${{ steps.acc.outputs.bootstrap_complete }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - id: acc
         run: |
           a="$(jq -c '.accounts.staging' accounts.json)"
@@ -52,6 +57,9 @@ jobs:
 
   apply:
     needs: resolve
+    permissions:
+      id-token: write
+      contents: read
     uses: ./.github/workflows/infra-apply-account.yml
     with:
       account_id:         ${{ needs.resolve.outputs.account_id }}

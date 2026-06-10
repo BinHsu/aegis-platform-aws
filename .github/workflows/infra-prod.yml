@@ -14,8 +14,11 @@ on:
     paths:
       - 'accounts.json'
 
+# Workflow-level stays read-only; id-token is granted only to the job that
+# calls the reusable workflow (the reusable's OIDC ceiling is the caller
+# job's permissions — it cannot elevate, so the grant must sit there, and
+# only there).
 permissions:
-  id-token: write
   contents: read
 
 # One prod run at a time (this caller targets exactly the prod account);
@@ -41,6 +44,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0   # need the push-range base (github.event.before) to diff the prod pin
+          persist-credentials: false
       - id: d
         run: |
           new="$(jq -r '.accounts.prod.pin' accounts.json)"
@@ -76,6 +80,9 @@ jobs:
   apply:
     needs: detect
     if: ${{ needs.detect.outputs.pin_changed == 'true' }}
+    permissions:
+      id-token: write
+      contents: read
     uses: ./.github/workflows/infra-apply-account.yml
     with:
       account_id:         ${{ needs.detect.outputs.account_id }}
