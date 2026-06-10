@@ -64,6 +64,16 @@ resource "helm_release" "aegis_policies" {
     value = "aegis-*"
   }
 
+  # ADR-10 require-digest policy enforcement action. Default "Audit" — the
+  # policy logs tag-only images but admits them, so landing it cannot wedge a
+  # workload that has not yet migrated to digest pinning (ADR-10 phase 3). Flip
+  # to "Enforce" via var.require_digest_action AFTER the deploy repos pin
+  # @sha256 and an Audit run shows zero violations.
+  set {
+    name  = "requireDigestAction"
+    value = var.require_digest_action
+  }
+
   # A4: same destroy-hang mitigation as the kyverno release — deleting these
   # policy CRs on teardown can be blocked by kyverno's own webhook.
   wait    = false

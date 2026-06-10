@@ -28,6 +28,31 @@ variable "ecr_repository_name" {
   default     = "aegis-greeter"
 }
 
+# ---- ADR-10: shared release registry (dedicated aegis-deployment account) ---
+variable "deployment_account_id" {
+  description = "12-digit account id of the dedicated aegis-deployment account (Deployments OU) that holds the single shared ECR registry per ADR-10. The account was vended by the landing-zone account factory on 2026-06-10 (landing-zone ADR-018; the account display NAME is aegis-deploymentS, plural — cosmetic, all keys stay singular). Default \"\" keeps the entire shared-registry path (deployment-ecr.tf) count-gated OFF so the rest of the platform plans/applies on the current per-account topology. Set the real id only once the gh-tf-apply-deployment role + GitHub OIDC provider are seeded AND one owning apply context is chosen (W3 note in deployment-ecr.tf). In THIS repo the id is supplied from accounts.json (the org's account ids are deliberately public topology, ADR-11 — accounts.json already carries the cluster account ids); forks that treat their ids as private keep the default \"\" and supply via gitignored tfvars."
+  type        = string
+  default     = ""
+
+  validation {
+    # Either empty (gate off) OR a 12-digit AWS account id. Catches a typo'd id
+    # at plan time instead of an opaque assume-role failure mid-apply.
+    condition     = var.deployment_account_id == "" || can(regex("^[0-9]{12}$", var.deployment_account_id))
+    error_message = "deployment_account_id must be \"\" (shared registry off) or a 12-digit AWS account id."
+  }
+}
+
+variable "cluster_pull_account_ids" {
+  description = "Account ids of the EKS cluster accounts that pull the shared image read-only via the cross-account ECR repository policy (ADR-10). aegis-staging + aegis-prod. These are existing cluster account ids (not secret in the same way a registry root-of-trust is, but kept as a var so the public template carries no real ids). Default [] is inert when deployment_account_id is unset."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for a in var.cluster_pull_account_ids : can(regex("^[0-9]{12}$", a))])
+    error_message = "every cluster_pull_account_ids entry must be a 12-digit AWS account id."
+  }
+}
+
 # ---- observability toggle --------------------------------------------------
 variable "enable_observability" {
   description = "Whether to provision the Grafana Cloud observability stack (dashboards, alert rules, contact points, the grafana_data_source lookup, and the SSM parameters holding GC creds). Default FALSE so a fork WITHOUT a Grafana Cloud account deploys cleanly out of the box — every grafana_* resource + the gc_* SSM parameters are skipped (count = 0), and grafana_cloud_ssm_paths resolves to empty strings so regional/ skips the in-cluster Alloy collector too. Set true to opt in; then grafana_auth_token + grafana_cloud_api_token become REQUIRED (enforced by the precondition in observability-guard.tf — a clear plan-time error instead of an opaque grafana-provider 401 mid-apply). Keep in sync with the regional env's enable_observability."

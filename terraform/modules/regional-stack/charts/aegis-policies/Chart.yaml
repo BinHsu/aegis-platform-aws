@@ -1,9 +1,11 @@
 apiVersion: v2
 name: aegis-policies
 description: >-
-  Platform enforcement policies (ADR-07 four-pack #2 + #4): ACK Role
-  trust-subject↔namespace match, and a default-deny NetworkPolicy baseline
-  generated into every workload namespace. implemented, E2E PENDING bootstrap.
+  Platform enforcement policies: ACK Role trust-subject↔namespace match and a
+  default-deny NetworkPolicy baseline (ADR-07 four-pack #2 + #4), a
+  WorkloadIdentity-claim namespace restriction (ADR-09 5th layer), and a
+  require-image-digest admission policy (ADR-10, default Audit). implemented,
+  E2E PENDING bootstrap.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
