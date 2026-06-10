@@ -20,6 +20,7 @@ on:
       gate_blocks:    { type: boolean, required: false, default: false }  # true=prod (gate HARD-FAILS the run before any apply), false=staging (warn-only)
       environment:    { type: string,  required: false, default: 'prod' }   # workload overlay selector (staging|prod) → TF_VAR_environment; from HEAD accounts.json
       bootstrap_complete: { type: boolean, required: false, default: false } # per-account flag from HEAD accounts.json; false → skip all applies (fail-safe default)
+      operator_principal_arn: { type: string, required: true }  # per-account SSO PlatformAdmin ARN (EKS operator access entry) — from HEAD accounts.json; a single repo secret cannot serve two accounts (account id + SSO name hash both differ)
 
 permissions:
   id-token: write
@@ -76,7 +77,7 @@ jobs:
           TF_VAR_tfstate_bucket:         aegis-platform-aws-tfstate-${{ inputs.account_id }}
           TF_VAR_tfstate_region:         ${{ secrets.TFSTATE_REGION }}
           TF_VAR_github_token:           ${{ secrets.GH_DEPLOY_KEY_PAT }}
-          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+          TF_VAR_operator_principal_arn: ${{ inputs.operator_principal_arn }}
           OVERRIDES_JSON:                ${{ inputs.overrides_json }}
         run: |
           set -uo pipefail
@@ -193,7 +194,7 @@ jobs:
       TF_VAR_tfstate_bucket:  aegis-platform-aws-tfstate-${{ inputs.account_id }}
       TF_VAR_tfstate_region:  ${{ secrets.TFSTATE_REGION }}
       TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
-      TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+      TF_VAR_operator_principal_arn: ${{ inputs.operator_principal_arn }}
     steps:
       - uses: actions/checkout@v6
         with:

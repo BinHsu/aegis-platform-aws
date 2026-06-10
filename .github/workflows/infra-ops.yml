@@ -194,7 +194,6 @@ jobs:
           TF_VAR_tfstate_bucket: aegis-platform-aws-tfstate-${{ inputs.account_id }}
           TF_VAR_tfstate_region: ${{ secrets.TFSTATE_REGION }}
           TF_VAR_github_token:   ${{ secrets.GH_DEPLOY_KEY_PAT }}
-          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
         run: |
           r='${{ inputs.region }}'
           # Per-region scalars + platform_region — all from the single
@@ -207,6 +206,15 @@ jobs:
           # (accounts-dimension ADR) — mirrors the apply path's TF_VAR_environment.
           TF_VAR_environment="$(jq -r --arg id '${{ inputs.account_id }}' '[.accounts[] | select(.account_id == $id) | .environment] | first // "prod"' accounts.json)"
           export TF_VAR_environment
+          # Per-account SSO operator ARN (accounts-dimension ADR) — replaces the
+          # OPERATOR_PRINCIPAL_ARN repo secret: the SSO role's account id + name
+          # hash differ per account, so one secret cannot serve both.
+          TF_VAR_operator_principal_arn="$(jq -r --arg id '${{ inputs.account_id }}' '[.accounts[] | select(.account_id == $id) | .operator_principal_arn] | first // ""' accounts.json)"
+          if [ -z "$TF_VAR_operator_principal_arn" ]; then
+            echo "::error::no operator_principal_arn for account ${{ inputs.account_id }} in accounts.json"
+            exit 1
+          fi
+          export TF_VAR_operator_principal_arn
           # registries.auto.tfvars.json is gitignored — materialise it from the
           # REGISTRIES_JSON repo variable (same as infra-apply / infra-plan).
           printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
