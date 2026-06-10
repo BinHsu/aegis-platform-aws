@@ -18,6 +18,13 @@ permissions:
   id-token: write
   contents: read
 
+# One staging run at a time (this caller targets exactly the staging account);
+# queue, never cancel, a running apply. Per-account+region serialization is
+# enforced again at job level inside the reusable.
+concurrency:
+  group: infra-staging
+  cancel-in-progress: false
+
 jobs:
   resolve:
     name: resolve-staging (from HEAD accounts.json)

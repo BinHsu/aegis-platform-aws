@@ -120,6 +120,12 @@ jobs:
     needs: version-gate
     runs-on: ubuntu-latest
     if: ${{ inputs.bootstrap_complete }}
+    timeout-minutes: 90
+    # Serialize per account: a second run (or an infra-ops destroy-platform on the
+    # same account) queues instead of racing this apply on the same state.
+    concurrency:
+      group: infra-${{ inputs.account_id }}-platform
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
         with:
@@ -168,10 +174,24 @@ jobs:
     # (An aged-out EKS version never even reaches here: version-gate hard-fails first.)
     # Staging (gate_blocks=false): always the ungated `staging` environment, gate warn-only.
     environment: ${{ inputs.gate_blocks && 'prod-apply-gated' || 'staging' }}
+    timeout-minutes: 90
+    # Serialize per account+region: a second apply (or an infra-ops destroy-region
+    # on the same account+region) queues instead of racing this run on the same state.
+    concurrency:
+      group: infra-${{ inputs.account_id }}-${{ matrix.region }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
         region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
+    # Secret/static TF vars at job level so apply AND self-reap destroy see the
+    # same variable set; region-derived scalars land in GITHUB_ENV (step below).
+    env:
+      TF_VAR_environment:     ${{ inputs.environment }}  # workload overlay selector (accounts-dimension ADR)
+      TF_VAR_tfstate_bucket:  aegis-platform-aws-tfstate-${{ inputs.account_id }}
+      TF_VAR_tfstate_region:  ${{ secrets.TFSTATE_REGION }}
+      TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
+      TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -184,35 +204,21 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-apply-platform
           aws-region: ${{ matrix.region }}
-      - name: effective per-region scalars (base * overrides)
-        id: scalars
+      - name: effective per-region scalars (base * overrides) -> GITHUB_ENV
         env:
           OVERRIDES_JSON: ${{ inputs.overrides_json }}
         run: |
           r='${{ matrix.region }}'
           eff="$(jq -c --arg r "$r" --argjson ov "$OVERRIDES_JSON" '.regions[$r] * $ov' regions.auto.tfvars.json)"
           {
-            echo "cidr=$(echo "$eff" | jq -r '.cidr')"
-            echo "node_instance=$(echo "$eff" | jq -r '.node_instance')"
-            echo "node_min=$(echo "$eff" | jq -r '.node_min')"
-            echo "node_max=$(echo "$eff" | jq -r '.node_max')"
-          } >> "$GITHUB_OUTPUT"
-      - name: platform_region (single SoT)
-        id: pr
-        run: echo "platform_region=$(jq -r '.platform_region' regions.auto.tfvars.json)" >> "$GITHUB_OUTPUT"
-      - name: apply
-        env:
-          TF_VAR_environment:     ${{ inputs.environment }}  # workload overlay selector (accounts-dimension ADR)
-          TF_VAR_region:          ${{ matrix.region }}
-          TF_VAR_vpc_cidr:        ${{ steps.scalars.outputs.cidr }}
-          TF_VAR_node_instance:   ${{ steps.scalars.outputs.node_instance }}
-          TF_VAR_node_min:        ${{ steps.scalars.outputs.node_min }}
-          TF_VAR_node_max:        ${{ steps.scalars.outputs.node_max }}
-          TF_VAR_platform_region: ${{ steps.pr.outputs.platform_region }}
-          TF_VAR_tfstate_bucket:  aegis-platform-aws-tfstate-${{ inputs.account_id }}
-          TF_VAR_tfstate_region:  ${{ secrets.TFSTATE_REGION }}
-          TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
-          TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+            echo "TF_VAR_region=$r"
+            echo "TF_VAR_vpc_cidr=$(echo "$eff" | jq -r '.cidr')"
+            echo "TF_VAR_node_instance=$(echo "$eff" | jq -r '.node_instance')"
+            echo "TF_VAR_node_min=$(echo "$eff" | jq -r '.node_min')"
+            echo "TF_VAR_node_max=$(echo "$eff" | jq -r '.node_max')"
+            echo "TF_VAR_platform_region=$(jq -r '.platform_region' regions.auto.tfvars.json)"
+          } >> "$GITHUB_ENV"
+      - name: init
         run: |
           BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
           printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
@@ -222,16 +228,28 @@ jobs:
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="key=regional/${{ matrix.region }}/terraform.tfstate" \
             -backend-config="encrypt=true"
-          # A6: self-reap on failed apply (a failed apply can leave billable resources).
-          # ALLOW_PARTIAL_APPLY=true keeps the partial stack for debugging.
-          if ! terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"; then
-            echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
-            if [ "${{ vars.ALLOW_PARTIAL_APPLY }}" = "true" ]; then
-              echo "::warning::ALLOW_PARTIAL_APPLY=true — leaving the partial stack (it may be billing)."
-            else
-              echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
-              terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
-                || echo "::error::self-reap destroy ALSO failed — ttl-reaper + budget are the backstops."
-            fi
-            exit 1
-          fi
+      - name: apply
+        id: apply
+        working-directory: terraform/envs/regional
+        run: |
+          # A6 blast-radius bound: flag that terraform apply is ABOUT to mutate the
+          # account. Self-reap below fires only when this flag is set, so a pre-apply
+          # failure (checkout / init / state lock / provider download) never destroys
+          # a healthy stack.
+          echo "apply_started=true" >> "$GITHUB_OUTPUT"
+          terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"
+      - name: self-reap partial stack (A6)
+        # Only after a FAILED apply that actually started (a failed apply can leave
+        # billable resources). ALLOW_PARTIAL_APPLY=true keeps the stack for debugging.
+        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY != 'true' }}
+        working-directory: terraform/envs/regional
+        run: |
+          echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
+          echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
+          terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
+            || echo "::error::self-reap destroy ALSO failed — ttl-reaper + budget are the backstops."
+      - name: partial stack kept (ALLOW_PARTIAL_APPLY)
+        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY == 'true' }}
+        run: |
+          echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
+          echo "::warning::ALLOW_PARTIAL_APPLY=true — leaving the partial stack (it may be billing)."

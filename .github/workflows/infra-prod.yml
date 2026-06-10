@@ -18,6 +18,13 @@ permissions:
   id-token: write
   contents: read
 
+# One prod run at a time (this caller targets exactly the prod account);
+# queue, never cancel, a running apply. Per-account+region serialization is
+# enforced again at job level inside the reusable.
+concurrency:
+  group: infra-prod
+  cancel-in-progress: false
+
 jobs:
   detect:
     name: detect-prod-pin-change
