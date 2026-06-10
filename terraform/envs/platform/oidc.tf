@@ -129,7 +129,8 @@ resource "aws_iam_role_policy_attachment" "infra_ci_readonly" {
 }
 
 # ---- Role C: gh-tf-apply-platform CI apply → admin scoped to main branch ------
-# Trust = ONLY pushes to refs/heads/main (PRs cannot assume this role).
+# Trust = pushes to refs/heads/main + the main-branch-only apply environments
+# (staging / prod-apply / prod-apply-gated) — PRs cannot assume this role.
 # Permissions = AdministratorAccess (production hardening = bespoke
 # least-privilege; documented in tradeoffs). Used by infra-apply.yml.
 #
@@ -158,15 +159,36 @@ data "aws_iam_policy_document" "infra_apply_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # The "ref:refs/heads/main" constraint blocks PR branches from
-    # assuming this role — PRs only get the plan role above. Combined
-    # with branch protection (require status checks + reviews + linear
-    # history, see platform/branch-protection.tf), this means an apply
-    # only happens via a reviewed commit landing on main.
+    # Two subject shapes, because GitHub mints DIFFERENT OIDC subjects
+    # depending on whether the job declares `environment:`:
+    #   - no environment  → sub = repo:<owner>/<repo>:ref:refs/heads/main
+    #   - environment: X  → sub = repo:<owner>/<repo>:environment:X
+    # (the environment sub REPLACES the ref sub — it does not add to it).
+    # A trust pinned to the ref sub alone therefore denies every
+    # environment-routed job: infra-apply.yml's apply-regional runs in
+    # `prod-apply` / `prod-apply-gated`, so its AssumeRoleWithWebIdentity
+    # would fail. Each accepted subject is tied to a job below.
+    #
+    # The blast-radius story is unchanged: the ref sub still requires a
+    # reviewed commit on main; each environment sub requires a run that
+    # GitHub routed through that environment (whose deployment-branch
+    # policy / required reviewers are configured in repo Settings —
+    # main-branch-only for all four).
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_owner}/aegis-platform-aws:ref:refs/heads/main"]
+      values = [
+        # Non-environment jobs on main: infra-apply.yml version-gate +
+        # apply-platform, infra-ops.yml bootstrap, ttl-reaper.yml scan.
+        "repo:${var.github_owner}/aegis-platform-aws:ref:refs/heads/main",
+        # infra-apply.yml apply-regional, clean version gate (ungated env).
+        "repo:${var.github_owner}/aegis-platform-aws:environment:prod-apply",
+        # infra-apply.yml apply-regional, version gate tripped (required
+        # reviewer) — and the W3 prod promotion path (prod ALWAYS gated).
+        "repo:${var.github_owner}/aegis-platform-aws:environment:prod-apply-gated",
+        # W3 staging auto-apply on merge to main (ungated env).
+        "repo:${var.github_owner}/aegis-platform-aws:environment:staging",
+      ]
     }
   }
 }
@@ -217,11 +239,20 @@ data "aws_iam_policy_document" "infra_destroy_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Branch-agnostic: gated by the `destroy` environment's required reviewer.
+    # Branch-agnostic; each subject is an environment with its own control:
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_owner}/aegis-platform-aws:environment:destroy"]
+      values = [
+        # infra-ops.yml destroy — gated by the `destroy` environment's
+        # required reviewer (the human gate is the control).
+        "repo:${var.github_owner}/aegis-platform-aws:environment:destroy",
+        # ttl-reaper auto-destroy path — UNGATED (no reviewer; the reaper
+        # runs unattended by design) but tag-guarded: only clusters without
+        # keep/ttl-exempt tags, re-verified in-job. Environment deployment
+        # policy = main branch only.
+        "repo:${var.github_owner}/aegis-platform-aws:environment:reaper-destroy",
+      ]
     }
   }
 }

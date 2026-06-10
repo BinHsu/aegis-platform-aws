@@ -85,8 +85,9 @@ member-CE access, A6 self-reap, A4 kyverno teardown, A7 human-gated destroy + th
 > platform apply from A13 manual `workflow_dispatch` → a staging-float / prod-tag-pin GitOps
 > promotion, so the account dimension is **git-declared** (`accounts.json` — CI orchestration config, read by the callers via jq; NOT a
 `*.auto.tfvars.json`, so terraform never auto-loads it), not a
-> single secret. **NOT YET BUILT** — the four files below do not exist. Scope vs 6/12 is an
-> open decision (end of section).
+> single secret. **BUILT — PR #31** (`feat/w3-multi-account-promotion`, the four files below)
+> — **HOLD until 6/12**: the merge is the live event (it auto-applies staging). Scope vs 6/12
+> is decided: full ship (end of section).
 
 **Model.** staging account (251774439261) **floats on main** — merge → auto-apply (version-gate
 warn-only). prod account (506221082337) is **pinned to a release tag**; a promotion PR bumps the
@@ -105,11 +106,11 @@ never HEAD. HEAD-vs-tag split: `accounts.json` (topology + pins) is read from
 | Versioning | Model A / **Option A — CI `git checkout <tag>`** (not module `?ref=`) | no module restructure; industry norm for deployment versioning (TFC / Spacelift / Atlantis all track a git ref) |
 | Tag form | **semantic release tag** (not a SHA transition) | human-readable + release notes; avoids the long-lived env-branch anti-pattern |
 | staging vs prod | **staging floats main / prod pins tag** | mirrors greeter overlays; staging leaner = faster + cheaper |
-| prod trigger | **promotion PR + `prod-apply-gated` approve** (replaces A13 dispatch) | more GitOps; adds the staging-verify→promote step dispatch lacks; **preserves A13's prod protection** |
+| prod trigger | **promotion PR; prod apply ALWAYS runs in `prod-apply-gated`** (human approval unconditional — not only when the gate trips; replaces A13 dispatch) | more GitOps; adds the staging-verify→promote step dispatch lacks; **preserves A13's prod protection** |
 | role / bucket | **derive from account_id** (no per-account secret) | role `gh-tf-apply-platform` already exists per account, same name; derive shrinks the secret surface |
 | Option B (module `?ref=`) | **rejected** | single repo, regional-stack has one consumer; B only pays off on cross-repo module reuse |
 | sizing | **base (`regions`) + per-account `overrides`** (cidr always base) | mirrors greeter base+patch; stores only the env *difference*, no duplicate-and-drift |
-| version-gate | **block prod / warn staging** (`gate_blocks` input) | staging must stay fast; prod must not silently bill extended-support |
+| version-gate | **block prod / warn staging** (`gate_blocks` input): with `gate_blocks=true`, a tripped A12 gate **HARD-FAILS the prod apply** — extended-support never reaches prod (the human approval in `prod-apply-gated` is not an override for it) | staging must stay fast; prod must not silently bill extended-support |
 
 **Files to build (4 + 1 kept).**
 - `accounts.json` — account dimension + per-env pin (`staging.pin: main`, `prod.pin: vX.Y.Z`) + `enabled_regions` + per-account `overrides` (sizing only; cidr stays in `regions`).
@@ -130,11 +131,12 @@ rhythm. Prod persistence (a `keep` tag) is a separate post-6/12 steady-state dec
 6/12 window **both** envs are ephemeral/reaped.
 
 **6/12 prerequisites (all done before the window — none of these is the live merge).**
-- [ ] The four files written + reviewed in a PR — **NOT merged** (the merge is the live event: it applies staging).
+- [x] The four files written + reviewed in a PR (**#31**) — **NOT merged** (the merge is the live event: it applies staging).
 - [ ] New CI validated: `actionlint` clean; `workflow_call` wiring + prod-pin diff-detection + checkout-`ref` dry-checked.
 - [ ] `REAPER_AUTODESTROY=true` is set (else ephemeral staging never auto-tears-down → the cost trap returns).
-- [ ] A `staging` GitHub Environment exists (the reusable routes staging to an ungated env).
-- [ ] staging platform state bucket `aegis-platform-aws-tfstate-251774439261` bootstrapped; `BOOTSTRAP_COMPLETE` handled per-account.
+- [ ] Operator one-liner: create the `staging` GitHub Environment — **no reviewers, deployment branches = main only** (the reusable routes staging to it ungated).
+- [ ] Operator one-liner: create the `reaper-destroy` GitHub Environment — **no reviewers, deployment branches = main only** (the reaper's ungated, tag-guarded auto-destroy path; the destroy role's OIDC trust accepts its subject — ADR-11).
+- [ ] staging platform state bucket `aegis-platform-aws-tfstate-251774439261` bootstrapped; `BOOTSTRAP_COMPLETE` handled per-account (migrates into `accounts.json` — ADR-11).
 - [ ] Account-agnostic secrets/vars confirmed present for the staging-account context.
 
 **Scope vs 6/12 — DECISION: (a) build + ship W3 on 6/12 (operator, 2026-06-06).**
@@ -160,8 +162,10 @@ through it — not the A13 dispatch.** Order:
 1. **Deploy via W3.** staging floats up on step 0's merge and verifies; cut a release tag at the
    verified commit; open the promotion PR (`accounts.prod.pin` → that tag) → `infra-prod` checks
    out the tag → `apply-platform` creates the destroy role (A7) + budget action (A9) + CE monitor
-   (A2) and `apply-regional` stands up prod EKS, gated by `prod-apply-gated`. Confirms the A12
-   gate path on the prod promotion. (A13 `workflow_dispatch` stays as break-glass only.)
+   (A2) and `apply-regional` stands up prod EKS — **always in `prod-apply-gated`** (the human
+   approval is unconditional for prod). The A12 gate runs with `gate_blocks=true`: if it fires,
+   the prod apply **HARD-FAILS** (extended-support never reaches prod; approval is not an
+   override). (A13 `workflow_dispatch` stays as break-glass only.)
    - If `apply-platform` fails on `aws_ce_anomaly_*` → enable member-account Cost Explorer
      access in the management account, re-apply (A2 caveat).
 2. **W1 promotion.** Bring greeter up via ArgoCD; run the promotion-by-digest verify per
@@ -177,6 +181,8 @@ through it — not the A13 dispatch.** Order:
    that allows the observed `Delete*/Detach*/Modify*/Schedule*/Describe*` set and denies
    `Create*/Run*` → attach (replace admin) → re-run a teardown to confirm no `AccessDenied`.
    (Cannot be authored from theory — that is why it is a step here, not pre-written.)
+   The attach itself must run as `gh-tf-apply-platform` CI (land it as a terraform change)
+   or via break-glass — SCP 4 denies `iam:AttachRolePolicy` to SSO principals.
 6. **A11 reaper check.** Leave a tagged-ephemeral cluster past `TTL_HOURS` → run
    `ttl-reaper` → confirm alert + (if `REAPER_AUTODESTROY=true`) dispatched destroy.
 7. **Confirm zero + cost.** `aws eks list-clusters` empty in all regions; Cost Explorer

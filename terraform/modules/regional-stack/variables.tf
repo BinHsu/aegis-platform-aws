@@ -8,6 +8,17 @@ variable "vpc_cidr" {
   type        = string
 }
 
+variable "environment" {
+  description = "Which deploy-repo overlay this cluster syncs: ArgoCD's ApplicationSet uses k8s/overlays/<environment> as both the discovery gate (pathsExist) and the sync path. Default prod (the original single-environment behavior); the W3 callers pass TF_VAR_environment from accounts.json."
+  type        = string
+  default     = "prod"
+
+  validation {
+    condition     = contains(["staging", "prod"], var.environment)
+    error_message = "environment must be one of: staging, prod."
+  }
+}
+
 variable "node_instance" {
   description = "EC2 instance type for the EKS managed node group."
   type        = string
@@ -78,19 +89,24 @@ variable "scm_token" {
   sensitive   = true
 }
 
-variable "ci_role_arn" {
-  description = "ARN of the aegis-platform-aws-ci IAM role (CI plan). Gets an EKS ClusterAdmin access entry so `terraform plan` from CI can read Helm/k8s state."
-  type        = string
-}
-
-variable "apply_role_arn" {
-  description = "ARN of the gh-tf-apply-platform IAM role (CI apply). Gets an EKS ClusterAdmin access entry so `terraform apply` from CI can manage Helm/k8s resources."
-  type        = string
-}
-
-variable "operator_principal_arn" {
-  description = "ARN of the human operator's IAM principal. Gets an explicit EKS ClusterAdmin access entry so operator cluster access is declarative + survives a cluster recreate by any principal (the implicit creator grant does not — see eks.tf)."
-  type        = string
+# Single source of truth for cluster access: every key becomes an EKS
+# access entry with ClusterAdmin (eks.tf iterates this map). Expected keys
+# (the regional env wires them; keys are stable — they name the access-entry
+# resources, so renaming a key recreates its entry):
+#   operator      — the human operator's IAM principal. Explicit so operator
+#                   access is declarative + survives a cluster recreate by
+#                   any principal (the implicit creator grant does not).
+#   infra_ci      — aegis-platform-aws-ci (CI plan): `terraform plan` reads
+#                   Helm/k8s state.
+#   infra_apply   — gh-tf-apply-platform (CI apply): `terraform apply`
+#                   manages Helm/k8s resources.
+#   infra_destroy — gh-tf-destroy-platform (CI destroy): `terraform destroy`
+#                   must delete helm_release resources; without this entry it
+#                   gets K8s Unauthorized and strands a billing cluster
+#                   (2026-06-06 incident shape).
+variable "cluster_admin_principals" {
+  description = "IAM principal ARNs that get an EKS ClusterAdmin access entry, keyed by a stable entry name (operator / infra_ci / infra_apply / infra_destroy). Declared as one map so role-to-access-entry pairing lives in one place — a CI role that can reach the cluster API but is missing here fails every helm/k8s operation with Unauthorized."
+  type        = map(string)
 }
 
 # ---- observability toggle -------------------------------------------------

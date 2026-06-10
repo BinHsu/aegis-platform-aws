@@ -35,6 +35,14 @@ permissions:
   contents: read
   issues: write # A6: open an alert issue if a teardown fails (still billing)
 
+# Serialise per region — two destroys racing one regional state corrupt it;
+# never cancel a terraform run mid-flight (a killed destroy strands partial
+# billable resources). Region is empty for bootstrap/destroy-platform, which
+# collapses those onto one shared group — also correct (one platform state).
+concurrency:
+  group: infra-ops-${{ inputs.region }}
+  cancel-in-progress: false
+
 env:
   AWS_REGION: eu-central-1
   TF_IN_AUTOMATION: "1"
@@ -44,6 +52,8 @@ jobs:
   ops:
     if: ${{ inputs.operation == 'bootstrap' }}
     runs-on: ubuntu-latest
+    # Ceiling on a hung terraform apply (GitHub default is 6h).
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v4
@@ -73,6 +83,10 @@ jobs:
     if: ${{ inputs.operation == 'destroy-region' || inputs.operation == 'destroy-platform' }}
     runs-on: ubuntu-latest
     environment: destroy
+    # Ceiling on a hung terraform destroy (the kyverno-deadlock shape). The
+    # `destroy` environment's approval wait does NOT count toward this — the
+    # job has not started while it waits for the required reviewer.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v4

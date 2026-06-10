@@ -9,7 +9,8 @@ name: infra-apply
 # validation still runs via infra-plan; the version-gate + prod-apply-gated
 # environment still gate the dispatched apply.
 #
-# Dispatch from main (gh-tf-apply-platform OIDC trust = refs/heads/main only).
+# Dispatch from main (gh-tf-apply-platform OIDC trust = refs/heads/main plus
+# the main-branch-only apply environments — see envs/platform/oidc.tf).
 # Bootstrap is NOT in this path — it's one-shot via infra-ops.yml.
 
 on:
@@ -24,6 +25,13 @@ on:
 permissions:
   id-token: write
   contents: read
+
+# Never two applies racing the same state; never cancel a terraform apply
+# mid-flight (a killed apply leaves partial billable resources + a locked
+# state). A second dispatch queues behind the running one.
+concurrency:
+  group: infra-apply
+  cancel-in-progress: false
 
 env:
   AWS_REGION: eu-central-1
@@ -110,6 +118,10 @@ jobs:
   apply-platform:
     name: apply-platform
     runs-on: ubuntu-latest
+    # Hard ceiling on a hung apply (e.g. a helm_release that never converges)
+    # — a runaway terraform process otherwise holds the state lock and burns
+    # runner minutes for 6h (the GitHub default).
+    timeout-minutes: 90
     # Skips until the operator has run bootstrap + platform locally and
     # set the BOOTSTRAP_COMPLETE repo variable (the IAM apply role +
     # GitHub OIDC provider must exist first). Keeps the pipeline green
@@ -164,6 +176,10 @@ jobs:
     # `prod-apply-gated` carries required reviewers. (Required reviewers are
     # free on public repos; private repos need Team/Enterprise.)
     environment: ${{ needs.version-gate.outputs.gate == 'true' && 'prod-apply-gated' || 'prod-apply' }}
+    # Apply + (on failure) self-reap destroy ceiling. The prod-apply-gated
+    # approval wait does NOT count toward this — the job has not started
+    # while it waits for the environment's required reviewer.
+    timeout-minutes: 90
     strategy:
       fail-fast: false       # one region's failure doesn't abort others
       matrix:

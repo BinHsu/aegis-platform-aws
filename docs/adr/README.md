@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Nine thematic records. Each consolidates one area of the architecture into a
+Eleven thematic records. Each consolidates one area of the architecture into a
 single narrative — context, the decision, the consequences accepted — written
 result-first: the final decision and why, not a log of the stages it passed
 through. Format follows Michael Nygard's template (Status / Context / Decision /
@@ -24,6 +24,8 @@ signal, not ceremony.
 | [ADR-07](07-workload-self-ownership.md) | Workload self-ownership | *Accepted.* Continues the boundary discipline of ADR-01 + ADR-03 (and ldz ADR-017): application catalog moves to `ApplicationSet` with an SCM-provider generator; workload IAM moves to ACK CRDs in each deploy repo; guardrails (AppProject, Kyverno trust-subject, org SCP) are the precondition. |
 | [ADR-08](08-cluster-multi-tenancy.md) | Cluster multi-tenancy | *Accepted.* Shared cluster by default (namespace + NetworkPolicy + Kyverno); dedicated Karpenter NodePool as first escape hatch; dedicated cluster via a paved `modules/dedicated-cluster/` as second; the platform contract is invariant across isolation tiers. |
 | [ADR-10](10-release-model-build-once-promote-by-digest.md) | Release model — build once, promote by digest | *Accepted.* Image built once → immutable digest; one shared registry in a dedicated `aegis-deployment` (Deployments OU) account; promote by copying the staging-verified digest into the prod overlay, gated by a `prod` Environment; env differences live in config, not the artifact; Kyverno enforces digest pins. |
+| [ADR-11](11-account-dimension-single-source-of-truth.md) | Account dimension — single source of truth | *Accepted.* The account dimension lives in git (`accounts.json`: account ids, env names, enabled regions, overrides, pins, `bootstrap_complete`); secrets hold only credentials-shaped values; role + bucket names derive from `account_id`. Records the gating decisions: prod always under `prod-apply-gated`, version gate hard-fails prod, reaper auto-destroy = ungated `reaper-destroy` env + in-job tag re-verification. |
+| [ADR-12](12-registry-injection-vs-digest-pin-field-ownership.md) | Registry injection vs digest pin — field ownership | *Accepted.* `kustomize.images` belongs exclusively to the deploy repo (the digest pin); the platform injects the registry as the `aegis.binhsu.org/ecr-repository` annotation (same channel as region). Rationale: a newName-only images override empirically wipes the overlay's digest entry → `:latest` → ImagePullBackOff. |
 
 ## Reading order by audience
 
