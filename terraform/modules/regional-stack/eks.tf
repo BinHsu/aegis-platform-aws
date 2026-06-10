@@ -76,6 +76,9 @@ module "eks" {
   # destroy/reaper-destroy environments) is the real blast-radius boundary.
   # Scaling this to a team of operators (IAM group / SSO-mapped entries) is
   # in tradeoffs.md.
+  # null entries are dropped: the env passes null when a role's ARN is not
+  # yet readable (e.g. a platform state that predates the output — see the
+  # try() + check block in envs/regional/main.tf).
   access_entries = {
     for name, arn in var.cluster_admin_principals : name => {
       principal_arn = arn
@@ -85,7 +88,7 @@ module "eks" {
           access_scope = { type = "cluster" }
         }
       }
-    }
+    } if arn != null
   }
 
   tags = local.common_tags
