@@ -39,5 +39,21 @@ resource "helm_release" "alb_controller" {
     value = module.vpc.vpc_id
   }
 
+  # ROOT-CAUSE FIX (2026-06-11): disable the Service mutating webhook.
+  # The chart registers `mservice.elbv2.k8s.aws` (failurePolicy: Fail) on ALL
+  # Service create/update. During the parallel platform bring-up the webhook is
+  # registered BEFORE the controller pods are Ready → its backend has "no
+  # endpoints available for service aws-load-balancer-webhook-service" → EVERY
+  # Service creation cluster-wide fails, taking down crossplane/argocd/etc. with
+  # `helm install` errors (the real cause of the staging-rehearsal apply failures,
+  # not capacity/timeout). The Service mutator is only needed to manage
+  # LoadBalancer-type Services via the controller; this stack exposes nothing that
+  # way (greeter = Ingress/ALB, ArgoCD = ClusterIP), so disabling it is safe and
+  # removes the bring-up deadlock at its source.
+  set {
+    name  = "enableServiceMutatorWebhook"
+    value = "false"
+  }
+
   depends_on = [module.eks]
 }
