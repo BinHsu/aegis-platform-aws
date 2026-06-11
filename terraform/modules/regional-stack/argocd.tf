@@ -54,6 +54,10 @@ resource "helm_release" "argocd" {
   repository = "https://argoproj.github.io/argo-helm"
   chart      = "argo-cd"
   version    = "7.6.12" # pinned
+  # B1 (2026-06-11): argo-cd is multi-component (server + repo-server +
+  # app-controller + redis + dex); the default 300s deadlines its bring-up on
+  # a busy cluster. 600s gives it room.
+  timeout = 600
 
   # No public Ingress for the UI — access via `kubectl port-forward
   # -n argocd svc/argo-cd-server 8080:443`. Production hardening: dedicated
@@ -119,6 +123,10 @@ locals {
 # before: declarative app-spec, separate blast radius from the controller; and
 # it sidesteps kubernetes_manifest's CRD-at-plan-time problem).
 resource "helm_release" "argocd_apps" {
+  # B1 (2026-06-11): the heavy platform controllers install in parallel and
+  # deadline on the default 300s helm timeout during a busy cluster bring-up
+  # ("context deadline exceeded"). 600s gives them room.
+  timeout    = 600
   name       = "aegis-apps"
   namespace  = kubernetes_namespace.argocd.metadata[0].name
   repository = "https://argoproj.github.io/argo-helm"
