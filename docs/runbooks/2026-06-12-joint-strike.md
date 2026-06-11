@@ -306,3 +306,27 @@ promotion (2 digests in one PR), (b) the frontend's non-GitOps env-promotion mod
 S3 prefix / CloudFront deployment id as the digest analogue). Sequence: **fix OIDC (blocker 1)
 → port PR-bump handoff (blocker 2) → digest-pin + staging overlay + validate.yml → then the two
 new-ADR designs.** Full agent-recall in memory `project_post612_core_review_commitment`.
+
+## E. Post-window roadmap — three workstreams (operator framing 2026-06-11)
+
+The work after greeter's 6/12 proof splits into three distinct workstreams:
+
+- **WS1 — Parity.** Bring `aegis-core`/`aegis-core-deploy` up to greeter's ADR-10 level: fix
+  the two blockers (OIDC role assumption; direct-push→PR-bump handoff) and port the proven
+  mechanics (digest pinning, shared registry, staging overlay, `validate.yml`). **Output:** core
+  release pipeline GREEN, digest-promotion working on AWS staging. **Gate for WS2 and WS3.**
+- **WS2 — On-prem feasibility (Talos).** Run the **same** `core-deploy` manifests against a
+  non-AWS, no-cloud-IAM target via a Talos platform binding. **Output:** a feasibility verdict +
+  the "provider-neutral injection contract" ADR (marker stays neutral; per-target binding swaps).
+- **WS3 — Full AWS bring-up.** Deploy core for real on EKS — engine + gateway + frontend + IRSA
+  + Cognito + multi-image atomic promotion + the frontend env-promotion model. **Output:** the
+  real product live on the governed platform (greeter's joint-strike, for the real workload).
+
+**Sequencing insight.** WS1 gates both. The order of WS2 vs WS3 changes *how WS3 is built*: do
+full-AWS first and AWS-specifics get welded into the injection layer + manifests, so on-prem
+later means un-welding. Doing a **light WS2 feasibility spike before WS3** forces the injection
+contract to be genuinely neutral up front (proven by running on Talos with no AWS), so WS3 is
+built on an already-neutral contract — "design for two targets before finishing one."
+Recommended path: **WS1 → light WS2 spike (prove the contract is neutral) → WS3 full AWS → WS2
+complete on-prem.** Trade-off: if shipping core on AWS soon is the priority, WS3 leads and WS2
+runs in parallel/after — operator's call (open).
