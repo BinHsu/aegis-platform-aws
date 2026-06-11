@@ -307,25 +307,40 @@ S3 prefix / CloudFront deployment id as the digest analogue). Sequence: **fix OI
 → port PR-bump handoff (blocker 2) → digest-pin + staging overlay + validate.yml → then the two
 new-ADR designs.** Full agent-recall in memory `project_post612_core_review_commitment`.
 
-## E. Post-window roadmap — three workstreams (operator framing 2026-06-11)
+## E. Post-window roadmap — four workstreams (operator framing 2026-06-11)
 
-The work after greeter's 6/12 proof splits into three distinct workstreams:
+**The carrier principle, applied twice.** greeter de-risks the hard work for core by being the
+minimal workload: it proved the **release flow (ADR-10)** on AWS at 6/12, and it should also
+prove the **on-prem substrate path** before core attempts it. Then core only ever adds its
+genuinely-core-specific complexity on top of two already-proven paths — never fighting a new
+substrate + multi-image + identity-abstraction all at once. So the roadmap is four workstreams,
+tracked as issues WS0–WS3 (this section is their epic):
 
-- **WS1 — Parity.** Bring `aegis-core`/`aegis-core-deploy` up to greeter's ADR-10 level: fix
+- **WS0 — greeter on-prem path proof (the carrier for on-prem).** Stand greeter up on a local
+  Talos cluster and prove the reusable *path*: Talos bring-up, ArgoCD-on-Talos, MetalLB +
+  ingress-nginx, a **Talos platform overlay** that injects the registry+region annotations (proving
+  the injection contract is genuinely target-swappable, not EKS-only), and pulling the digest-
+  pinned image from the shared ECR into Talos. **Output:** the reusable on-prem path + the
+  per-target overlay shape + the "provider-neutral injection contract" ADR. **Caveat:** greeter is
+  so minimal it has **no identity need**, so WS0 cannot exercise the IRSA→SPIFFE axis (the deepest
+  part of the neutral contract) — that first lands in WS2. Option (open): give greeter a throwaway
+  identity need (read an S3 object on AWS / a MinIO object on Talos) to prove the identity axis on
+  the carrier too. Can run in parallel with WS1.
+- **WS1 — core Parity.** Bring `aegis-core`/`aegis-core-deploy` up to greeter's ADR-10 level: fix
   the two blockers (OIDC role assumption; direct-push→PR-bump handoff) and port the proven
   CI/CD mechanics (digest pinning, registry, staging overlay, `validate.yml`). **Crucially, since
   the first real target is local (see decision below), WS1 builds the injection contract
   PROVIDER-NEUTRAL from the start** — no leaning on IRSA/Cognito/ALB. **Output:** core release
   pipeline GREEN with digest-promotion, proven against the **local Talos** target. **Gate for
   WS2 and WS3.**
-- **WS2 — On-prem Talos verification (FULL, not a spike).** Stand core up for real on a local
-  Talos cluster with the on-prem substitute stack and verify end-to-end. **Output:** core running
-  on neutral infra + the "provider-neutral injection contract" ADR (marker stays neutral; per-
-  target binding swaps). Substitutes: identity IRSA→**SPIFFE/SPIRE or static/sealed-secret**
-  (deepest — it threads the Crossplane WorkloadIdentity injection), object store S3→**MinIO**,
-  ingress+DNS ALB+Route53→**MetalLB + ingress-nginx**, gateway auth Cognito→**Keycloak/Dex**,
-  frontend CloudFront→**in-cluster nginx**. Registry can keep pulling the shared ECR for the
-  first pass (Talos with pull creds); a self-hosted **Harbor** is a later air-gap refinement.
+- **WS2 — core On-prem (FULL verification, not a spike).** Stand core up on local Talos,
+  **inheriting WS0's proven path**, adding only the **core-specific** substitutes. **Output:** core
+  running on neutral infra. Substitutes core adds on top of WS0: identity IRSA→**SPIFFE/SPIRE or
+  static/sealed-secret** (deepest — it threads the Crossplane WorkloadIdentity injection; the axis
+  WS0 could not test), object store S3→**MinIO**, gateway auth Cognito→**Keycloak/Dex**, frontend
+  CloudFront→**in-cluster nginx**, plus multi-image. (Ingress/DNS + the neutral injection contract
+  come from WS0.) Registry can keep pulling the shared ECR for the first pass; a self-hosted
+  **Harbor** is a later air-gap refinement.
 - **WS3 — Full AWS bring-up.** With the contract already neutral, AWS becomes an **additive
   binding overlay**, never a retrofit: add the EKS/IRSA/ECR/Cognito/ALB bindings + multi-image
   atomic promotion + the frontend env-promotion model. **Output:** the real product live on the
@@ -334,10 +349,14 @@ The work after greeter's 6/12 proof splits into three distinct workstreams:
 **Sequencing — DECIDED 2026-06-11 (operator): local-first, because the project is past PoC.**
 PoC-stage optimises for fast cloud demo (AWS-first, managed everything). Product-stage optimises
 for control / portability / reproducibility / cost / no lock-in (and likely data-residency —
-ATMOS). So prove core on **neutral infra first**, where the architecture cannot secretly depend
-on a managed service. Order: **WS1 (neutral, Talos proof) → WS2 (full on-prem verification) →
-WS3 (add the AWS binding overlay).** This makes the provider-neutral injection contract a **WS1
-prerequisite, not a WS2 deliverable** — the cleaner architecture, where AWS is just one target.
-Accepted risk: core's first proof validates pipeline + a new substrate together, but the pipeline
-mechanics are already known from greeter, so the only genuinely new variable is the substrate +
-bindings.
+ATMOS). So prove on **neutral infra first**, where the architecture cannot secretly depend on a
+managed service. Order: **WS0 (greeter proves the on-prem path) → WS1 (core parity, neutral) →
+WS2 (core full on-prem, inherits WS0) → WS3 (add the AWS binding overlay).** WS0 ∥ WS1 may
+overlap. This makes the provider-neutral injection contract a **WS0/WS1 prerequisite, not a WS2
+deliverable** — the cleaner architecture, where AWS is just one target. Accepted risk: thin,
+because greeter carries the substrate proof (WS0) and core inherits it — core's on-prem work is
+reduced to its own workload substitutes (identity/storage/auth/multi-image).
+
+> The epic / full-picture view lives in the agent memory
+> `project_post612_core_review_commitment`; the four workstreams are tracked as GitHub issues
+> WS0–WS3 in `aegis-platform-aws`. This §E is the committed-doc snapshot.
