@@ -1,7 +1,7 @@
 resource "helm_release" "alb_controller" {
-  # B1 (2026-06-11): the full platform stack installs in parallel; the
-  # default 300s helm timeout deadlines crossplane/argocd on a busy cluster
-  # bring-up ("context deadline exceeded"). 600s gives the controllers room.
+  # B1 (2026-06-11): the heavy platform controllers install in parallel and
+  # deadline on the default 300s helm timeout during a busy cluster bring-up
+  # ("context deadline exceeded"). 600s gives them room.
   timeout    = 600
   name       = "aws-load-balancer-controller"
   namespace  = "kube-system"

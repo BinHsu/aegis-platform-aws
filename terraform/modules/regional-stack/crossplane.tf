@@ -30,9 +30,9 @@ resource "kubernetes_namespace" "crossplane_system" {
 }
 
 resource "helm_release" "crossplane" {
-  # B1 (2026-06-11): the full platform stack installs in parallel; the
-  # default 300s helm timeout deadlines crossplane/argocd on a busy cluster
-  # bring-up ("context deadline exceeded"). 600s gives the controllers room.
+  # B1 (2026-06-11): the heavy platform controllers install in parallel and
+  # deadline on the default 300s helm timeout during a busy cluster bring-up
+  # ("context deadline exceeded"). 600s gives them room.
   timeout    = 600
   name       = "crossplane"
   namespace  = kubernetes_namespace.crossplane_system.metadata[0].name
@@ -57,9 +57,9 @@ resource "helm_release" "crossplane" {
 # instance in this cluster uses the same OIDC provider.
 
 resource "helm_release" "aegis_xrds" {
-  # B1 (2026-06-11): the full platform stack installs in parallel; the
-  # default 300s helm timeout deadlines crossplane/argocd on a busy cluster
-  # bring-up ("context deadline exceeded"). 600s gives the controllers room.
+  # B1 (2026-06-11): the heavy platform controllers install in parallel and
+  # deadline on the default 300s helm timeout during a busy cluster bring-up
+  # ("context deadline exceeded"). 600s gives them room.
   timeout   = 600
   name      = "aegis-xrds"
   namespace = helm_release.crossplane.namespace

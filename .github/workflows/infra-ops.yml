@@ -238,7 +238,12 @@ jobs:
           #      NEVER attempts a graceful uninstall (the kyverno deadlock) —
           #      the cluster deletion reaps them instead.
           #   5. terraform destroy the AWS infra.
-          r='${{ inputs.region }}'
+          # Use the env-provided region (TF_VAR_region) and validate its shape —
+          # never splice a workflow_dispatch input straight into the shell.
+          r="$TF_VAR_region"
+          if ! printf '%s' "$r" | grep -qE '^[a-z]{2}-[a-z]+-[0-9]+$'; then
+            echo "::error::region '${r}' is not a valid AWS region"; exit 1
+          fi
           CLUSTER="aegis-platform-aws-${r}"
           curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy will be skipped"
           bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
@@ -248,7 +253,17 @@ jobs:
               echo "teardown backstop: deleting orphaned ALB ${arn} in ${VPC}"
               aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$r" 2>/dev/null || true
             done
-            sleep 30  # let the ELB-owned ENIs detach before the VPC destroy
+            # delete-load-balancer is async; a fixed sleep races the ELB-owned ENI
+            # cleanup → DependencyViolation on the VPC destroy. Poll until no ELBv2
+            # remains in the VPC (then a short ENI-settle), up to 5 min.
+            deadline=$(( $(date +%s) + 300 ))
+            while [ -n "$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)" ]; do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::warning::ELBv2 still present in ${VPC} after 5 min — terraform destroy may retry on DependencyViolation"; break
+              fi
+              sleep 15
+            done
+            sleep 20  # ENIs detach a beat after the LB record disappears
           fi
 
           cd terraform/envs/regional

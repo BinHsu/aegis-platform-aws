@@ -123,9 +123,9 @@ locals {
 # before: declarative app-spec, separate blast radius from the controller; and
 # it sidesteps kubernetes_manifest's CRD-at-plan-time problem).
 resource "helm_release" "argocd_apps" {
-  # B1 (2026-06-11): the full platform stack installs in parallel; the
-  # default 300s helm timeout deadlines crossplane/argocd on a busy cluster
-  # bring-up ("context deadline exceeded"). 600s gives the controllers room.
+  # B1 (2026-06-11): the heavy platform controllers install in parallel and
+  # deadline on the default 300s helm timeout during a busy cluster bring-up
+  # ("context deadline exceeded"). 600s gives them room.
   timeout    = 600
   name       = "aegis-apps"
   namespace  = kubernetes_namespace.argocd.metadata[0].name
