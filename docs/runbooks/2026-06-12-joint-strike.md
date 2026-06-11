@@ -313,20 +313,31 @@ The work after greeter's 6/12 proof splits into three distinct workstreams:
 
 - **WS1 — Parity.** Bring `aegis-core`/`aegis-core-deploy` up to greeter's ADR-10 level: fix
   the two blockers (OIDC role assumption; direct-push→PR-bump handoff) and port the proven
-  mechanics (digest pinning, shared registry, staging overlay, `validate.yml`). **Output:** core
-  release pipeline GREEN, digest-promotion working on AWS staging. **Gate for WS2 and WS3.**
-- **WS2 — On-prem feasibility (Talos).** Run the **same** `core-deploy` manifests against a
-  non-AWS, no-cloud-IAM target via a Talos platform binding. **Output:** a feasibility verdict +
-  the "provider-neutral injection contract" ADR (marker stays neutral; per-target binding swaps).
-- **WS3 — Full AWS bring-up.** Deploy core for real on EKS — engine + gateway + frontend + IRSA
-  + Cognito + multi-image atomic promotion + the frontend env-promotion model. **Output:** the
-  real product live on the governed platform (greeter's joint-strike, for the real workload).
+  CI/CD mechanics (digest pinning, registry, staging overlay, `validate.yml`). **Crucially, since
+  the first real target is local (see decision below), WS1 builds the injection contract
+  PROVIDER-NEUTRAL from the start** — no leaning on IRSA/Cognito/ALB. **Output:** core release
+  pipeline GREEN with digest-promotion, proven against the **local Talos** target. **Gate for
+  WS2 and WS3.**
+- **WS2 — On-prem Talos verification (FULL, not a spike).** Stand core up for real on a local
+  Talos cluster with the on-prem substitute stack and verify end-to-end. **Output:** core running
+  on neutral infra + the "provider-neutral injection contract" ADR (marker stays neutral; per-
+  target binding swaps). Substitutes: identity IRSA→**SPIFFE/SPIRE or static/sealed-secret**
+  (deepest — it threads the Crossplane WorkloadIdentity injection), object store S3→**MinIO**,
+  ingress+DNS ALB+Route53→**MetalLB + ingress-nginx**, gateway auth Cognito→**Keycloak/Dex**,
+  frontend CloudFront→**in-cluster nginx**. Registry can keep pulling the shared ECR for the
+  first pass (Talos with pull creds); a self-hosted **Harbor** is a later air-gap refinement.
+- **WS3 — Full AWS bring-up.** With the contract already neutral, AWS becomes an **additive
+  binding overlay**, never a retrofit: add the EKS/IRSA/ECR/Cognito/ALB bindings + multi-image
+  atomic promotion + the frontend env-promotion model. **Output:** the real product live on the
+  governed AWS platform (greeter's joint-strike, for the real workload).
 
-**Sequencing insight.** WS1 gates both. The order of WS2 vs WS3 changes *how WS3 is built*: do
-full-AWS first and AWS-specifics get welded into the injection layer + manifests, so on-prem
-later means un-welding. Doing a **light WS2 feasibility spike before WS3** forces the injection
-contract to be genuinely neutral up front (proven by running on Talos with no AWS), so WS3 is
-built on an already-neutral contract — "design for two targets before finishing one."
-Recommended path: **WS1 → light WS2 spike (prove the contract is neutral) → WS3 full AWS → WS2
-complete on-prem.** Trade-off: if shipping core on AWS soon is the priority, WS3 leads and WS2
-runs in parallel/after — operator's call (open).
+**Sequencing — DECIDED 2026-06-11 (operator): local-first, because the project is past PoC.**
+PoC-stage optimises for fast cloud demo (AWS-first, managed everything). Product-stage optimises
+for control / portability / reproducibility / cost / no lock-in (and likely data-residency —
+ATMOS). So prove core on **neutral infra first**, where the architecture cannot secretly depend
+on a managed service. Order: **WS1 (neutral, Talos proof) → WS2 (full on-prem verification) →
+WS3 (add the AWS binding overlay).** This makes the provider-neutral injection contract a **WS1
+prerequisite, not a WS2 deliverable** — the cleaner architecture, where AWS is just one target.
+Accepted risk: core's first proof validates pipeline + a new substrate together, but the pipeline
+mechanics are already known from greeter, so the only genuinely new variable is the substrate +
+bindings.
