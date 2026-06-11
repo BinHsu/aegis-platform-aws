@@ -218,7 +218,46 @@ jobs:
           # registries.auto.tfvars.json is gitignored — materialise it from the
           # REGISTRIES_JSON repo variable (same as infra-apply / infra-plan).
           printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
+
+          # ─── Ephemeral-cluster teardown (root-fix for the kyverno + ALB
+          # teardown deadlocks; supersedes the inert A4 webhook null_resource).
+          # For a disposable cluster you do NOT graceful-uninstall the in-cluster
+          # charts — you delete the cluster and let it reap them. The helm
+          # uninstall path deadlocks on kyverno's fail-closed admission webhooks +
+          # finalizers (2026-06-06 incident; A4's predestroy cleanup never ran —
+          # the runner has no kubectl). Industry norm for ephemeral clusters:
+          # delete the cluster, skip the graceful uninstall. So:
+          #   1. kubectl (the destroy role has an EKS access entry since the
+          #      cluster-admin-principals change) — best-effort.
+          #   2. pre-destroy.sh: drop the greeter Ingress so a HEALTHY ALB
+          #      controller deletes its ALB (ENIs/EIPs that would DependencyViolation
+          #      the VPC destroy).
+          #   3. AWS-API ALB backstop scoped to the cluster's VPC — for a WEDGED
+          #      controller where step 2 cannot trigger cleanup.
+          #   4. state rm every helm_release / kubernetes_ resource so terraform
+          #      NEVER attempts a graceful uninstall (the kyverno deadlock) —
+          #      the cluster deletion reaps them instead.
+          #   5. terraform destroy the AWS infra.
+          r='${{ inputs.region }}'
+          CLUSTER="aegis-platform-aws-${r}"
+          curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy will be skipped"
+          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
+          VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
+          if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
+            for arn in $(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null); do
+              echo "teardown backstop: deleting orphaned ALB ${arn} in ${VPC}"
+              aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$r" 2>/dev/null || true
+            done
+            sleep 30  # let the ELB-owned ENIs detach before the VPC destroy
+          fi
+
           cd terraform/envs/regional
+          # state rm the in-cluster layer (idempotent: no-op if already gone) so
+          # `terraform destroy` skips the deadlock-prone graceful helm uninstall.
+          terraform state list 2>/dev/null | grep -E 'helm_release\.|kubernetes_' | while read -r addr; do
+            echo "teardown: state rm ${addr} (cluster deletion will reap it)"
+            terraform state rm "$addr" || true
+          done
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"
 
       - name: destroy-platform

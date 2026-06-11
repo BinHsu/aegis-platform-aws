@@ -10,8 +10,8 @@
         "eu-central-1"
       ],
       "overrides": {
-        "node_min": 2,
-        "node_max": 2
+        "node_min": 3,
+        "node_max": 3
       },
       "bootstrap_complete": true,
       "operator_principal_arn": "arn:aws:iam::251774439261:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_PlatformAdmin_5f5772e2bfd724a3",

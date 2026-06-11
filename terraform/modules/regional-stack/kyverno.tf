@@ -82,38 +82,22 @@ resource "helm_release" "aegis_policies" {
   depends_on = [helm_release.kyverno]
 }
 
-# A4 root-cause fix (incident 2026-06-06). The teardown deadlock's source is
-# kyverno's admission webhooks: during destroy the API server tries to reach the
-# (terminating) kyverno backend, so deletions hang and the helm uninstall blocks.
-# `wait = false` above stops terraform from blocking on it; this removes the
-# webhook configurations BEFORE kyverno is uninstalled, breaking the deadlock at
-# its source.
+# A4 teardown deadlock — root cause + fix (incident 2026-06-06).
 #
-# depends_on => on DESTROY this null_resource is torn down FIRST (reverse order),
-# so its destroy-time provisioner runs before helm uninstalls kyverno. Fully
-# best-effort (set +e / exit 0): if kubectl or creds are absent it falls back to
-# the wait=false behavior — it can never make a teardown worse, and never runs on
-# apply (when = destroy). NOT yet live-verified; the planned teardown will.
-resource "null_resource" "kyverno_webhook_predestroy_cleanup" {
-  triggers = {
-    cluster_name = local.cluster_name
-    region       = var.region
-  }
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = <<-EOT
-      set +e
-      aws eks update-kubeconfig --name "${self.triggers.cluster_name}" --region "${self.triggers.region}" --kubeconfig "/tmp/kc-${self.triggers.cluster_name}" >/dev/null 2>&1 || exit 0
-      export KUBECONFIG="/tmp/kc-${self.triggers.cluster_name}"
-      for kind in validatingwebhookconfiguration mutatingwebhookconfiguration; do
-        kubectl get "$kind" -o name 2>/dev/null | grep -i kyverno | while read -r n; do
-          [ -n "$n" ] && kubectl delete "$n" --ignore-not-found --timeout=60s >/dev/null 2>&1
-        done
-      done
-      exit 0
-    EOT
-  }
-
-  depends_on = [helm_release.kyverno]
-}
+# Root cause: kyverno's admission webhooks are fail-closed AND its CRs carry
+# finalizers. On a graceful helm uninstall the API server tries to reach the
+# (terminating) kyverno backend → deletions hang on "no endpoints available",
+# and finalizer-bearing CRs never finish deleting → the uninstall blocks. This
+# is generic to every admission-webhook operator, not kyverno-specific.
+#
+# The previous attempt here was an in-module `null_resource` destroy provisioner
+# that kubectl-deleted the webhook configs first. It was REMOVED 2026-06-11: it
+# was inert (the infra-ops runner has no kubectl, so it no-op'd on its first live
+# test) and it never addressed finalizers.
+#
+# Real fix (industry norm for EPHEMERAL clusters): do NOT graceful-uninstall —
+# delete the cluster and let it reap the in-cluster charts. The teardown
+# (`.github/workflows/infra-ops.yml` destroy-region) now `terraform state rm`s
+# every helm_release/kubernetes_ resource before `terraform destroy`, so the
+# deadlock-prone uninstall is never attempted. `wait = false` + `timeout = 300`
+# above remain as belt-and-suspenders for any non-ephemeral path.

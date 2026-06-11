@@ -30,6 +30,10 @@ resource "kubernetes_namespace" "ack_system" {
 }
 
 resource "helm_release" "ack_iam_controller" {
+  # B1 (2026-06-11): the full platform stack installs in parallel; the
+  # default 300s helm timeout deadlines crossplane/argocd on a busy cluster
+  # bring-up ("context deadline exceeded"). 600s gives the controllers room.
+  timeout    = 600
   name       = "ack-iam-controller"
   namespace  = kubernetes_namespace.ack_system.metadata[0].name
   repository = "oci://public.ecr.aws/aws-controllers-k8s"
