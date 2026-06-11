@@ -34,6 +34,7 @@ resource "helm_release" "crossplane" {
   # deadline on the default 300s helm timeout during a busy cluster bring-up
   # ("context deadline exceeded"). 600s gives them room.
   timeout    = 600
+  wait       = false # DIAG (2026-06-11): unblock the apply so the cluster comes up and crossplane is observable live; final state restores wait once the rot is fixed
   name       = "crossplane"
   namespace  = kubernetes_namespace.crossplane_system.metadata[0].name
   repository = "https://charts.crossplane.io/stable"
@@ -61,6 +62,7 @@ resource "helm_release" "aegis_xrds" {
   # deadline on the default 300s helm timeout during a busy cluster bring-up
   # ("context deadline exceeded"). 600s gives them room.
   timeout   = 600
+  wait      = false # DIAG (2026-06-11)
   name      = "aegis-xrds"
   namespace = helm_release.crossplane.namespace
   chart     = "${path.module}/charts/aegis-xrds"
