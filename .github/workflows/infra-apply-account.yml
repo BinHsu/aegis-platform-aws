@@ -255,9 +255,38 @@ jobs:
         run: |
           echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
           echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
+          # Ephemeral-cluster teardown — the SAME root-fix as infra-ops
+          # destroy-region (2026-06-11): a plain `terraform destroy` here deadlocks
+          # on kyverno's fail-closed webhooks/finalizers, leaving the cluster
+          # HALF-destroyed (NAT/route gone, EKS+nodes still billing) — caught live
+          # 2026-06-11. Delete the cluster, don't graceful-uninstall: state-rm every
+          # helm_release/kubernetes_ so destroy never attempts the deadlock-prone
+          # uninstall (the cluster deletion reaps them). kubectl + pre-destroy.sh
+          # clean any ALB first (ENIs that would DependencyViolation the VPC).
+          r='${{ matrix.region }}'
+          CLUSTER="aegis-platform-aws-${r}"
+          curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy skipped"
+          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete"
+          VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
+          if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
+            for arn in $(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null); do
+              echo "self-reap backstop: deleting orphaned ALB ${arn}"
+              aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$r" 2>/dev/null || true
+            done
+            deadline=$(( $(date +%s) + 300 ))
+            while [ -n "$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)" ]; do
+              [ "$(date +%s)" -ge "$deadline" ] && { echo "::warning::ELBv2 still present after 5 min"; break; }
+              sleep 15
+            done
+            sleep 20
+          fi
+          terraform state list 2>/dev/null | grep -E 'helm_release\.|kubernetes_' | while read -r addr; do
+            echo "self-reap: state rm ${addr} (cluster deletion reaps it)"
+            terraform state rm "$addr" || true
+          done
           # NEVER mask the destroy exit ("|| echo" made a failed reap report a
-          # green step while the cluster kept billing — caught live 2026-06-10,
-          # staging rehearsal round 2). A failed reap must be LOUD.
+          # green step while the cluster kept billing — caught live 2026-06-10).
+          # A failed reap must be LOUD.
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
             || { echo "::error::self-reap destroy ALSO failed — resources may STILL BE BILLING. Dispatch infra-ops destroy-region (account ${{ inputs.account_id }}, ${{ matrix.region }}) NOW; ttl-reaper + budget are only the backstops."; exit 1; }
       - name: partial stack kept (ALLOW_PARTIAL_APPLY)
