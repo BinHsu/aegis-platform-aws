@@ -200,3 +200,109 @@ through it — not the A13 dispatch.** Order:
 
 After the window: set this doc's status to **DONE** (or supersede), and remove the
 keystone block from `~/.claude/CLAUDE.md` + the per-repo CLAUDE.md routing lines.
+
+---
+
+# Addendum 2026-06-10/11 — pre-window hardening executed, rehearsal findings, and the aegis-core onboarding scope
+
+> The 6/12 window now opens from a **much harder-tested** state than the 2026-06-06
+> pre-flight assumed. This addendum records (A) what was hardened + merged before the
+> window, (B) what the live staging rehearsal proved/broke, (C) the org-wide repo-security
+> baseline, and (D) the **scoped CI/CD-flow gap for onboarding aegis-core** — the real
+> workload, after greeter proved the pipeline. The 6/12 review continues from here.
+
+## A. Pre-window hardening (merged 2026-06-10) — 4 BLOCKERs + W3 + budgets + registry chain
+
+A cross-repo review found 4 BLOCKERs that would each have broken the 6/12 window; all fixed
+and merged the same day (15 PRs). Headlines (full detail in the agent memory
+`project_state_0610_pre612_hardening_campaign`):
+
+- **OIDC env-subs** (`gh-tf-apply-platform` trust): environment-gated apply jobs could not
+  assume the role at all — would have killed every 6/12 apply. Fixed (platform #34).
+- **Destroy-role EKS access entry**: destroy was K8s-`Unauthorized` at the helm layer →
+  would strand a billing cluster (the 06-06 shape, different root cause). Fixed via a
+  `cluster_admin_principals` map (#34).
+- **ArgoCD registry injection wiped the digest**: the old `kustomize.images` newName-only
+  injection deletes the overlay's `digest` field → renders `:latest`. Moved to an
+  `aegis.binhsu.org/ecr-repository` annotation + kustomize `replacements` (ADR-12). This is
+  the load-bearing contract greeter-deploy now implements and **core-deploy does NOT** (see D).
+- **W3 multi-account** (#31): prod always `prod-apply-gated`; A12 hard-fails prod; per-account
+  `bootstrap_complete`/`environment`/`operator_principal_arn` in `accounts.json` (ADR-11);
+  multi-account ttl-reaper + account-parameterised infra-ops; reaper → ungated-but-tag-guarded
+  `reaper-destroy` environment.
+- **Budgets are IaC** (LZ #258/#259, ADR-019) + **OIDC fails closed** on `infra_repo_id`.
+- **Shared registry chain landed**: `aegis-deployment` account (162975888022) vended +
+  bootstrapped + `gh-tf-apply-deployment` seeded; platform #27 (deployment ECR + cross-account
+  pull + require-digest Kyverno); `REGISTRIES_JSON` repointed; greeter publish.yml switched to
+  **PR + auto-merge** digest bump (no more direct push to a protected branch).
+
+## B. Staging rehearsal (2026-06-10, live) — 5 latent bugs caught, all fixed
+
+The first deliberate W3 staging apply (`bootstrap_complete=true`) caught bugs that only static
+validation had ever seen. **This is why the rehearsal existed.** Each one would have hit the
+prod path on 6/12:
+
+1. **A2 anomaly subscription** `IMMEDIATE`+EMAIL is rejected by the CE API (`Immediate
+   frequencies only support SNSTopic`). → `DAILY` (#37).
+2. **1× t3.medium cannot host the platform stack** — pods Pending → ALB-controller webhook
+   no-endpoints → crossplane/kyverno deadline. Staging floor raised to **2 nodes** (#38).
+3. **A6 self-reap masked a failed destroy** (`|| echo`): the step went GREEN while the cluster
+   kept billing. Fixed to fail-loud with a still-billing escalation (#38). *Worst-class bug —
+   a cost guard that lies.*
+4. **A4 kyverno helm destroy still deadlocks** on a wedged cluster. Working fallback = the
+   06-06 pattern: `terraform state rm` all `helm_release.*`/`kubernetes_*` from the regional
+   state → pure-AWS `infra-ops destroy-region` (ran green). **6/12 teardown must expect this.**
+5. **Stale S3 `.tflock`** after a cancelled run blocks the next plan — twice in one day. Fix:
+   delete `<state-key>.tflock` (SSO-allowed), re-run.
+
+Rehearsal ended at **zero billable** (eks/ec2/nat/alb/ebs all empty); staging parked
+(`bootstrap_complete=false`, PR #40). Operator decision: **6/12 close-out = full teardown to
+zero** on both accounts (destroy-region + destroy-platform, shared ECR included); next cycle
+cold-starts with a fresh publish run.
+
+## C. Org-wide public-repo security baseline (2026-06-11)
+
+All 36 BinHsu public repos hardened via `gh` (detail: memory
+`project_org_repo_security_baseline_0611`): secret scanning + push protection + Dependabot
+vulnerability alerts on **36/36**; tiered `main-protection` rulesets (product = full +
+CodeRabbit required check; first-party = full minus CodeRabbit; learning/profile = force-push
++ deletion block; forks = hygiene only). `aegis-enclave` flipped **public + protected** after
+the ATMOS case-study thank-you closed that cycle.
+
+## D. aegis-core onboarding — CI/CD-flow gap (the post-greeter work)
+
+greeter was the **carrier** that proved the ADR-10 pipeline; **aegis-core + aegis-core-deploy is
+the real workload**. The flow gap (not app content — CI/CD only) was scoped 2026-06-11:
+
+**core release pipeline is currently RED.** `release-staging-image.yml` has failed on the last
+4 runs (since 2026-05-21; last success 2026-05-18). The 2026-06-07 run died at **`Configure AWS
+credentials (OIDC): Not authorized to perform sts:AssumeRoleWithWebIdentity`** — the release
+OIDC role can't be assumed, so it never reaches ECR. **Two stacked blockers**, in order:
+
+1. **🔴 OIDC role assumption broken** (release can't push to ECR at all). Same class as the
+   platform #34 OIDC blocker. Fix first — until then nothing downstream is exercised.
+2. **🔴 Direct-push to a now-protected branch.** Once #1 is fixed, the `bump-image-tag` job's
+   `git push origin main` into `aegis-core-deploy` hits the CodeRabbit+PR ruleset that repo now
+   carries (added 06-07) → it will fail (or rely on admin bypass) — **exactly the fragility
+   greeter #10 already fixed** by switching to PR + auto-merge. Port greeter's pattern.
+
+**Structural CI/CD-flow deltas core→greeter (beyond the two blockers):**
+
+| Flow stage | greeter (ADR-10, done) | aegis-core (today) |
+|---|---|---|
+| Artifact identity | immutable `@sha256:` **digest** | mutable **tag** `staging-<sha>` / `engine-staging-<sha>` (digest captured, unused) |
+| Registry | shared `aegis-deployment` (162975888022) | **staging account** (251774439261) |
+| Handoff → deploy repo | branch + `gh pr create` + **auto-merge** (CodeRabbit-gated) | `yq` rewrite + **direct `git push origin main`** |
+| Promotion | staging overlay digest-bump → **prod promotion PR copies same digest** | **none** — core-deploy has **no staging overlay**; release writes straight to base/prod |
+| Frontend | n/a | separate `release-staging-frontend.yml` → **S3 sync + CloudFront invalidation, direct, non-GitOps**, no env promotion (ADR-10 does not cover this artifact class) |
+| Release gates | Trivy HIGH+CRIT **pre-push**, blocking | Cosign keyless + SLSA L3 + SBOM attest (stronger) **but** Trivy CRITICAL-only **post-push**; gosec/semgrep/govulncheck all `\|\| true` (advisory) |
+| Deploy-repo CI | `validate.yml` (digest-presence + injection-sim regression guard) | **none** (core-deploy has no `.github/`) |
+| Injection axes | registry + region (2 annotations) | registry + region + **IRSA role-arn** (Crossplane WorkloadIdentity) — a 3rd axis greeter never had |
+| Multi-image | 1 image = 1 digest pin | **2 images** (gateway + engine) sharing one ECR repo by tag-prefix → needs **atomic 2-digest promotion**, which ADR-10 has no model for |
+
+**Onboarding effort split:** ~½ is porting greeter's proven mechanics (digest-pin, staging
+overlay, PR-bump, `validate.yml`); ~½ needs **new design + ADRs** — (a) multi-image atomic
+promotion (2 digests in one PR), (b) the frontend's non-GitOps env-promotion model (versioned
+S3 prefix / CloudFront deployment id as the digest analogue). Sequence: **fix OIDC (blocker 1)
+→ port PR-bump handoff (blocker 2) → digest-pin + staging overlay + validate.yml → then the two
+new-ADR designs.** Full agent-recall in memory `project_post612_core_review_commitment`.
