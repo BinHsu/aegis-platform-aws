@@ -151,6 +151,12 @@ the order below is updated to match.
 
 ## Unified 6/12 execution order
 
+> **⚠️ SUPERSEDED by §F (Addendum, 2026-06-11).** This original order assumed the platform
+> stack brought up cleanly. The 2026-06-11 staging deep-debug found it did NOT (ALB
+> Service-mutator webhook deadlock + crossplane + kyverno-image rot), so the real order now has
+> a **Phase A prerequisite** (fix + prove the platform-stack bring-up on staging) that gates the
+> prod window. Follow **§F**; this section is kept for the W1/W2/W3 detail it still describes.
+
 Run W1 and W2 on one cluster cycle. **Per the W3 (a) decision, build W3 first, then deploy
 through it — not the A13 dispatch.** Order:
 
@@ -360,3 +366,74 @@ reduced to its own workload substitutes (identity/storage/auth/multi-image).
 > The epic / full-picture view lives in the agent memory
 > `project_post612_core_review_commitment`; the four workstreams are tracked as GitHub issues
 > WS0–WS3 in `aegis-platform-aws`. This §E is the committed-doc snapshot.
+
+## F. Updated 6/12 execution order (2026-06-11) — SUPERSEDES the Unified order above
+
+The 2026-06-11 staging deep-debug rewrote the order: the platform stack did **not** bring up
+cleanly, so the prod window is now **gated on a Phase-A prerequisite** (prove the bring-up on
+staging first). The hard insight: **prod runs the same regional-stack module — any bring-up rot
+fails prod identically.** So fix it on cheap staging, then prod.
+
+### Phase A — pre-window prerequisites (must ALL be green before any prod apply)
+
+- **A1 — crossplane root-cause fix.** Clean apply on staging (`ALLOW_PARTIAL_APPLY=true` is set →
+  a failed apply LEAVES the cluster up, NAT intact) → `kubectl`-observe crossplane on a
+  **healthy-egress** cluster → fix. 🔴 **Gate: prod runs the same stack.** (The 2026-06-11
+  "image rot" reading was contaminated by the self-reap deleting the NAT — re-observe clean.)
+- **A2 — kyverno cleanup image.** Override `webhooksCleanup.image` + `policyReportsCleanup.image`
+  → `registry.k8s.io/kubectl` (the `bitnami/kubectl` default was removed 2025-08-28). Non-blocking
+  but ship it.
+- **A3 — prove the greeter ADR-10 pipeline on staging end-to-end.** Full stack Ready → publish →
+  digest → **shared ECR (the registry chain closes here: staging is single-owner, its apply
+  creates the shared ECR + push role)** → repoint greeter repo vars → ArgoCD sync → greeter 200.
+- **A4 — restore `ALLOW_PARTIAL_APPLY=false`.** 🔴 Else a prod apply failure bills indefinitely
+  (06-06 cost-trap shape).
+- **A5 — teardown staging to zero** (ephemeral; `infra-ops destroy-region`, now clean via the
+  teardown root-fix).
+
+Already merged + validated before the window: ALB Service-mutator fix (`enableServiceMutatorWebhook=false`,
+#51), A6 self-reap state-rm (#52), the infra-ops teardown root-fix (validated live 3×), the 4
+BLOCKERs + W3 + budgets + registry-chain seeding (§A).
+
+### Phase B — the 6/12 window (W3-driven: deploy → verify → destroy)
+
+1. **Member CE access** enabled in management (console) — else `apply-platform`'s
+   `aws_ce_anomaly_*` fails (A2 caveat).
+2. **Cut a release tag** at the A3-verified commit.
+3. **Promotion PR**: `accounts.prod.pin` → that tag → `infra-prod` detects the pin change →
+   checks out the tag.
+4. **`apply-platform` (prod)**: creates the destroy role (A7) + budget action (A9) + CE monitor
+   (A2).
+5. **`apply-regional` (prod EKS)**, gated by `prod-apply-gated` → **operator APPROVE**. The
+   platform stack now comes up clean (ALB/crossplane/kyverno fixed in Phase A).
+6. **W1 promote**: greeter ArgoCD auto-syncs → verify **prod-D ≡ staging-D ≡ built-D** → 2-region
+   check.
+7. **W2 live guards**: A12 aging-path (pin an old version on a branch → routes to
+   `prod-apply-gated`), A6 self-reap (now state-rm-clean), A2 member-CE.
+8. **Teardown**: dispatch `infra-ops destroy-region` → **operator APPROVE** → clean (teardown
+   root-fix, no kyverno deadlock — validated 2026-06-11). First teardown runs the destroy role's
+   **admin** policy.
+9. **A7 destroy-scoped policy**: IAM Access Analyzer → generate-policy-from-CloudTrail on step 8 →
+   write `gh-tf-destroy-platform` policy (allow `Delete*/Detach*/Modify*/Schedule*/Describe*`,
+   deny `Create*/Run*`) → attach (replace admin) → re-run a teardown to confirm no `AccessDenied`.
+   The attach must run as `gh-tf-apply-platform` CI or break-glass (SCP 4 denies `iam:AttachRolePolicy`
+   to SSO).
+10. **A11 reaper check**: leave a tagged-ephemeral cluster past `TTL_HOURS` → run `ttl-reaper` →
+    confirm alert + (REAPER_AUTODESTROY) dispatched destroy.
+11. **`destroy-platform`** on BOTH accounts (full teardown to zero, shared ECR included — operator
+    decision 2026-06-10).
+12. **Confirm zero + cost**: `aws eks list-clusters` empty in all regions; Cost Explorer burn
+    bounded.
+
+### Phase C — post-window
+
+- runbook status → **DONE**; remove the keystone block from `~/.claude/CLAUDE.md` + per-repo
+  routing lines; confirm `ALLOW_PARTIAL_APPLY=false`.
+
+### ⚠️ Timing reality
+
+Phase A (esp. A1 crossplane) is itself the unfinished 2026-06-11 fight. Tomorrow PM: **land A
+first** — if A1 is a one-line fix (like the ALB one was), A closes fast and B can run the same
+afternoon; if crossplane is another layer, A eats the afternoon and **B may slip**. The
+discipline: **the foundation (A) gates the house (B) — do not force prod before the staging
+bring-up is proven** (2026-06-11 proved the cost of forcing it).
