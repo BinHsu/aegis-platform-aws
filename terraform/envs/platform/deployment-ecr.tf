@@ -257,13 +257,16 @@ data "aws_iam_policy_document" "shared_greeter_push_permissions" {
 
   # Push (+ the layer reads docker push performs), scoped to the single shared
   # repo ARN. Exactly the verb set the per-account greeter_ci role uses, now
-  # targeting the ONE shared registry.
+  # targeting the ONE shared registry. ecr:DescribeImages is also required:
+  # publish.yml (post greeter#14) calls `aws ecr describe-images` as the
+  # authoritative digest source after push — matches the fix in oidc.tf.
   statement {
     effect = "Allow"
     actions = [
       "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
       "ecr:GetDownloadUrlForLayer",
       "ecr:InitiateLayerUpload",
       "ecr:PutImage",

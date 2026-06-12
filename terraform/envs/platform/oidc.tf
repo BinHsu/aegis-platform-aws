@@ -62,13 +62,17 @@ data "aws_iam_policy_document" "greeter_ci_permissions" {
 
   # ECR push (+ the layer reads docker push performs) — scoped to the
   # single aegis-greeter repo ARN. Exactly the set cross-repo issue #9
-  # enumerates; no broader Describe*/List* (those aren't needed to push).
+  # enumerates plus ecr:DescribeImages: publish.yml (post greeter#14) calls
+  # `aws ecr describe-images` as the authoritative digest source after push;
+  # without it the registry-authoritative digest step fails with
+  # AccessDeniedException (greeter run 27409469237).
   statement {
     effect = "Allow"
     actions = [
       "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
       "ecr:GetDownloadUrlForLayer",
       "ecr:InitiateLayerUpload",
       "ecr:PutImage",
