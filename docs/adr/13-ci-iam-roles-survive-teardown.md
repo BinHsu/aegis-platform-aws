@@ -119,9 +119,9 @@ teardown definition:
 
 The full sequence is the **Cold-start runbook** section below. The key structural
 property: the seed apply is idempotent from **both** starting states — roles
-already exist (no-op) or roles deleted (clean recreate via `terraform refresh`,
-no import). That is what makes the next cold start a first-class path rather than
-a patch.
+already exist (no-op) or roles deleted (clean recreate: `terraform apply` refreshes
+state during planning, detects `NoSuchEntity`, plans a Create — no import). That
+is what makes the next cold start a first-class path rather than a patch.
 
 ## Alternatives considered
 
@@ -201,9 +201,10 @@ pre-destroy `state rm` dance.
   tear down to true zero (roles included). What changed is the cold start: it is
   now one operator command (the Cold-start runbook below), not a hand patch.
 - **Cold start is idempotent from both states**: the seed `terraform apply`
-  converges whether the roles exist (no-op) or were deleted (clean recreate via
-  `terraform refresh` — GetRole returns NoSuchEntity, Terraform plans a Create,
-  no import). This is the property that makes the next cold start first-class.
+  converges whether the roles exist (no-op) or were deleted (clean recreate:
+  `terraform apply` refreshes state during planning, observes `NoSuchEntity` from
+  `GetRole`, plans a Create — no import). This is the property that makes the
+  next cold start first-class.
 - **`bootstrap_complete` becomes honest**: it now literally means "state bucket +
   CI roles exist", because bootstrap creates both. After a full teardown it is
   reset to `false` (the `infra-ops` destroy-platform job already does this). The
@@ -295,7 +296,7 @@ down to zero as above). Ordering matters; the principal differs by step.
 
 | # | Who | Command | Why |
 |---|---|---|---|
-| 1 | **operator, break-glass** (`AWSControlTowerExecution` from management — SCP denies SSO) | `make bootstrap` (= `terraform -chdir=terraform/envs/bootstrap apply`, local state) | Seeds the state bucket **and** all four CI roles in one apply. Idempotent from both states: fresh account → Creates everything; roles-deleted → `terraform refresh` sees NoSuchEntity → plans clean Creates (no import). **Precondition:** the LZ-owned GitHub OIDC provider already exists in the account (the `data` lookup in `iam-seed.tf` depends on it — LZ bootstrap creates it). |
+| 1 | **operator, break-glass** (`AWSControlTowerExecution` from management — SCP denies SSO) | `make bootstrap` (= `terraform -chdir=terraform/envs/bootstrap apply`, local state) | Seeds the state bucket **and** all four CI roles in one apply. Idempotent from both states: fresh account → Creates everything; roles-deleted → `terraform apply` refreshes state during planning, observes `NoSuchEntity`, plans clean Creates (no import). **Precondition:** the LZ-owned GitHub OIDC provider already exists in the account (the `data` lookup in `iam-seed.tf` depends on it — LZ bootstrap creates it). |
 | 2 | operator, local | `make regenerate-backend` | Re-emit `./backend.hcl` from bootstrap outputs so downstream `platform`/`regional` envs can `init` against the new state bucket. |
 | 3 | operator | `gh variable set BOOTSTRAP_COMPLETE --body true --repo BinHsu/aegis-platform-aws` (or set `accounts.json.<account>.bootstrap_complete = true` for the W3 path) | Hands the account to CI. Until this flips, `infra-plan`/`infra-apply` skip the account (they would otherwise try to assume the not-yet-seeded role). |
 | 4 | CI (no operator action) | push to main → `infra-plan` assumes `aegis-platform-aws-ci` | Green plan confirms the seed worked end-to-end (closes the old "infra-plan red light"). |
