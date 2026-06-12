@@ -2,15 +2,15 @@
 
 Creates the S3 bucket that the `platform/` and `regional/` envs use as their remote backend, **and** seeds the four CI IAM roles (the GitHub OIDC trust + apply / destroy / plan / greeter-push roles) — see [ADR-13](../../../docs/adr/13-ci-iam-roles-survive-teardown.md). **No DynamoDB lock table** — TF ≥ 1.11 supports native S3 conditional-write locking via `use_lockfile = true` in each downstream backend block (DynamoDB-based locking is deprecated upstream and will be removed in a future minor version).
 
-## Apply once, never destroy — and the roles persist through teardown-to-zero
+## The seed layer — local state, break-glass-applied, cold-start-from-zero
 
-This env's own state is **local** (gitignored `terraform.tfstate`) by design: migrating bootstrap state into the very bucket it provisions would create a chicken-and-egg cycle. Bootstrap is intentionally one-shot.
+This env's own state is **local** (gitignored `terraform.tfstate`) by design: migrating bootstrap state into the very bucket it provisions would create a chicken-and-egg cycle.
 
-Every resource here carries `lifecycle { prevent_destroy = true }` — the state bucket and the four CI roles. To remove any of them, an operator must edit that block first.
+Only the **state bucket** carries `lifecycle { prevent_destroy = true }` — losing it loses every downstream env's state (irreversible). The four CI roles (`iam-seed.tf`, ADR-13) carry **no** such guard: they are cheaply, idempotently recreatable, so a full teardown may delete them and a later seed apply restores them from zero.
 
-**Day-zero seed runs from the operator's laptop as break-glass / `AWSControlTowerExecution`** (a principal the org SCP permits to write IAM — SSO principals are denied). The roles cannot create themselves; the seed principal must. After day zero, the `infra-ops` bootstrap job (which assumes `gh-tf-apply-platform`) can re-apply to reconcile baseline drift — `prevent_destroy` keeps a re-apply from ever deleting the roles.
+**The seed apply runs from the operator's laptop as break-glass / `AWSControlTowerExecution`** (a principal the org SCP permits to write IAM — SSO principals are denied). The roles cannot create themselves; the seed principal must. After the seed exists, the `infra-ops` bootstrap job (which assumes `gh-tf-apply-platform`) can re-apply to reconcile baseline drift.
 
-This is why `destroy-platform` leaves the account at **zero billable + zero workload** while the free CI federation roles persist (ADR-13): the roles live here, not in the platform state the teardown destroys, so the self-delete hazard / orphan-role / cold-start chicken-egg observed 2026-06-12 are structurally gone.
+`destroy-platform` (the workload teardown) no longer touches these roles — they live here, not in the platform state — so the self-delete hazard / orphan-role / cold-start chicken-egg observed 2026-06-12 are structurally gone. **Teardown-to-zero stays full** (the roles are not exempt); what changed is the **cold-start contract**: one operator command (`make bootstrap`) seeds bucket + roles from true zero. Idempotent from both states — roles exist (no-op) or roles deleted (clean recreate via `terraform refresh`, no import). Full cold-start sequence + the per-account break-glass orphan-delete commands: [ADR-13](../../../docs/adr/13-ci-iam-roles-survive-teardown.md) (Cold-start runbook + This-cycle migration).
 
 ## Usage
 

@@ -22,23 +22,50 @@
 # bootstrap is the right home because it ALREADY is:
 #   - LOCAL state (versions.tf) — it survives the remote-state-bucket teardown
 #     and never destroys itself (no chicken-egg with its own backend).
-#   - the operator-applied break-glass seed layer — applied once per account by
-#     a principal that can write IAM (AWSControlTowerExecution / break-glass),
+#   - the operator-applied break-glass seed layer — applied once per cold start
+#     by a principal that can write IAM (AWSControlTowerExecution / break-glass),
 #     which is exactly who must create these roles on day zero. The roles cannot
-#     create themselves; the seed principal must.
-#   - guarded by prevent_destroy on its one existing resource — extending that
-#     posture to the CI roles is consistent, not novel.
+#     create themselves; the seed principal must. The cold-start apply is a
+#     single formal command, so re-seeding after a full teardown is a first-class
+#     path, not a hand patch.
+#   - the layer whose `prevent_destroy` guards the IRREVERSIBLE resource (the
+#     state bucket in main.tf — losing it loses every downstream env's state).
+#     The CI roles do NOT take that guard: they are cheaply, idempotently
+#     recreatable, so a full teardown may delete them and the next seed apply
+#     restores them from true zero.
 #
-# "Teardown to zero" is redefined by ADR-13: zero BILLABLE + zero WORKLOAD
-# resources. The CI seed roles (IAM roles are free) persist across teardowns by
-# design. The 2026-06-10 operator teardown decision targeted billable resources
-# + the shared ECR; it never required deleting free IAM federation roots.
+# "Teardown to zero" stays UNCHANGED by ADR-13: true zero — zero billable, zero
+# workload, AND these CI roles included. What ADR-13 changes is the COLD-START
+# CONTRACT, not the teardown definition. A full close-out may delete these roles
+# (they live in this seed env, not the platform state — so destroy-platform no
+# longer touches them, but a `terraform destroy` of THIS env, or an operator
+# break-glass delete, does remove them). The next cold start is then a single
+# formal operator command — `terraform apply` on envs/bootstrap — that recreates
+# everything from true zero. No hand-typed patches, no orphan imports, no
+# state-rm choreography: that is the operator decision of 2026-06-12
+# ("這次可以全拆,讓下一次的冷啟動是完整的不再是補丁手敲的" — full teardown is
+# allowed; the next cold start must be a complete, formalized first-class path).
+#
+# These roles deliberately carry NO `prevent_destroy` (only the state bucket in
+# main.tf does — losing the bucket loses every downstream env's state, an
+# irreversible event the guard still blocks). The roles are cheaply, idempotently
+# recreatable by the seed apply, so guarding them would only re-introduce the
+# "destroy refuses / state-rm dance" this ADR set out to delete.
+#
+# IDEMPOTENCY (verify on rework): `terraform apply` on this env converges from
+# BOTH starting states —
+#   - roles-exist: apply is a no-op (plan = 0 changes) — every attribute is
+#     deterministic from account_id / region / fixed names, nothing drifts.
+#   - roles-deleted (out-of-band break-glass delete, or a prior `terraform
+#     destroy` of this env): apply recreates them. terraform refresh detects the
+#     externally-deleted role (GetRole → NoSuchEntity) and plans a clean Create —
+#     no import, no manual state surgery.
 #
 # SCP: every role here is in the `gh-tf-*` glob OR a CI-branded name the org SCP
 # `deny-iam-privilege-escalation` permits for the seed principal. Creating them
 # from a human SSO principal is SCP-denied (chicken-egg) — so day-zero apply of
 # this env runs as AWSControlTowerExecution / break-glass, not an operator's SSO
-# role. After day zero the roles persist and are never recreated.
+# role.
 # ============================================================================
 
 # ---- GitHub Actions OIDC provider — SHARED, referenced NOT managed ----------
@@ -118,7 +145,6 @@ data "aws_iam_policy_document" "greeter_ci_permissions" {
 resource "aws_iam_role" "greeter_ci" {
   name               = "aegis-greeter-ci"
   assume_role_policy = data.aws_iam_policy_document.greeter_ci_trust.json
-  lifecycle { prevent_destroy = true }
 }
 
 resource "aws_iam_role_policy" "greeter_ci" {
@@ -157,7 +183,6 @@ data "aws_iam_policy_document" "infra_ci_trust" {
 resource "aws_iam_role" "infra_ci" {
   name               = "aegis-platform-aws-ci"
   assume_role_policy = data.aws_iam_policy_document.infra_ci_trust.json
-  lifecycle { prevent_destroy = true }
 }
 
 resource "aws_iam_role_policy_attachment" "infra_ci_readonly" {
@@ -217,7 +242,6 @@ data "aws_iam_policy_document" "infra_apply_trust" {
 resource "aws_iam_role" "infra_apply" {
   name               = "gh-tf-apply-platform"
   assume_role_policy = data.aws_iam_policy_document.infra_apply_trust.json
-  lifecycle { prevent_destroy = true }
 }
 
 resource "aws_iam_role_policy_attachment" "infra_apply_admin" {
@@ -275,7 +299,6 @@ data "aws_iam_policy_document" "infra_destroy_trust" {
 resource "aws_iam_role" "infra_destroy" {
   name               = "gh-tf-destroy-platform"
   assume_role_policy = data.aws_iam_policy_document.infra_destroy_trust.json
-  lifecycle { prevent_destroy = true }
 }
 
 resource "aws_iam_role_policy_attachment" "infra_destroy_admin" {
