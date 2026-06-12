@@ -341,6 +341,25 @@ jobs:
 
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
 
+      # Reset BOOTSTRAP_COMPLETE after a successful destroy-platform.
+      # The repo-level var gates infra-plan and infra-apply: leaving it `true`
+      # after teardown makes subsequent plan/apply jobs attempt to assume the
+      # just-deleted gh-tf-apply-platform IAM role → OIDC AssumeRole fails
+      # (live red light 2026-06-12). Reset it here so the post-teardown plan
+      # no longer tries to authenticate against a deleted role.
+      #
+      # Token: GITHUB_TOKEN cannot set repo variables — it does not carry
+      # `actions:write` scope for repo-variable mutations (requires admin or a
+      # fine-grained PAT with the `variables` permission). Use GH_DEPLOY_KEY_PAT,
+      # the same PAT this job already uses for the escalation step.
+      - name: reset BOOTSTRAP_COMPLETE after successful destroy-platform
+        if: ${{ inputs.operation == 'destroy-platform' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
+        run: |
+          gh variable set BOOTSTRAP_COMPLETE --body "false" --repo "${{ github.repository }}"
+          echo "::notice::BOOTSTRAP_COMPLETE reset to false — subsequent infra-plan/apply will skip the deleted IAM roles cleanly."
+
       # A6: a FAILED destroy means resources may still be billing — escalate
       # loudly instead of letting a red run sit unnoticed (the incident: a failed
       # destroy was never re-actioned). Opens an issue; the ttl-reaper + budget
