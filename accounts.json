@@ -20,7 +20,7 @@
     "prod": {
       "account_id": "506221082337",
       "environment": "prod",
-      "pin": "v0.0.0-PLACEHOLDER",
+      "pin": "v0.1.0",
       "enabled_regions": [
         "eu-central-1"
       ],
