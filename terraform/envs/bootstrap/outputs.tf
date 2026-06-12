@@ -21,3 +21,29 @@ output "backend_hcl" {
     encrypt = true
   EOT
 }
+
+# ---- CI IAM seed (ADR-13) --------------------------------------------------
+# The four CI role ARNs now live in this bootstrap (local) state. envs/platform
+# re-exports them (via data.aws_iam_role lookups) so the downstream regional
+# env keeps reading them from the platform remote state — its cluster-access
+# roster contract is unchanged. These outputs let the seed env emit the ARNs
+# the operator needs to confirm after a day-zero apply.
+output "greeter_ci_role_arn" {
+  description = "IAM role ARN assumed by aegis-greeter CI for ECR push (GitHub OIDC)."
+  value       = aws_iam_role.greeter_ci.arn
+}
+
+output "infra_ci_role_arn" {
+  description = "IAM role ARN assumed by aegis-platform-aws CI for read-only AWS (terraform plan on any branch / PR). Scoped to ReadOnlyAccess."
+  value       = aws_iam_role.infra_ci.arn
+}
+
+output "infra_apply_role_arn" {
+  description = "IAM role ARN assumed by aegis-platform-aws CI for terraform apply. Trust scoped to refs/heads/main + apply environments. Set as AWS_INFRA_APPLY_ROLE_ARN repo secret."
+  value       = aws_iam_role.infra_apply.arn
+}
+
+output "infra_destroy_role_arn" {
+  description = "ARN of gh-tf-destroy-platform — assumed by infra-ops destroy-platform / destroy-region. Set as the AWS_DESTROY_ROLE_ARN repo secret (or derived from account_id)."
+  value       = aws_iam_role.infra_destroy.arn
+}

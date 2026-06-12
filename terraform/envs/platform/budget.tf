@@ -105,7 +105,7 @@ resource "aws_iam_role_policy" "budget_action" {
         Sid      = "ManageFreezeOnDeployRole"
         Effect   = "Allow"
         Action   = ["iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:GetRole", "iam:ListAttachedRolePolicies"]
-        Resource = aws_iam_role.infra_apply.arn
+        Resource = data.aws_iam_role.infra_apply.arn # seeded in envs/bootstrap (ADR-13)
       },
       {
         Sid      = "ReadFreezePolicy"
@@ -132,7 +132,7 @@ resource "aws_budgets_budget_action" "cost_freeze" {
   definition {
     iam_action_definition {
       policy_arn = aws_iam_policy.cost_freeze.arn
-      roles      = [aws_iam_role.infra_apply.name]
+      roles      = [data.aws_iam_role.infra_apply.name] # seeded in envs/bootstrap (ADR-13)
     }
   }
 

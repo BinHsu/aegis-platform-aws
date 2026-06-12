@@ -23,8 +23,18 @@ name: infra-ops
 # Bootstrap uses LOCAL state, applied in CI's ephemeral runner — operator
 # uploads the resulting state to a one-off artifact + manually configures
 # the GH Actions secret TFSTATE_REGION afterwards.
-# (For take-home, applying bootstrap from operator's laptop is also fine
-# and arguably safer — see backlog Step 6 + Open Questions.)
+#
+# ADR-13 — DAY-ZERO SEED runs from the OPERATOR'S LAPTOP via break-glass /
+# AWSControlTowerExecution, NOT from this CI job. Bootstrap now SEEDS the four
+# CI roles (iam-seed.tf), including gh-tf-apply-platform — the very role the CI
+# bootstrap job below assumes (AWS_INFRA_APPLY_ROLE_ARN). On a true cold start
+# (no roles exist yet) that role cannot assume itself into existence
+# (chicken-egg). So the FIRST apply of envs/bootstrap in a new account is an
+# operator-local `terraform apply` as a principal that can write IAM (the org
+# SCP denies IAM writes to SSO principals but permits the gh-tf-* / break-glass
+# / Control-Tower seed principal). Once the roles exist, this CI bootstrap job
+# can re-apply envs/bootstrap to reconcile baseline drift (the roles are
+# prevent_destroy, so a re-apply never deletes them).
 
 on:
   workflow_dispatch:
@@ -76,7 +86,11 @@ env:
   TF_IN_AUTOMATION: "1"
 
 jobs:
-  # Bootstrap only — apply role, not gated (creates the state backend).
+  # Bootstrap re-apply — assumes gh-tf-apply-platform (which envs/bootstrap now
+  # SEEDS, ADR-13). This CI job is the RECONCILE path (baseline drift on an
+  # already-seeded account); the DAY-ZERO seed is operator-local break-glass —
+  # see the ADR-13 note in the header block above. Creates the state backend +
+  # CI roles; not gated.
   ops:
     if: ${{ inputs.operation == 'bootstrap' }}
     runs-on: ubuntu-latest
@@ -339,25 +353,42 @@ jobs:
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="encrypt=true"
 
-          # ── Self-delete hazard fix ───────────────────────────────────────────
-          # `aws_iam_role.infra_destroy` (gh-tf-destroy-platform) and its admin
-          # policy attachment are managed INSIDE this same state
-          # (terraform/envs/platform/oidc.tf:260-268). If `terraform destroy`
-          # deletes them mid-run the live STS session is immediately invalidated
-          # → the remaining destroy calls fail with AccessDenied, leaving a
-          # half-destroyed platform (same shape as the 2026-06-06 incident).
+          # ── Self-delete hazard: STRUCTURALLY FIXED by ADR-13 ─────────────────
+          # gh-tf-destroy-platform (the role this job runs AS) + its admin
+          # attachment used to be managed in THIS platform state, so a plain
+          # `terraform destroy` deleted them mid-run, invalidated the live STS
+          # session, and left a half-destroyed platform (2026-06-06 incident
+          # shape). The previous fix was a pre-destroy `state rm` here — but that
+          # left an ORPHANED admin role out-of-state in both accounts (next-cycle
+          # EntityAlreadyExists) and, with the apply/CI roles also deleted,
+          # produced the cold-start chicken-egg observed 2026-06-12.
           #
-          # Fix: drop both addresses from state BEFORE destroy so Terraform
-          # never touches the live role. The role is then an intentional orphan;
-          # it is deleted out-of-band (e.g. `terraform state rm` + AWS console /
-          # CLI) or re-imported at the start of the next apply cycle. Mirrors the
-          # existing helm/kubernetes state-rm idiom used in destroy-region above.
-          # Each call is tolerant of the address already being absent (idempotent).
-          echo "::notice::Removing gh-tf-destroy-platform role from state before destroy (self-delete hazard — role is intentionally left as an orphan and deleted out-of-band)"
-          terraform state rm "aws_iam_role.infra_destroy" 2>/dev/null || true
-          terraform state rm "aws_iam_role_policy_attachment.infra_destroy_admin" 2>/dev/null || true
+          # ADR-13 moves the four CI roles to envs/bootstrap (LOCAL state, the
+          # operator-seeded layer that survives teardown-to-zero). This platform
+          # state no longer contains the destroy role, so destroy cannot touch it
+          # — no state-rm needed, no orphan, no chicken-egg. The state-rm lines
+          # were removed deliberately; do not re-add them.
 
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
+
+      # Reset BOOTSTRAP_COMPLETE after a successful destroy-platform.
+      # The repo-level var gates infra-plan and infra-apply: leaving it `true`
+      # after teardown makes subsequent plan/apply jobs attempt to assume the
+      # just-deleted gh-tf-apply-platform IAM role → OIDC AssumeRole fails
+      # (live red light 2026-06-12). Reset it here so the post-teardown plan
+      # no longer tries to authenticate against a deleted role.
+      #
+      # Token: GITHUB_TOKEN cannot set repo variables — it does not carry
+      # `actions:write` scope for repo-variable mutations (requires admin or a
+      # fine-grained PAT with the `variables` permission). Use GH_DEPLOY_KEY_PAT,
+      # the same PAT this job already uses for the escalation step.
+      - name: reset BOOTSTRAP_COMPLETE after successful destroy-platform
+        if: ${{ inputs.operation == 'destroy-platform' && success() }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
+        run: |
+          gh variable set BOOTSTRAP_COMPLETE --body "false" --repo "${{ github.repository }}"
+          echo "::notice::BOOTSTRAP_COMPLETE reset to false — subsequent infra-plan/apply will skip the deleted IAM roles cleanly."
 
       # A6: a FAILED destroy means resources may still be billing — escalate
       # loudly instead of letting a red run sit unnoticed (the incident: a failed

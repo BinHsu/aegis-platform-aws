@@ -18,6 +18,13 @@
 #
 # Per runbook A7: attach is DEFERRED to a follow-up cycle (staging-first validation).
 # See the commented-out re-point block at the bottom of this file.
+#
+# RELOCATED to envs/bootstrap by ADR-13: this scoped policy lives alongside the
+# gh-tf-destroy-platform role it targets (iam-seed.tf), both in the seed layer
+# that survives teardown-to-zero. Keeping the policy in envs/platform would have
+# coupled a bootstrap-owned role to a platform-owned policy that destroy-platform
+# tears down — re-introducing the very lifecycle split on a single role that
+# ADR-13 removes.
 
 # --------------------------------------------------------------------------
 # Scoped policy document
@@ -291,10 +298,12 @@ resource "aws_iam_policy" "infra_destroy_scoped" {
 #   policy_arn = aws_iam_policy.infra_destroy_scoped.arn
 # }
 #
-# Self-delete interaction note: gh-tf-destroy-platform is state-rm'd before the
-# platform terraform destroy run (the role manages its own attachment, so deleting
-# it in-band would remove the active session's permissions mid-destroy). The scoped
-# policy allows iam:Delete* and iam:Detach* on *, so even if the role were NOT
-# state-rm'd it would still have the needed IAM permissions — but the state-rm
-# pattern remains the correct sequencing regardless.
+# Self-delete interaction note (UPDATED by ADR-13): the gh-tf-destroy-platform
+# role + its attachment now live in THIS bootstrap (local) state, not in the
+# platform state that destroy-platform tears down. destroy-platform runs AS this
+# role and no longer manages it, so there is nothing to state-rm — the
+# self-delete hazard is structurally gone, and the obsolete pre-destroy state-rm
+# was removed from infra-ops.yml. The scoped policy still grants iam:Delete*/
+# iam:Detach* on * for the resources a real teardown deletes; it just never has
+# to delete its own role.
 # --------------------------------------------------------------------------

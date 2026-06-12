@@ -103,11 +103,23 @@ resource "helm_release" "kyverno" {
       }
     }
     cleanupJobs = {
+      # alpine/k8s has no USER directive — the container process runs as root
+      # (UID 0) by default. The chart's cleanupJobs securityContext sets
+      # runAsNonRoot: true but does NOT supply runAsUser, so the kubelet rejects
+      # the pod: CreateContainerConfigError "runAsNonRoot but no non-root UID
+      # specified" (live on prod 2026-06-12; 5 CronJob pods affected, issue #65).
+      # Fix: set runAsUser + runAsGroup = 65534 (nobody). bash + kubectl work fine
+      # as UID 65534. webhooksCleanup / policyReportsCleanup already default to
+      # 65534 in the chart; cleanupJobs does not — hence the explicit override here.
       admissionReports = {
         image = {
           registry   = "docker.io"
           repository = "alpine/k8s"
           tag        = "1.31.13"
+        }
+        securityContext = {
+          runAsUser  = 65534
+          runAsGroup = 65534
         }
       }
       clusterAdmissionReports = {
@@ -116,12 +128,20 @@ resource "helm_release" "kyverno" {
           repository = "alpine/k8s"
           tag        = "1.31.13"
         }
+        securityContext = {
+          runAsUser  = 65534
+          runAsGroup = 65534
+        }
       }
       updateRequests = {
         image = {
           registry   = "docker.io"
           repository = "alpine/k8s"
           tag        = "1.31.13"
+        }
+        securityContext = {
+          runAsUser  = 65534
+          runAsGroup = 65534
         }
       }
       ephemeralReports = {
@@ -130,12 +150,20 @@ resource "helm_release" "kyverno" {
           repository = "alpine/k8s"
           tag        = "1.31.13"
         }
+        securityContext = {
+          runAsUser  = 65534
+          runAsGroup = 65534
+        }
       }
       clusterEphemeralReports = {
         image = {
           registry   = "docker.io"
           repository = "alpine/k8s"
           tag        = "1.31.13"
+        }
+        securityContext = {
+          runAsUser  = 65534
+          runAsGroup = 65534
         }
       }
     }
