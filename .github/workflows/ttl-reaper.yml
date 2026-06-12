@@ -127,7 +127,13 @@ jobs:
       - name: dispatch destroy (EKS only; if enabled and not dry-run)
         if: ${{ steps.scan.outputs.eks_list != '' && github.event.inputs.dry_run != 'true' && vars.REAPER_AUTODESTROY == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          # Use the built-in GITHUB_TOKEN (has actions:write declared at job
+          # level) — NOT the PAT. The PAT lacked actions:write and caused a
+          # live 403 "Resource not accessible by personal access token" on
+          # run 27411076179 (2026-06-12). github.token is sufficient here
+          # because the workflow runs on main and the job already declares
+          # `permissions: actions: write`.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Auto-destroy is EKS-only (A11): NAT/RDS/ELB are alert-only, no safe
@@ -137,10 +143,15 @@ jobs:
           # environment; its in-job guard re-verifies exists / not-exempt /
           # over-TTL before terraform runs (accounts-dimension ADR).
           echo "dispatching destroy-region for ${{ matrix.region }} (account ${{ matrix.account_id }})"
+          # FAIL-LOUD: a failed dispatch leaves a billable cluster while the run
+          # reports green — same bug class as the A6 `|| echo` fixed in #38.
+          # Do NOT swallow this error. The matrix uses fail-fast: false so a
+          # dispatch failure for one target does not prevent other targets from
+          # being dispatched, but the job will still conclude as failed so the
+          # operator is paged.
           gh workflow run infra-ops.yml --ref main \
             -f operation=destroy-region \
             -f region='${{ matrix.region }}' \
             -f account_id='${{ matrix.account_id }}' \
             -f reaper=true \
-            -f ttl_hours="${TTL_HOURS}" \
-            || echo "::warning::dispatch failed for ${{ matrix.region }} (account ${{ matrix.account_id }})"
+            -f ttl_hours="${TTL_HOURS}"
