@@ -57,8 +57,10 @@ data "aws_iam_policy_document" "infra_destroy_scoped" {
   }
 
   # --- IAM: delete roles, policies, OIDC provider; read to plan/diff ---
-  # Note: the role itself (gh-tf-destroy-platform) is state-rm'd before the
-  # platform destroy runs, so self-delete is not a concern in practice.
+  # Note: gh-tf-destroy-platform now lives in bootstrap (ADR-13), not in the
+  # platform state that destroy-platform tears down. destroy-platform runs AS this
+  # role and no longer manages it — the self-delete hazard is structurally gone
+  # and the pre-destroy state-rm choreography was removed from infra-ops.yml.
   statement {
     sid    = "IAMDestroyScope"
     effect = "Allow"
