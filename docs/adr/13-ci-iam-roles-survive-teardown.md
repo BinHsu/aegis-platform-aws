@@ -206,8 +206,10 @@ pre-destroy `state rm` dance.
   no import). This is the property that makes the next cold start first-class.
 - **`bootstrap_complete` becomes honest**: it now literally means "state bucket +
   CI roles exist", because bootstrap creates both. After a full teardown it is
-  reset to `false` (the `infra-ops` destroy-platform job already does this); the
-  cold-start seed apply flips it back to `true`.
+  reset to `false` (the `infra-ops` destroy-platform job already does this). The
+  seed apply does **not** flip it — that is a distinct operator step (`gh variable
+  set BOOTSTRAP_COMPLETE --body true`, cold-start runbook step 3) so CI is handed
+  over only after the operator confirms secrets/vars are in place.
 - **Repo secrets/vars do NOT need re-seeding between cycles**: the role ARNs are
   **deterministic** — `arn:aws:iam::<account_id>:role/<fixed-name>` — so they are
   identical across teardown/recreate cycles. `AWS_INFRA_APPLY_ROLE_ARN` /
