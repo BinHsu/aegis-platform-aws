@@ -1,6 +1,12 @@
 # 2026-06-12 Joint-Strike — canonical plan
 
-**Status: ACTIVE until 2026-06-12.** Single source of truth for the next aegis
+**Status: DONE (2026-06-12). Window executed and closed — see §G.**
+
+---
+
+*Original plan follows (kept for context; §F was the live execution order; §G is the record).*
+
+**[Original status: ACTIVE until 2026-06-12.]** Single source of truth for the next aegis
 multi-account deploy→verify→destroy window. It unifies two workstreams that share
 one live cluster cycle:
 
@@ -437,3 +443,86 @@ first** — if A1 is a one-line fix (like the ALB one was), A closes fast and B 
 afternoon; if crossplane is another layer, A eats the afternoon and **B may slip**. The
 discipline: **the foundation (A) gates the house (B) — do not force prod before the staging
 bring-up is proven** (2026-06-11 proved the cost of forcing it).
+
+---
+
+## G. Execution record — 2026-06-12 (window closed)
+
+### W3 — infra-tier GitOps, prod proven end-to-end (first time)
+
+Tag `v0.1.0` cut at `58a764c`. Promotion PR #62 set `accounts.prod.pin = "v0.1.0"`. `infra-prod`
+detected the pin change, checked out the tag, ran `version-gate` with `gate_blocks=true` — **PASS**
+(current EKS version within standard support). `apply-platform` ran first: created the destroy role
+(A7), budget action (A9), and Cost Anomaly Detection monitor (A2) without error. `apply-regional`
+ran in `prod-apply-gated` — **operator approved**. Prod EKS stood up clean in ~13 minutes, full
+platform stack first try. All Phase-A fixes (ALB Service-mutator webhook, crossplane, kyverno image,
+teardown root-fix) held on prod without re-patching.
+
+### W1 — workload GitOps, prod-D ≡ staging-D ≡ built-D: PASS
+
+greeter-deploy promotion PR #8 pinned digest `0e6f3e6b…` in the prod overlay. ArgoCD synced to
+`Healthy` at `556b4e7`. Pods pulled the exact digest from shared ECR account `162975888022`
+cross-account. ALB `/healthz` returned HTTP 200. **prod-D ≡ staging-D ≡ built-D: verified.**
+
+### W2 — cost-incident guards, live results
+
+- **A12 version gate (pass-path):** exercised on the real prod apply — gate evaluated the EKS version
+  in use and returned pass. Aging-path test (deliberately pinning an extended-support version)
+  skipped — the live cluster was not the right place to exercise a HARD-FAIL path. Deferred to next
+  cycle on a staging-only branch.
+- **A2 member-CE:** `apply-platform` created the CE anomaly monitor without error — member-account
+  CE access was confirmed working in the management console before the apply.
+- **A11 reaper (partial):** reaper ran against the live prod cluster. Detect, issue, and
+  autodestroy-decision steps all produced correct output. The dispatch step **failed**: the PAT
+  lacked `actions:write`, and the failure was silently masked by `|| echo` — the same class of
+  masked-failure bug fixed for A6 in pre-window hardening (#38). Both defects fixed in PR #64
+  (PAT scope note + fail-loud). Full reaper chain re-proof (dispatch → destroy → zero) deferred
+  to next cycle.
+
+### Teardown record
+
+**destroy-region (prod):** failed once on `VPC DependencyViolation` — an orphaned ALB backend
+security group (`k8s-traffic-*`) was not covered by the #58 sweep, which has no retry after
+peer-SG deletion (issue #67 filed). Operator cleared the SG out-of-band; re-run completed clean.
+
+**destroy-platform (staging):** clean first try, 25 resources including the shared ECR
+(`aegis-deployment` account `162975888022`). Staging ECR is now gone — greeter image must be
+re-published cold-start next cycle.
+
+**destroy-platform (prod):** failed twice on `RepositoryNotEmptyException` (old 06-03 images still
+in the repo). `force_delete = true` was merged in PR #69, but Terraform cannot read that attribute
+until an `apply` runs first — the destroy reads the prior state, which has `force_delete = false`.
+Operator deleted the ECR repository out-of-band; final destroy run completed clean. This is a
+Terraform gotcha: a `force_delete` fix requires an apply cycle before the destroy can use it.
+
+**destroy-platform self-delete hazard:** the destroy role manages itself in state (`gh-tf-destroy-platform`
+IAM role + policy). Analysis identified this before the first run — PR #64 adds a pre-destroy
+`terraform state rm` for those resources, preventing the role from deleting itself mid-run.
+Proven live on both accounts. The orphaned `gh-tf-destroy-platform` roles are intentionally left
+in place; re-import or out-of-band deletion next cycle.
+
+### A7 — destroy-scoped policy
+
+Authored **empirically** from the day's CloudTrail: 852 events, 125 distinct actions across 13
+services. PR #70 merged. Attach to `gh-tf-destroy-platform` (replacing the admin policy) is
+**deliberately deferred**: staging-first validation next cycle. A commented TODO in
+`destroy-policy.tf` marks the re-point step. The admin policy remains until the scoped policy is
+validated under a full destroy run on staging.
+
+### Final state
+
+Both accounts verified at **zero billable** on window close. Prod verified live after final
+destroy-platform; staging verified pre-window (nothing deployed all day) with destroy-platform
+clean. Flags: `ALLOW_PARTIAL_APPLY=false`, `REAPER_AUTODESTROY=true`, staging
+`bootstrap_complete=false`, prod pin disarmed (this PR sets it back to `"v0.0.0-PLACEHOLDER"`).
+
+### Open follow-ups
+
+| Ref | Item |
+|---|---|
+| #67 | `destroy-region` sweep: two-phase approach or retry after peer-SG deletion (VPC DependencyViolation) |
+| #65 | Kyverno `runAsNonRoot` cleanup after image-rot fix |
+| — | A11 reaper full-chain re-proof (dispatch → destroy → zero) next cycle |
+| — | A7 destroy-scoped policy attach validation (staging-first, next cycle) |
+| — | greeter cold-start re-publish (shared ECR gone; staging ECR destroyed 2026-06-12) |
+| — | `aegis-core` / `aegis-core-deploy` CI/CD-flow gap (WS1 — OIDC fix, PR-bump handoff, digest pinning) |
