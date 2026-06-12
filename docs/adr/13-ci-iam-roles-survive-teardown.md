@@ -113,8 +113,9 @@ teardown definition:
   undocumented.
 - After ADR-13: cold start is **one formal operator command** —
   `terraform apply` on `envs/bootstrap` as break-glass — that seeds the state
-  bucket **and** the four CI roles from true zero, sets `bootstrap_complete`,
-  and hands the account to CI. No orphan imports, no `state rm` choreography.
+  bucket **and** the four CI roles from true zero. A separate operator step then
+  sets `BOOTSTRAP_COMPLETE` via `gh variable set` (Cold-start runbook step 3),
+  which hands the account to CI. No orphan imports, no `state rm` choreography.
 
 The full sequence is the **Cold-start runbook** section below. The key structural
 property: the seed apply is idempotent from **both** starting states — roles
