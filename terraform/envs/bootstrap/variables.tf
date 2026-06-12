@@ -20,3 +20,10 @@ variable "cost_center_tag" {
   type        = string
   default     = "platform-take-home"
 }
+
+# ---- CI IAM seed (ADR-13) --------------------------------------------------
+variable "github_owner" {
+  description = "GitHub org/user that owns aegis-greeter + aegis-platform-aws. Used in the OIDC trust subjects for the CI roles seeded here (iam-seed.tf). Same default as envs/platform/variables.tf."
+  type        = string
+  default     = "BinHsu"
+}

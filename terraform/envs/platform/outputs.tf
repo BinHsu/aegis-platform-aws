@@ -33,19 +33,28 @@ output "aws_region" {
   value       = var.platform_region
 }
 
+# CI role ARNs — the roles are SEEDED in envs/bootstrap (ADR-13) and looked up
+# here via data sources (oidc.tf). Re-exported so downstream regional/ keeps
+# reading them from the platform remote state (its cluster-access roster
+# contract is unchanged).
 output "greeter_ci_role_arn" {
-  description = "IAM role ARN assumed by aegis-greeter CI for ECR push (via GitHub OIDC)."
-  value       = aws_iam_role.greeter_ci.arn
+  description = "IAM role ARN assumed by aegis-greeter CI for ECR push (via GitHub OIDC). Seeded in envs/bootstrap."
+  value       = data.aws_iam_role.greeter_ci.arn
 }
 
 output "infra_ci_role_arn" {
-  description = "IAM role ARN assumed by aegis-platform-aws CI for read-only AWS (terraform plan on any branch / PR). Scoped to ReadOnlyAccess."
-  value       = aws_iam_role.infra_ci.arn
+  description = "IAM role ARN assumed by aegis-platform-aws CI for read-only AWS (terraform plan on any branch / PR). Scoped to ReadOnlyAccess. Seeded in envs/bootstrap."
+  value       = data.aws_iam_role.infra_ci.arn
 }
 
 output "infra_apply_role_arn" {
-  description = "IAM role ARN assumed by aegis-platform-aws CI for terraform apply. Trust scoped to refs/heads/main only — PRs cannot assume this role. Permissions: AdministratorAccess (least-privilege scoping is tradeoffs work)."
-  value       = aws_iam_role.infra_apply.arn
+  description = "IAM role ARN assumed by aegis-platform-aws CI for terraform apply. Trust scoped to refs/heads/main + apply environments — PRs cannot assume this role. Seeded in envs/bootstrap."
+  value       = data.aws_iam_role.infra_apply.arn
+}
+
+output "infra_destroy_role_arn" {
+  description = "ARN of gh-tf-destroy-platform (seeded in envs/bootstrap). Consumed by regional/ for the destroy-role EKS access entry. Set as the AWS_DESTROY_ROLE_ARN repo secret (or derived from account_id by infra-ops)."
+  value       = data.aws_iam_role.infra_destroy.arn
 }
 
 output "grafana_cloud_ssm_paths" {
