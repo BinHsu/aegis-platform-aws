@@ -383,7 +383,7 @@ jobs:
       # fine-grained PAT with the `variables` permission). Use GH_DEPLOY_KEY_PAT,
       # the same PAT this job already uses for the escalation step.
       - name: reset BOOTSTRAP_COMPLETE after successful destroy-platform
-        if: ${{ inputs.operation == 'destroy-platform' }}
+        if: ${{ inputs.operation == 'destroy-platform' && success() }}
         env:
           GH_TOKEN: ${{ secrets.GH_DEPLOY_KEY_PAT }}
         run: |
