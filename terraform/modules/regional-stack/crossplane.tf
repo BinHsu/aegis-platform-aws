@@ -40,6 +40,49 @@ resource "helm_release" "crossplane" {
   chart      = "crossplane"
   version    = "1.20.8" # pinned — verify at bootstrap
 
+  # PSA-restricted compliance (live-diagnosed 2026-06-12 — the real root cause
+  # behind the 2026-06-10/06-11 "context deadline exceeded" failures; capacity,
+  # timeout, and image-rot were all misdiagnoses).
+  #
+  # kubernetes_namespace.crossplane_system enforces pod-security.kubernetes.io/
+  # enforce=restricted (defensive posture, by design — we do NOT downgrade the
+  # policy to fix chart deficiencies). Crossplane 1.20.8 omits three fields
+  # required by the restricted profile: pod-level runAsNonRoot and seccompProfile,
+  # and container-level capabilities.drop. The API server rejects every pod
+  # synchronously with "forbidden: violates PodSecurity "restricted:latest"" —
+  # zero pods are ever scheduled, helm wait=600s exhausts, apply fails.
+  #
+  # These six set blocks supply the missing fields via chart-native value paths
+  # (confirmed in `helm show values crossplane-stable/crossplane --version 1.20.8`).
+  # They MERGE with the chart's existing security context defaults (runAsUser,
+  # allowPrivilegeEscalation=false, readOnlyRootFilesystem), not replace them.
+  # Alternative rejected: downgrading the namespace PSA label to baseline/privileged
+  # trades a real security control to paper over a chart gap — fix the chart values.
+  set {
+    name  = "podSecurityContextCrossplane.runAsNonRoot"
+    value = "true"
+  }
+  set {
+    name  = "podSecurityContextCrossplane.seccompProfile.type"
+    value = "RuntimeDefault"
+  }
+  set {
+    name  = "securityContextCrossplane.capabilities.drop[0]"
+    value = "ALL"
+  }
+  set {
+    name  = "podSecurityContextRBACManager.runAsNonRoot"
+    value = "true"
+  }
+  set {
+    name  = "podSecurityContextRBACManager.seccompProfile.type"
+    value = "RuntimeDefault"
+  }
+  set {
+    name  = "securityContextRBACManager.capabilities.drop[0]"
+    value = "ALL"
+  }
+
   depends_on = [module.eks]
 }
 
