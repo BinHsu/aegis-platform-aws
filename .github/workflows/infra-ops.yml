@@ -244,9 +244,13 @@ jobs:
           if ! printf '%s' "$r" | grep -qE '^[a-z]{2}-[a-z]+-[0-9]+$'; then
             echo "::error::region '${r}' is not a valid AWS region"; exit 1
           fi
-          CLUSTER="aegis-platform-aws-${r}"
+          # Derive the cluster name from the already-initialised terraform state
+          # (destroy-region init ran in the preceding step with working-directory
+          # terraform/envs/regional). Fall back to the canonical convention so the
+          # script stays runnable even when state is empty.
+          CLUSTER="$(terraform -chdir=terraform/envs/regional output -raw cluster_name 2>/dev/null || echo "aegis-platform-${r}")"
           curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy will be skipped"
-          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
+          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" "$CLUSTER" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
           VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
           if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
             for arn in $(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null); do

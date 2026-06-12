@@ -264,9 +264,12 @@ jobs:
           # uninstall (the cluster deletion reaps them). kubectl + pre-destroy.sh
           # clean any ALB first (ENIs that would DependencyViolation the VPC).
           r='${{ matrix.region }}'
-          CLUSTER="aegis-platform-aws-${r}"
+          # Derive the cluster name from the already-initialised terraform state
+          # (the init step above ran in this same working-directory). Fall back to
+          # the canonical convention so the script stays runnable when state is partial.
+          CLUSTER="$(terraform output -raw cluster_name 2>/dev/null || echo "aegis-platform-${r}")"
           curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy skipped"
-          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete"
+          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" "$CLUSTER" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete"
           VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
           if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
             for arn in $(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null); do

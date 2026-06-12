@@ -11,15 +11,23 @@
 # it stops re-syncing the Ingress) and delete the Ingress; the controller then
 # deletes the ALB. Wait for that, then return so `terraform destroy` can run.
 #
-#   Usage:  scripts/dr/pre-destroy.sh <region>
+#   Usage:  scripts/dr/pre-destroy.sh <region> [cluster-name]
+#
+#   <region>       : AWS region (required)
+#   [cluster-name] : EKS cluster name (optional; defaults to aegis-platform-<region>)
+#                    Pass explicitly when callers already have the terraform output
+#                    to avoid the previous "aegis-platform-aws-<region>" misguess.
 #
 # Idempotent: if the cluster, the Application, or the Ingress is already gone,
 # the relevant step is skipped — safe to re-run.
 
 set -euo pipefail
 
-REGION="${1:?usage: pre-destroy.sh <region>}"
-CLUSTER="aegis-platform-aws-${REGION}"
+REGION="${1:?usage: pre-destroy.sh <region> [cluster-name]}"
+# Derive the cluster name from the caller when available (the terraform output
+# is the authoritative source); fall back to the canonical naming convention
+# aegis-platform-<region> (locals.tf: cluster_name = "aegis-platform-${var.region}").
+CLUSTER="${2:-aegis-platform-${REGION}}"
 
 if ! aws eks describe-cluster --name "$CLUSTER" --region "$REGION" >/dev/null 2>&1; then
   echo "pre-destroy: cluster $CLUSTER not found — nothing to clean, skipping."
@@ -34,13 +42,24 @@ kubectl delete application aegis-greeter -n argocd --ignore-not-found --timeout=
 echo "pre-destroy: deleting the greeter Ingress — the ALB controller then deletes its ALB..."
 kubectl delete ingress --all -n greeter --ignore-not-found --timeout=120s 2>/dev/null || true
 
+# Resolve the cluster's VPC so the ALB-wait poll is name-agnostic.
+# The ALB is named k8s-<namespace-hash>-* (e.g. k8s-aegisgre-* for namespace
+# aegis-greeter) — the exact suffix is not predictable, so scope by VPC instead.
+VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$REGION" \
+        --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
+
 echo "pre-destroy: waiting (up to 5 min) for the ALB controller to delete the greeter ALB..."
 deadline=$(( $(date +%s) + 300 ))
-while AWS_PAGER='' aws elbv2 describe-load-balancers --region "$REGION" \
-        --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-greeter')].LoadBalancerArn" \
-        --output text 2>/dev/null | grep -q .; do
+while true; do
+  if [ -z "$VPC" ] || [ "$VPC" = "None" ]; then
+    break  # VPC gone — no ELBv2 can remain
+  fi
+  remaining="$(AWS_PAGER='' aws elbv2 describe-load-balancers --region "$REGION" \
+                 --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" \
+                 --output text 2>/dev/null || true)"
+  [ -z "$remaining" ] && break
   if [ "$(date +%s)" -ge "$deadline" ]; then
-    echo "pre-destroy: WARNING — a greeter ALB is still present after 5 min." >&2
+    echo "pre-destroy: WARNING — an ALB in VPC ${VPC} is still present after 5 min." >&2
     echo "  terraform destroy may stall on a DependencyViolation; if so, delete" >&2
     echo "  the ALB manually (aws elbv2 delete-load-balancer) and re-run." >&2
     break
