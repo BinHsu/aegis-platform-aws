@@ -270,24 +270,42 @@ jobs:
             sleep 20  # ENIs detach a beat after the LB record disappears
 
             # Controller-owned SGs (tag elbv2.k8s.aws/cluster=<cluster>) orphan when
-            # the cluster dies before the ALB controller reaps them; they hold mutual
-            # ingress/egress refs so neither can be deleted until rules are revoked
-            # (two-pass revoke-then-delete). Discovered by tag, not name, per the
-            # tag-discovery discipline. Caught live 2026-06-12: they
-            # DependencyViolation'd the VPC destroy even after the ALB backstop ran.
+            # the cluster dies before the ALB controller reaps them. Two-phase sweep
+            # (fix for issue #67 — single-pass could DependencyViolation if a peer SG's
+            # UserIdGroupPairs rule still referenced the SG being deleted):
+            #   Phase 1: revoke ALL ingress+egress rules on EVERY tag-matched SG before
+            #            any delete — eliminates ordering sensitivity between peer SGs.
+            #   Phase 2: delete each SG; retry the failed set up to 3 passes (residual
+            #            ENI detach latency). Remaining orphans after 3 passes emit
+            #            ::warning (terraform destroy proceeds; may still hit
+            #            DependencyViolation on the VPC — operator must clear manually).
             ORPHAN_SGS="$(aws ec2 describe-security-groups --region "$r" \
               --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" \
               --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
+            # Phase 1 — revoke all rules across all SGs before any delete.
             for sg in $ORPHAN_SGS; do
               ing="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null || echo '[]')"
               egr="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null || echo '[]')"
               if [ "$ing" != "[]" ]; then aws ec2 revoke-security-group-ingress --region "$r" --group-id "$sg" --ip-permissions "$ing" >/dev/null 2>&1 || true; fi
               if [ "$egr" != "[]" ]; then aws ec2 revoke-security-group-egress  --region "$r" --group-id "$sg" --ip-permissions "$egr" >/dev/null 2>&1 || true; fi
             done
-            for sg in $ORPHAN_SGS; do
-              echo "teardown backstop: deleting orphaned controller SG ${sg}"
-              aws ec2 delete-security-group --region "$r" --group-id "$sg" 2>/dev/null || echo "::warning::could not delete ${sg} — terraform destroy may hit DependencyViolation"
+            # Phase 2 — delete with up to 3 retry passes.
+            pending="$ORPHAN_SGS"
+            for pass in 1 2 3; do
+              [ -z "$pending" ] && break
+              failed=""
+              for sg in $pending; do
+                echo "teardown backstop: deleting orphaned controller SG ${sg} (pass ${pass}/3)"
+                if ! aws ec2 delete-security-group --region "$r" --group-id "$sg" 2>/dev/null; then
+                  failed="${failed:+$failed }$sg"
+                fi
+              done
+              pending="$failed"
+              [ -n "$pending" ] && [ "$pass" -lt 3 ] && sleep 15
             done
+            if [ -n "$pending" ]; then
+              echo "::warning::could not delete SG(s) after 3 passes: ${pending} — terraform destroy may hit DependencyViolation on the VPC"
+            fi
           fi
 
           cd terraform/envs/regional
