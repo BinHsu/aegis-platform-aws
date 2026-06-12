@@ -47,6 +47,77 @@ resource "helm_release" "kyverno" {
   wait    = false
   timeout = 300
 
+  # Bitnami pulled bitnami/kubectl from free Docker Hub access on 2025-08-28.
+  # Caught live 2026-06-11 as ImagePullBackOff on all kyverno cleanup pods
+  # (kyverno-cleanup-admission-reports-*, kyverno-cleanup-cluster-admission-
+  # reports-*, kyverno-cleanup-cluster-ephemeral-reports-*, kyverno-cleanup-
+  # ephemeral-reports-*, kyverno-cleanup-update-requests-*,
+  # kyverno-remove-configmap-*). The upstream-maintained replacement is
+  # registry.k8s.io/kubectl (same binary, no auth wall).
+  #
+  # All 7 value paths confirmed from `helm show values kyverno/kyverno --version
+  # 3.2.6` (every path that held `repository: bitnami/kubectl`):
+  #   webhooksCleanup.image.*
+  #   policyReportsCleanup.image.*
+  #   cleanupJobs.admissionReports.image.*
+  #   cleanupJobs.clusterAdmissionReports.image.*
+  #   cleanupJobs.updateRequests.image.*
+  #   cleanupJobs.ephemeralReports.image.*
+  #   cleanupJobs.clusterEphemeralReports.image.*
+  values = [yamlencode({
+    webhooksCleanup = {
+      image = {
+        registry   = "registry.k8s.io"
+        repository = "kubectl"
+        tag        = "v1.31.0"
+      }
+    }
+    policyReportsCleanup = {
+      image = {
+        registry   = "registry.k8s.io"
+        repository = "kubectl"
+        tag        = "v1.31.0"
+      }
+    }
+    cleanupJobs = {
+      admissionReports = {
+        image = {
+          registry   = "registry.k8s.io"
+          repository = "kubectl"
+          tag        = "v1.31.0"
+        }
+      }
+      clusterAdmissionReports = {
+        image = {
+          registry   = "registry.k8s.io"
+          repository = "kubectl"
+          tag        = "v1.31.0"
+        }
+      }
+      updateRequests = {
+        image = {
+          registry   = "registry.k8s.io"
+          repository = "kubectl"
+          tag        = "v1.31.0"
+        }
+      }
+      ephemeralReports = {
+        image = {
+          registry   = "registry.k8s.io"
+          repository = "kubectl"
+          tag        = "v1.31.0"
+        }
+      }
+      clusterEphemeralReports = {
+        image = {
+          registry   = "registry.k8s.io"
+          repository = "kubectl"
+          tag        = "v1.31.0"
+        }
+      }
+    }
+  })]
+
   depends_on = [module.eks]
 }
 
