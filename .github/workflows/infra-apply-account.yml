@@ -282,6 +282,26 @@ jobs:
               sleep 15
             done
             sleep 20
+
+            # Controller-owned SGs (tag elbv2.k8s.aws/cluster=<cluster>) orphan when
+            # the cluster dies before the ALB controller reaps them; they hold mutual
+            # ingress/egress refs so neither can be deleted until rules are revoked
+            # (two-pass revoke-then-delete). Discovered by tag, not name, per the
+            # tag-discovery discipline. Caught live 2026-06-12: they
+            # DependencyViolation'd the VPC destroy even after the ALB backstop ran.
+            ORPHAN_SGS="$(aws ec2 describe-security-groups --region "$r" \
+              --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" \
+              --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
+            for sg in $ORPHAN_SGS; do
+              ing="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null || echo '[]')"
+              egr="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null || echo '[]')"
+              if [ "$ing" != "[]" ]; then aws ec2 revoke-security-group-ingress --region "$r" --group-id "$sg" --ip-permissions "$ing" >/dev/null 2>&1 || true; fi
+              if [ "$egr" != "[]" ]; then aws ec2 revoke-security-group-egress  --region "$r" --group-id "$sg" --ip-permissions "$egr" >/dev/null 2>&1 || true; fi
+            done
+            for sg in $ORPHAN_SGS; do
+              echo "self-reap backstop: deleting orphaned controller SG ${sg}"
+              aws ec2 delete-security-group --region "$r" --group-id "$sg" 2>/dev/null || echo "::warning::could not delete ${sg} — terraform destroy may hit DependencyViolation"
+            done
           fi
           terraform state list 2>/dev/null | grep -E 'helm_release\.|kubernetes_' | while read -r addr; do
             echo "self-reap: state rm ${addr} (cluster deletion reaps it)"
