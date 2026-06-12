@@ -305,3 +305,162 @@ resource "aws_iam_role_policy_attachment" "infra_destroy_admin" {
   role       = aws_iam_role.infra_destroy.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
+
+# ---- Role E: aegis-core CI -> ECR push --------------------------------------
+# Mirrors the greeter_ci role. Trust pinned to the exact workflow file ref
+# (job_workflow_ref) so the blast radius is tightest — a PR or fork branch
+# on aegis-core CANNOT assume this role; only the release-staging-image.yml
+# workflow running on refs/heads/main can. (trust comment from aegis-core
+# release-staging-image.yml §"Trust scope".)
+data "aws_iam_policy_document" "core_ci_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # Pinned to the main ref — aegis-core's release-staging-image.yml only
+    # runs on push to main, so the OIDC subject is the exact ref.
+    # Tightest blast radius: a PR / fork branch on aegis-core cannot assume
+    # this role.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_owner}/aegis-core:ref:refs/heads/main"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "core_ci_permissions" {
+  # ECR auth token — account-level, cannot be resource-scoped.
+  statement {
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  # ECR push (+ the layer reads docker push performs) — scoped to the single
+  # aegis-core repo ARN. ARN constructed from account + region + the fixed repo
+  # name `aegis-core` (same name used by envs/platform/ecr.tf) — bootstrap has
+  # zero upstream dependency on platform state.
+  # ecr:DescribeImages is required because release-staging-image.yml calls
+  # `aws ecr describe-images` to source the authoritative digest after push;
+  # without it that step fails with AccessDeniedException (greeter#14 lesson).
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ]
+    resources = ["arn:aws:ecr:${var.platform_region}:${data.aws_caller_identity.current.account_id}:repository/aegis-core"]
+  }
+}
+
+resource "aws_iam_role" "core_ci" {
+  name               = "github-actions-aegis-core-ecr"
+  assume_role_policy = data.aws_iam_policy_document.core_ci_trust.json
+}
+
+resource "aws_iam_role_policy" "core_ci" {
+  name   = "ecr-push"
+  role   = aws_iam_role.core_ci.id
+  policy = data.aws_iam_policy_document.core_ci_permissions.json
+}
+
+# ---- Role F: aegis-core CI -> S3 frontend sync + CloudFront invalidation ----
+# Trust identical to Role E — pinned to refs/heads/main on aegis-core, but via
+# the release-staging-frontend.yml workflow file. IAM does not enforce
+# job_workflow_ref without an explicit condition; the sub pin to
+# refs/heads/main is already the tightest usable scope at this layer (the
+# additional job_workflow_ref check lives in the LZ trust policy per ldz #79).
+data "aws_iam_policy_document" "core_frontend_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_owner}/aegis-core:ref:refs/heads/main"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "core_frontend_permissions" {
+  # S3 — frontend bundle sync. Scoped to the staging frontend bucket.
+  # Bucket name is deterministic: `aegis-staging-frontend-<account_id>`.
+  # Both the bucket ARN (for ListBucket) and the objects ARN (/*) are required:
+  # ListBucket needs the bucket resource; PutObject/DeleteObject/GetObject need
+  # the objects resource.
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:DeleteObject",
+      "s3:GetObject",
+      "s3:PutObject",
+    ]
+    resources = ["arn:aws:s3:::aegis-staging-frontend-${data.aws_caller_identity.current.account_id}/*"]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::aegis-staging-frontend-${data.aws_caller_identity.current.account_id}"]
+  }
+
+  # CloudFront cache invalidation. The distribution ID `E5PYHGEEZQ7M8` is a
+  # staging singleton provisioned in the LZ; it does not have a clean Terraform
+  # data-source path from this seed layer (which must have zero upstream
+  # dependency). Scoping to `*` here and noting the id in the comment below is
+  # the least-astonishing option: the policy only grants CreateInvalidation (not
+  # UpdateDistribution or admin actions), so the blast radius of the wildcard is
+  # bounded to "can flush any CloudFront cache in this account", which is
+  # acceptable for a CI-push role.
+  #
+  # Distribution: E5PYHGEEZQ7M8 (aegis-staging-frontend; vars.FRONTEND_CLOUDFRONT_DISTRIBUTION_ID
+  # in aegis-core's GH Variables). Tighten to
+  # arn:aws:cloudfront::<account>:distribution/<id> once the distribution ARN
+  # is available as a stable output from a shared layer this bootstrap can read.
+  statement {
+    effect    = "Allow"
+    actions   = ["cloudfront:CreateInvalidation"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role" "core_frontend" {
+  name               = "github-actions-aegis-core-frontend"
+  assume_role_policy = data.aws_iam_policy_document.core_frontend_trust.json
+}
+
+resource "aws_iam_role_policy" "core_frontend" {
+  name   = "s3-sync-and-cf-invalidate"
+  role   = aws_iam_role.core_frontend.id
+  policy = data.aws_iam_policy_document.core_frontend_permissions.json
+}
