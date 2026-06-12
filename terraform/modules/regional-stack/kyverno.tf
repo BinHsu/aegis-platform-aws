@@ -48,12 +48,35 @@ resource "helm_release" "kyverno" {
   timeout = 300
 
   # Bitnami pulled bitnami/kubectl from free Docker Hub access on 2025-08-28.
-  # Caught live 2026-06-11 as ImagePullBackOff on all kyverno cleanup pods
+  # Caught live 2026-06-12 as ImagePullBackOff on all kyverno cleanup pods
   # (kyverno-cleanup-admission-reports-*, kyverno-cleanup-cluster-admission-
   # reports-*, kyverno-cleanup-cluster-ephemeral-reports-*, kyverno-cleanup-
-  # ephemeral-reports-*, kyverno-cleanup-update-requests-*,
-  # kyverno-remove-configmap-*). The upstream-maintained replacement is
-  # registry.k8s.io/kubectl (same binary, no auth wall).
+  # ephemeral-reports-*, kyverno-cleanup-update-requests-*).
+  #
+  # First replacement attempt used registry.k8s.io/kubectl:v1.31.0 — that image
+  # pulls cleanly but is DISTROLESS (no /bin/bash). The chart's kyverno-clean-
+  # reports post-upgrade hook and all 5 cleanupJobs CronJobs execute via:
+  #   command: ["/bin/bash", "-c", "set -euo pipefail; COUNT=$(kubectl get ...)"]
+  # Distroless → exec: "/bin/bash": stat /bin/bash: no such file or directory →
+  # BackoffLimitExceeded. Caught live 2026-06-12 on aegis-platform-eu-central-1.
+  #
+  # Upstream kyverno 3.6+ switched cleanupJobs to kyverno/kyverno-cli (no bash
+  # dependency there) and webhooksCleanup to registry.k8s.io/kubectl — but still
+  # distroless. The chart's bash dependency in 3.2.6 requires an image with BOTH
+  # kubectl AND bash.
+  #
+  # Chosen: docker.io/alpine/k8s:1.31.13
+  #   - Toolbox image maintained by the alpine/k8s project (open-source, GitHub:
+  #     alpine-docker/alpine-k8s). Ships kubectl + bash + common tools on Alpine.
+  #   - Not bitnami (no auth wall). No distroless constraint.
+  #   - Tag 1.31.13 matches kubectl v1.31, within 1 minor of the cluster's k8s
+  #     1.35 (kubectl ±1 minor is supported by the Kubernetes skew policy).
+  #   - Verified live 2026-06-12 on aegis-platform-eu-central-1 (EKS k8s 1.35):
+  #       kubectl run test --image=docker.io/alpine/k8s:1.31.13 ...
+  #         /bin/bash -c "kubectl version --client && echo BASH_OK"
+  #       → Client Version: v1.31.13 / BASH_OK / exit 0 (Succeeded)
+  #   - Tech-debt note: pin to a specific digest at next chart upgrade to satisfy
+  #     ADR-10 require-digest policy (Audit-mode today; no blocker yet).
   #
   # All 7 value paths confirmed from `helm show values kyverno/kyverno --version
   # 3.2.6` (every path that held `repository: bitnami/kubectl`):
@@ -67,52 +90,52 @@ resource "helm_release" "kyverno" {
   values = [yamlencode({
     webhooksCleanup = {
       image = {
-        registry   = "registry.k8s.io"
-        repository = "kubectl"
-        tag        = "v1.31.0"
+        registry   = "docker.io"
+        repository = "alpine/k8s"
+        tag        = "1.31.13"
       }
     }
     policyReportsCleanup = {
       image = {
-        registry   = "registry.k8s.io"
-        repository = "kubectl"
-        tag        = "v1.31.0"
+        registry   = "docker.io"
+        repository = "alpine/k8s"
+        tag        = "1.31.13"
       }
     }
     cleanupJobs = {
       admissionReports = {
         image = {
-          registry   = "registry.k8s.io"
-          repository = "kubectl"
-          tag        = "v1.31.0"
+          registry   = "docker.io"
+          repository = "alpine/k8s"
+          tag        = "1.31.13"
         }
       }
       clusterAdmissionReports = {
         image = {
-          registry   = "registry.k8s.io"
-          repository = "kubectl"
-          tag        = "v1.31.0"
+          registry   = "docker.io"
+          repository = "alpine/k8s"
+          tag        = "1.31.13"
         }
       }
       updateRequests = {
         image = {
-          registry   = "registry.k8s.io"
-          repository = "kubectl"
-          tag        = "v1.31.0"
+          registry   = "docker.io"
+          repository = "alpine/k8s"
+          tag        = "1.31.13"
         }
       }
       ephemeralReports = {
         image = {
-          registry   = "registry.k8s.io"
-          repository = "kubectl"
-          tag        = "v1.31.0"
+          registry   = "docker.io"
+          repository = "alpine/k8s"
+          tag        = "1.31.13"
         }
       }
       clusterEphemeralReports = {
         image = {
-          registry   = "registry.k8s.io"
-          repository = "kubectl"
-          tag        = "v1.31.0"
+          registry   = "docker.io"
+          repository = "alpine/k8s"
+          tag        = "1.31.13"
         }
       }
     }
