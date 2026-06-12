@@ -116,7 +116,11 @@ data "aws_iam_policy_document" "infra_destroy_scoped" {
   }
 
   # --- S3 (application buckets): delete ALB access-log bucket + content;
-  #     Get*/List* cover the bucket-attribute reads terraform does before deletion ---
+  #     Get*/List* cover the bucket-attribute reads terraform does before deletion.
+  #     DeleteObject*/AbortMultipartUpload are S3 data-plane events — absent from
+  #     management CloudTrail, added from static analysis (CodeRabbit): force_destroy
+  #     on a versioned/non-empty bucket (ALB access-logs) drains objects before
+  #     DeleteBucket, requiring these permissions. ---
   statement {
     sid    = "S3DestroyScope"
     effect = "Allow"
@@ -126,6 +130,10 @@ data "aws_iam_policy_document" "infra_destroy_scoped" {
       "s3:DeleteBucketLifecycle",
       "s3:DeleteBucketPolicy",
       "s3:DeleteBucketPublicAccessBlock",
+      # S3 data events (not in management CloudTrail — added from static analysis):
+      # force_destroy drains versioned objects before DeleteBucket.
+      "s3:DeleteObject*",
+      "s3:AbortMultipartUpload",
       "s3:Get*",
       "s3:List*",
       "s3:PutLifecycleConfiguration",
