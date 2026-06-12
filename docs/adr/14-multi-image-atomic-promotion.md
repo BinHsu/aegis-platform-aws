@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (operator sign-off pending). Extends
+Accepted (operator 2026-06-12). Extends
 [ADR-10](10-release-model-build-once-promote-by-digest.md) (build once, promote
 by digest) to a workload that ships **more than one image**, and depends on
 [ADR-12](12-registry-injection-vs-digest-pin-field-ownership.md) (the overlay

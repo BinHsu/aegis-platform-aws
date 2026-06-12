@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (operator sign-off pending). Extends
+Accepted (operator 2026-06-12). Extends
 [ADR-10](10-release-model-build-once-promote-by-digest.md) (build once, promote
 by digest) to an artifact class that has **no OCI digest**: a static
 single-page-app bundle served from S3 + CloudFront.
@@ -92,41 +92,38 @@ forbids; see WS1 below.)
   is strictly cheaper and safer than the status quo `/*` blanket invalidation
   (which churns the whole edge cache on every deploy).
 
-### The baked-env problem — resolve explicitly
+### The baked-env problem — resolved by runtime config
 
-Strict build-once requires the bundle to be environment-agnostic. Two paths:
+Strict build-once requires the bundle to be environment-agnostic. The app
+fetches **`/config.json` at boot** — a tiny JSON with `cognito`,
+`gatewayEndpoint`, and any other env-specific values. That file lives
+**outside** the release prefix — at the bucket root or a per-env path
+(`s3://<bucket>/config.json`, distinct per environment / distribution) — so the
+**same** `releases/<sha>/` bundle reads staging's config under the staging
+distribution and prod's config under the prod distribution. This enables **true
+build-once**: one artifact, promoted by repoint, environment supplied at runtime.
 
-- **(i) Runtime config — the target.** The app fetches `/config.json` at boot
-  (a tiny JSON with `cognito`, `gatewayEndpoint`, …). That file lives **outside**
-  the release prefix — at the bucket root or a per-env path
-  (`s3://<bucket>/config.json`, distinct per environment / distribution) — so the
-  **same** `releases/<sha>/` bundle reads staging's config under the staging
-  distribution and prod's config under the prod distribution. This enables
-  **true build-once**: one artifact, promoted by repoint, environment supplied at
-  runtime. Cost: a small frontend change — replace compile-time
-  `import.meta.env.VITE_AEGIS_*` reads with a boot-time `fetch('/config.json')`
-  (one `config` provider / context, ~one file). The Cognito SDK and gateway
-  client read from the fetched object instead of the inlined env.
-- **(ii) Per-env rebuild, promote the git SHA — the WS1 interim.** Keep
-  baking env at build; build a prod bundle from the **same git SHA** under
-  `releases/<sha>-prod/`; promotion repoints prod at *its* prefix. This promotes
-  the **git SHA** (the source identity), **not the byte-identical artifact** — it
-  is weaker (prod runs a separate build of the same source, the ADR-10 §1
-  rebuild caveat applies) but needs **zero frontend change**.
-
-**Decision: (i) runtime config is the target; (ii) is the WS1 interim.** (i) is
-the only path that achieves the ADR-10 invariant — *prod runs the bytes staging
-verified* — for the frontend; baked env makes (ii) a same-source rebuild, which
-ADR-10 §1 explicitly calls out as breaking the verify→ship chain. We ship (ii)
-first because it unblocks the prefix/pointer/promotion machinery with no
-frontend code change, then land the `/config.json` refactor to reach
-build-once. The machinery (immutable prefix, git-tracked pointer, repoint
-promotion, scoped invalidation) is **identical** under both — only whether the
-prefix is shared (i) or per-env (ii) changes, so the interim does not throw away
-work.
+The required frontend change is a **WS1 prerequisite, not optional**: replace
+compile-time `import.meta.env.VITE_AEGIS_*` reads with a boot-time
+`fetch('/config.json')` (one `config` provider / context, ~one file). The
+Cognito SDK and gateway client read from the fetched object instead of the
+inlined env. Without this change the bundle still carries baked env values;
+promotion would serve staging's endpoints to prod users — a functional
+regression. The `/config.json` refactor ships as part of WS1 alongside the
+prefix/pointer/promotion plumbing.
 
 ## Alternatives considered
 
+- **Per-env rebuild, promote the git SHA.** Keep baking env at build; build a
+  prod bundle from the **same git SHA** under `releases/<sha>-prod/`; promotion
+  repoints prod at *its* prefix. This promotes the **git SHA** (the source
+  identity), **not the byte-identical artifact** — prod runs a separate build of
+  the same source, which ADR-10 §1 explicitly calls out as breaking the
+  verify→ship chain. Rejected: accepting per-env rebuild would bake env values
+  into the artifact and forfeit the artifact-immutability the whole ADR exists to
+  get — the prefix/pointer/promotion machinery would exist but would provide
+  weaker guarantees than stated. The operator chose the clean build-once path;
+  per-env rebuild does not deliver it.
 - **Keep the direct `s3 sync --delete` (status quo).** One bucket, overwrite in
   place, `/*` invalidation. Rejected: no immutability (every deploy destroys the
   prior release — no rollback target), no env promotion (no prod path at all),
@@ -148,10 +145,11 @@ work.
 
 ## Consequences
 
-- **Build CI changes** from `s3 sync --delete <bucket>` to
-  `s3 sync releases/<git-sha>/` (no `--delete`, write-once prefix), then advances
-  the **staging** pointer. A deny-overwrite bucket policy on `releases/*` makes
-  the prefix immutable (the S3 analogue of ECR `IMMUTABLE`).
+- **Build CI changes** from `aws s3 sync --delete <local-dist> s3://<bucket>/`
+  to `aws s3 sync <local-dist> s3://<bucket>/releases/<git-sha>/` (no `--delete`,
+  write-once prefix), then advances the **staging** pointer. A deny-overwrite
+  bucket policy on `releases/*` makes the prefix immutable (the S3 analogue of
+  ECR `IMMUTABLE`).
 - **A prod CloudFront distribution / behavior** is provisioned (it does not exist
   today — current flow is staging-only), reading from the same bucket via a
   git-tracked origin-path / KeyValueStore pointer. This is platform/landing-zone
@@ -159,16 +157,17 @@ work.
 - **Promotion becomes a reviewed PR** that changes one pointer field, gated by
   the same `prod` Environment protection rule ADR-10 uses for image promotion —
   the frontend joins the same human go/no-go.
-- **WS1 interim is (ii)** — per-env rebuild from the same SHA, promote the SHA;
-  it exercises the full prefix/pointer/promotion/invalidation path with no
-  frontend code change, so the `/config.json` refactor (i) is a clean follow-up,
-  not a prerequisite, and reaches true build-once when it lands.
+- **WS1 must include the `/config.json` frontend refactor** — it is a prerequisite
+  of the prefix/pointer/promotion machinery, not a follow-up. Replace
+  `import.meta.env.VITE_AEGIS_*` reads with a boot-time `fetch('/config.json')`
+  before the first promotion runs against prod; without it the bundle carries
+  staging endpoints and the promotion would be a functional regression.
 - **Invalidation cost drops** from `/*` to `/index.html` (+ SPA rewrite target)
   per release, because content-hashed assets are new URLs each release.
 - **The frontend is now promotable like the images** — `aegis-core`'s full
   release (two images per ADR-14 + the SPA per this ADR) advances staging and
   promotes to prod through reviewed git changes, no environment rebuilding the
-  verified artifact (once (i) lands).
+  verified artifact.
 
 ## Related
 
