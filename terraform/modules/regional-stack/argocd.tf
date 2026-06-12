@@ -1,24 +1,31 @@
 # ArgoCD per cluster — NOT hub-spoke. Each EKS cluster runs its own ArgoCD,
 # eliminating the GitOps-layer SPOF (per locked decision: per-cluster ArgoCD).
 #
-# Self-ownership model (ADR-07): the workload catalog is no longer a JSON map
-# iterated by `for_each`. It is a QUERY — an ApplicationSet with a GitHub
-# SCM-provider generator discovers every repo tagged with the topic
-# `aegis-workload` and reconciles it. Onboarding a workload is: tag the deploy
-# repo + add a (gitignored) registry entry. Zero edits here.
+# Self-ownership model (ADR-07 D-discovery amended; see PR #24's rationale):
+# the workload catalog is driven by the REGISTRIES (var.workload_registries),
+# not by GitHub SCM topic-discovery. The github SCM-provider generator uses the
+# org API (GET /orgs/<owner>/repos) which returns 404 for a personal account —
+# confirmed live on the 2026-06-12 prod proof cluster (applicationset-controller
+# logs: "GET /orgs/BinHsu/repos → 404; BinHsu is a USER account, not an org").
+# Every Application that generator would have produced was therefore absent.
+#
+# Fix: the ApplicationSet is driven PURELY by the List generator, whose
+# elements come from workload_list_elements (var.workload_registries). A
+# workload enrols by getting a registries entry; the `aegis-workload` GitHub
+# topic + `argocd/application.yaml` marker are OUT-OF-BAND documentation
+# conventions — they are NOT enforced by a pathsExist gate (that gate disappears
+# with the SCM generator). Works for users and orgs alike; re-add a merge with
+# scmProvider if the account moves to a GitHub org.
 #
 # Repo authentication (ADR-07 / decision D2): the deploy repos are PUBLIC, so
 # ArgoCD clones them anonymously over HTTPS — the per-workload ED25519 deploy
-# keys this file used to mint are GONE. The only credential left is one
-# org-read token the SCM generator uses to ENUMERATE repos by topic (the GitHub
-# API needs auth even for public repos). One token, platform-scoped, not one
-# key per workload. If a future deploy repo is private, it needs an
-# org-credential here — the public assumption is load-bearing.
+# keys this file used to mint are GONE. The org-read token (kubernetes_secret
+# .scm_token) is left in place as an ArgoCD repo-credential but is NO LONGER
+# CONSUMED by the ApplicationSet generator. It can be removed in a follow-up
+# cleanup once the token rotation policy is confirmed.
 #
-# ⚠️ implemented, E2E PENDING platform bootstrap — none of the discovery /
-# isolation flow has run against a live cluster. Issue #6 gate: ApplicationSet
-# discovers BOTH aegis-workload repos + reconciles them; the AppProject blocks
-# a deliberately cross-namespace manifest.
+# ⚠️ E2E PENDING platform bootstrap — the registries-driven flow has not yet
+# run against a live cluster (the prod proof used kubectl apply as a workaround).
 
 resource "kubernetes_namespace" "argocd" {
   metadata {
@@ -31,8 +38,11 @@ resource "kubernetes_namespace" "argocd" {
   }
 }
 
-# The single org-read token the SCM-provider generator uses to list repos by
-# topic. Replaces the whole per-workload deploy-key mechanism (D2).
+# The org-read token originally used by the SCM-provider generator. The SCM
+# generator has been REPLACED by the registries-driven List generator (see the
+# header comment above) — this secret is no longer consumed by the
+# ApplicationSet. It is left in place as an ArgoCD repo-credential; follow-up
+# cleanup: confirm token rotation policy, then remove if not needed.
 resource "kubernetes_secret" "scm_token" {
   metadata {
     name      = "github-scm-token"
@@ -108,7 +118,13 @@ resource "helm_release" "argocd" {
 locals {
   workload_list_elements = [
     for repo, cfg in var.workload_registries : {
-      repository           = repo
+      repository = repo
+      # url + branch were previously supplied by the SCM-provider generator.
+      # The List generator now carries them so the ApplicationSet template can
+      # set repoURL / targetRevision without the SCM generator (which 404s on a
+      # personal GitHub account — see the file header comment).
+      url                  = "https://github.com/${var.github_owner}/${repo}"
+      branch               = "HEAD"
       ecrAccountId         = cfg.ecr_account_id
       ecrRegion            = cfg.ecr_region
       engineServiceAccount = try(cfg.engine_irsa.service_account, "")
@@ -149,7 +165,7 @@ resource "helm_release" "argocd_apps" {
         aegis-workloads = {
           namespace   = "argocd"
           description = "All aegis-workload-tagged deploy repos. Destinations locked to aegis-* namespaces; sources locked to the org. ADR-07 enforcement #1. E2E PENDING bootstrap."
-          sourceRepos = ["https://github.com/BinHsu/*"]
+          sourceRepos = ["https://github.com/${var.github_owner}/*"]
           destinations = [{
             server    = "https://kubernetes.default.svc"
             namespace = "aegis-*"
@@ -168,50 +184,18 @@ resource "helm_release" "argocd_apps" {
           goTemplate        = true
           goTemplateOptions = ["missingkey=error"]
 
+          # REGISTRIES-DRIVEN: workloads are enumerated from var.workload_registries
+          # via the List generator. A workload enrols by getting a registries entry;
+          # the `aegis-workload` GitHub topic + `argocd/application.yaml` marker are
+          # out-of-band conventions (no pathsExist gate — that gate lived on the
+          # SCM generator which is dropped here). The SCM-provider generator used
+          # GET /orgs/<owner>/repos → 404 for a personal account (BinHsu is a user,
+          # not an org); caught live on the 2026-06-12 prod proof cluster.
+          # To regain GitHub topic auto-discovery, move to a GitHub org and
+          # re-add a merge generator with scmProvider here.
           generators = [{
-            # Merge discovery (SCM) with per-workload params (List) on the repo
-            # name. SCM is the base set → discovery is authoritative; List adds
-            # registry + IRSA params for the workloads the operator has
-            # registered.
-            merge = {
-              mergeKeys = ["repository"]
-              generators = [
-                {
-                  scmProvider = {
-                    cloneProtocol = "https"
-                    github = {
-                      organization = "BinHsu"
-                      tokenRef = {
-                        secretName = kubernetes_secret.scm_token.metadata[0].name
-                        key        = "token"
-                      }
-                    }
-                    filters = [{
-                      # Two gates: the `aegis-workload` TOPIC (labelMatch is
-                      # topic-match for the github SCM provider) AND the repo's
-                      # own self-registration marker, argocd/application.yaml.
-                      # The marker is the repo's explicit opt-in — tagging alone
-                      # does not enrol it. (The marker file declares the
-                      # workload's ArgoCD intent; the effective Application is
-                      # RENDERED by this template, which injects region +
-                      # registry the repo cannot know — platform owns base +
-                      # policy, dev owns intent, per ADR-07. Authority split
-                      # flagged for review.)
-                      # The overlay gate matches THIS cluster's environment:
-                      # a staging cluster enrols a repo only once the repo
-                      # ships a staging overlay (and vice versa) — same path
-                      # the template syncs below.
-                      labelMatch = "aegis-workload"
-                      pathsExist = ["argocd/application.yaml", "k8s/overlays/${var.environment}"]
-                    }]
-                  }
-                },
-                {
-                  list = {
-                    elements = local.workload_list_elements
-                  }
-                },
-              ]
+            list = {
+              elements = local.workload_list_elements
             }
           }]
 

@@ -3,6 +3,12 @@ variable "region" {
   type        = string
 }
 
+variable "github_owner" {
+  description = "GitHub user or org that owns the deploy repos. Used to build each workload's repoURL in the ApplicationSet template and the AppProject sourceRepos allowlist. Default BinHsu. The github SCM-provider generator uses the ORG API (/orgs/<owner>/repos), which 404s for a personal account; workloads are therefore enumerated from the registries-backed List generator — this var wires the repoURL correctly for either account type."
+  type        = string
+  default     = "BinHsu"
+}
+
 variable "vpc_cidr" {
   description = "VPC CIDR block. Provisioned across 3 AZs with public+private subnets."
   type        = string
