@@ -95,6 +95,9 @@ resource "aws_ecr_repository" "shared_greeter" {
 
   name = var.ecr_repository_name
 
+  # Teardown-to-zero must delete non-empty repos (2026-06-12 prod RepositoryNotEmptyException).
+  force_delete = true
+
   # IMMUTABLE — ADR-10 "Build once". A verified digest's tag can never be
   # re-pointed under it. Combined with digest pinning in the deploy repo, every
   # running artifact is auditable back to exactly one build.

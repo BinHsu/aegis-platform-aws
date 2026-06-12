@@ -4,6 +4,9 @@
 resource "aws_ecr_repository" "greeter" {
   name = var.ecr_repository_name
 
+  # Teardown-to-zero must delete non-empty repos (2026-06-12 prod RepositoryNotEmptyException).
+  force_delete = true
+
   # IMMUTABLE — the sibling repo's CI pushes a unique commit-SHA tag per
   # build and bumps k8s/overlays/prod/kustomization.yaml to match. Tags
   # are never overwritten, so immutability is free correctness: a given
