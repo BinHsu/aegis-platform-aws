@@ -1,6 +1,57 @@
 # AES256 (AWS-managed) is the take-home encryption choice; customer-managed
 # KMS for ECR is documented in docs/tradeoffs.md as production hardening.
 #tfsec:ignore:aws-ecr-repository-customer-key
+resource "aws_ecr_repository" "core" {
+  name = "aegis-core"
+
+  # Teardown-to-zero must delete non-empty repos (2026-06-12 prod RepositoryNotEmptyException).
+  force_delete = true
+
+  # IMMUTABLE — aegis-core's CI pushes unique commit-SHA tags per build.
+  # Tags are never overwritten, so immutability is free correctness.
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "core" {
+  repository = aws_ecr_repository.core.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 1 day"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep the last 10 tagged images"
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = ["*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
+#tfsec:ignore:aws-ecr-repository-customer-key
 resource "aws_ecr_repository" "greeter" {
   name = var.ecr_repository_name
 
