@@ -244,9 +244,13 @@ jobs:
           if ! printf '%s' "$r" | grep -qE '^[a-z]{2}-[a-z]+-[0-9]+$'; then
             echo "::error::region '${r}' is not a valid AWS region"; exit 1
           fi
-          CLUSTER="aegis-platform-aws-${r}"
+          # Derive the cluster name from the already-initialised terraform state
+          # (destroy-region init ran in the preceding step with working-directory
+          # terraform/envs/regional). Fall back to the canonical convention so the
+          # script stays runnable even when state is empty.
+          CLUSTER="$(terraform -chdir=terraform/envs/regional output -raw cluster_name 2>/dev/null || echo "aegis-platform-${r}")"
           curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy will be skipped"
-          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
+          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" "$CLUSTER" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
           VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
           if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
             for arn in $(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null); do
@@ -264,6 +268,26 @@ jobs:
               sleep 15
             done
             sleep 20  # ENIs detach a beat after the LB record disappears
+
+            # Controller-owned SGs (tag elbv2.k8s.aws/cluster=<cluster>) orphan when
+            # the cluster dies before the ALB controller reaps them; they hold mutual
+            # ingress/egress refs so neither can be deleted until rules are revoked
+            # (two-pass revoke-then-delete). Discovered by tag, not name, per the
+            # tag-discovery discipline. Caught live 2026-06-12: they
+            # DependencyViolation'd the VPC destroy even after the ALB backstop ran.
+            ORPHAN_SGS="$(aws ec2 describe-security-groups --region "$r" \
+              --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" \
+              --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
+            for sg in $ORPHAN_SGS; do
+              ing="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null || echo '[]')"
+              egr="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null || echo '[]')"
+              if [ "$ing" != "[]" ]; then aws ec2 revoke-security-group-ingress --region "$r" --group-id "$sg" --ip-permissions "$ing" >/dev/null 2>&1 || true; fi
+              if [ "$egr" != "[]" ]; then aws ec2 revoke-security-group-egress  --region "$r" --group-id "$sg" --ip-permissions "$egr" >/dev/null 2>&1 || true; fi
+            done
+            for sg in $ORPHAN_SGS; do
+              echo "teardown backstop: deleting orphaned controller SG ${sg}"
+              aws ec2 delete-security-group --region "$r" --group-id "$sg" 2>/dev/null || echo "::warning::could not delete ${sg} — terraform destroy may hit DependencyViolation"
+            done
           fi
 
           cd terraform/envs/regional
