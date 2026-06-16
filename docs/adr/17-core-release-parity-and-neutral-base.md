@@ -83,6 +83,39 @@ artifacts, not chat):
 | Frontend (S3/CloudFront, `release-staging-frontend.yml`) | **ADR-15** | Non-OCI artifact class, out of the ADR-10 release model. |
 | Live local-Talos render/apply proof (images pull, manifests admitted) | **WS1-5** | The cluster step of WS1 itself; run after the repo work. |
 
+## WS1-5 live proof (local Talos, 2026-06-16)
+
+Decision B's bar — images pull + manifests admitted, not full serve — met on a
+local Talos cluster (apple/container):
+
+- **Gateway built locally** via Bazel `rules_oci` (`//packaging/gateway:image`,
+  177s) and pushed to the in-cluster registry (the OCI layout was deref-copied,
+  tarred, `container image load`-ed, and `container image push --scheme http`-ed,
+  because `:push_staging` is linux-only and won't run on the macOS host).
+- **Injection contract live on core**: after `kubectl apply -k overlays/talos`
+  with the platform `commonAnnotations` injecting the LOCAL registry, the
+  deployed gateway + engine Rollouts and the seed Job all carry
+  `192.168.64.32:5000/aegis-core@sha256:<gateway-digest>` — the local registry
+  spliced in front of the real digest, seed == engine. Same mechanism as the EKS
+  overlays, different injected value. Proven on a real cluster, not just render.
+- **Manifests admitted**: both Rollouts, both Services, both NetworkPolicies, the
+  seed Job, the two ServiceAccounts, and the HTTPRoute (`aegis-core.local` →
+  `aegis-core-gateway:8080`, Gateway API) all created.
+- **Image pulls + runs**: the gateway image pulled from the local registry and
+  its container Created+Started on Talos (it then exits without runtime config —
+  expected; full serve is WS2).
+
+Substrate caveats (not contract concerns):
+- The **C++ engine was not built locally** (cross-toolchain cost on macOS);
+  engine + seed used the gateway image as a stand-in (decision B). Building the
+  engine image is part of WS2's full bring-up.
+- The **Argo Rollouts controller** could not schedule on the tmpfs-backed nodes
+  (insufficient ephemeral-storage; the same 16 GB-host substrate limit ADR-16
+  recorded), so no Rollout-managed pods — the image-pull proof used a direct Pod.
+- The **kyverno ClusterPolicy** could not be admitted (kyverno not installed —
+  a cluster dependency, not provider-specific). Workload + route resources admit
+  without it.
+
 ## References
 
 - ADR-10 (build once, promote by digest), ADR-12 (registry injection vs
