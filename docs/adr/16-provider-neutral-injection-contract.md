@@ -91,12 +91,17 @@ next run does not re-discover them.
   artifact** ArgoCD would render. Running ArgoCD here needs a larger host,
   persistent disk for `/var`, or a lighter agent — none of which change the
   contract.
-- **MetalLB L2 host-reachability holds (verified 2026-06-14) but does not
-  survive sustained node pressure.** After hours of churn the MetalLB speaker
-  crash-looped and stopped announcing the VIP. The acceptance curl was taken via
-  the Envoy proxy's NodePort instead, which exercises the same
-  Gateway→HTTPRoute→Service→pod path. The VIP path is a substrate concern, not a
-  routing-contract concern.
+- **MetalLB VIP host-reachability depends on a user-created container network,
+  not the built-in `default`.** The 2026-06-14 host-reachable result used a
+  network created with `container network create --subnet 10.5.0.0/24`. On a
+  fresh cluster on the built-in `default` vmnet (`192.168.64.0/24`), MetalLB
+  still assigns the VIP, but the host cannot reach it — the gratuitous ARP for a
+  VIP outside the DHCP-leased range is not forwarded to the host. Both WS0
+  acceptances (the thrashed cluster, then a clean rebuild) were therefore taken
+  via the Envoy proxy's **NodePort**, which is host-reachable on the default
+  network and exercises the same Gateway→HTTPRoute→Service→pod path. Reproducing
+  host→VIP needs the custom-network bring-up; `cmd/aegis` currently hardcodes the
+  `default` network. A substrate/networking concern, not a routing-contract one.
 
 ## References
 
