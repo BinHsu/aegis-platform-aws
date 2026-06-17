@@ -117,6 +117,12 @@ jobs:
           EOF
       - name: plan
         env:
+          # WS3-R added a required `environment` var (no default) to envs/platform.
+          # infra-plan previews against the staging state (TFSTATE_BUCKET), so pin
+          # staging — also keeps the plan from showing a spurious zone rename
+          # (staging.aws → prod.aws). The W3 apply path reads this per-account from
+          # accounts.json (infra-apply-account.yml); this legacy preview is staging.
+          TF_VAR_environment:                      staging
           TF_VAR_grafana_cloud_api_token:          ${{ secrets.GRAFANA_CLOUD_API_TOKEN }}
           TF_VAR_grafana_auth_token:               ${{ secrets.GRAFANA_AUTH_TOKEN }}
           TF_VAR_grafana_cloud_mimir_username:     ${{ secrets.GRAFANA_CLOUD_MIMIR_USERNAME }}
