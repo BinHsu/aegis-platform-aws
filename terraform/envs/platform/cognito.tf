@@ -13,9 +13,9 @@
 
 locals {
   # SPA app host for this env's callback/logout allow-list. Matches the
-  # subdomain-per-env zone split (route53.tf): prod = app.binhsu.org, non-prod =
-  # app.<env>.binhsu.org.
-  cognito_app_host = var.environment == "prod" ? "app.${var.dns_zone_name}" : "app.${var.environment}.${var.dns_zone_name}"
+  # per-env zone (route53.tf): app.<env>.<dns_zone_name>, e.g.
+  # app.staging.aws.binhsu.org / app.prod.aws.binhsu.org.
+  cognito_app_host = "app.${var.environment}.${var.dns_zone_name}"
 }
 
 resource "aws_cognito_user_pool" "main" {

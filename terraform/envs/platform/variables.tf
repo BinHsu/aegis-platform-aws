@@ -17,9 +17,9 @@ variable "platform_region" {
 }
 
 variable "dns_zone_name" {
-  description = "Apex DNS name (the registered domain). WS3 (ADR-19) moves off the .test placeholder to the real domain `binhsu.org` so the platform can get a public ACM certificate (DNS-01 validation needs a publicly resolvable name; .test never delegates). The ACTUAL hosted zone name is per-env (see route53.tf locals): prod owns the apex, non-prod owns `<env>.<apex>`. A forker overrides this with their own domain."
+  description = "DNS parent under which each env gets its own Route 53 hosted zone. WS3-R: `aws.binhsu.org` — the binhsu.org apex stays on Cloudflare (personal homepage); we delegate per-env subdomains to AWS. The actual zone name is `<env>.<dns_zone_name>` (route53.tf), e.g. prod.aws.binhsu.org / staging.aws.binhsu.org, each delegated directly from Cloudflare. A forker overrides this with their own (sub)domain."
   type        = string
-  default     = "binhsu.org"
+  default     = "aws.binhsu.org"
 }
 
 variable "environment" {
@@ -31,12 +31,6 @@ variable "environment" {
     condition     = contains(["staging", "prod"], var.environment)
     error_message = "environment must be \"staging\" or \"prod\"."
   }
-}
-
-variable "delegated_subdomains" {
-  description = "Apex-account ONLY (prod): NS delegation for each child-env subdomain → that child account's own hosted zone. Keyed by FQDN (e.g. \"staging.binhsu.org\"), value = the child zone's 4 NS records. Cross-account by nature (the apex account can't read the child account's state), so the operator fills this once after the child account's first apply publishes its zone_name_servers. Empty on non-prod accounts."
-  type        = map(list(string))
-  default     = {}
 }
 
 variable "ecr_repository_name" {
