@@ -17,9 +17,9 @@ variable "platform_region" {
 }
 
 variable "dns_zone_name" {
-  description = "DNS zone name for the Route 53 hosted zone. Placeholder under the .test TLD (RFC 6761 — reserved for testing, never delegated on the public internet, so it cannot collide with a real domain). AWS Route 53 rejects 'example.com' (RFC 2606, AWS-reserved); .test is accepted. DNS is demonstrated via 'dig @<assigned-ns>'."
+  description = "DNS zone name for the Route 53 hosted zone. WS3 (ADR-19) moves off the .test placeholder to the real domain `binhsu.org` so the platform can get a public ACM certificate (DNS-01 validation needs a publicly resolvable name; .test never delegates). Registrar delegation of this zone to the Route 53 name servers is a one-time operator step (a forker overrides this with their own domain)."
   type        = string
-  default     = "aegis-platform.test"
+  default     = "binhsu.org"
 }
 
 variable "ecr_repository_name" {

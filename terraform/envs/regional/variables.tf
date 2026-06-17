@@ -83,6 +83,10 @@ variable "workload_registries" {
     engine_irsa = optional(object({
       service_account = string
       role_name       = string
+      # WS3 (ADR-18/19): managed-policy ARNs (e.g. model-read) attached to the
+      # engine's ACK role via the WorkloadIdentity Claim's policyArns. Injected
+      # (account-bound), not committed to the public deploy repo.
+      policy_arns = optional(list(string))
     }))
     ingress_cert = optional(object({
       ingress_name = string

@@ -292,3 +292,159 @@ resource "aws_iam_role_policy" "shared_greeter_push" {
   role   = aws_iam_role.shared_greeter_push[0].id
   policy = data.aws_iam_policy_document.shared_greeter_push_permissions[0].json
 }
+
+# ─── aegis-core shared registry (WS3, ADR-10/14) ─────────────────────────────
+# Second workload on the shared deployment-account registry. aegis-core packs
+# TWO images (gateway + engine) into ONE `aegis-core` repo distinguished by tag
+# prefix (ADR-14); same single-repo, by-digest model as greeter. Mirrors the
+# shared_greeter blocks above; same count-gate.
+#tfsec:ignore:aws-ecr-repository-customer-key
+resource "aws_ecr_repository" "shared_core" {
+  count    = local.deployment_enabled
+  provider = aws.deployment
+
+  name         = "aegis-core"
+  force_delete = true
+
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+data "aws_iam_policy_document" "shared_core_pull" {
+  count = local.deployment_enabled
+
+  statement {
+    sid    = "AllowClusterAccountsPull"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = [for acct in var.cluster_pull_account_ids : "arn:aws:iam::${acct}:root"]
+    }
+
+    actions = [
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+      "ecr:BatchCheckLayerAvailability",
+    ]
+  }
+}
+
+resource "aws_ecr_repository_policy" "shared_core_pull" {
+  count    = local.deployment_enabled
+  provider = aws.deployment
+
+  repository = aws_ecr_repository.shared_core[0].name
+  policy     = data.aws_iam_policy_document.shared_core_pull[0].json
+}
+
+resource "aws_ecr_lifecycle_policy" "shared_core" {
+  count    = local.deployment_enabled
+  provider = aws.deployment
+
+  repository = aws_ecr_repository.shared_core[0].name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 1 day"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep the last 10 tagged images"
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = ["*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
+# aegis-core build repo's scoped OIDC push role. Trust pinned to the aegis-core
+# repo's main ref (release-staging-image.yml pushes only on push to main).
+data "aws_iam_policy_document" "shared_core_push_trust" {
+  count = local.deployment_enabled
+
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [data.aws_iam_openid_connect_provider.github_deployment[0].arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_owner}/aegis-core:ref:refs/heads/main"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "shared_core_push_permissions" {
+  count = local.deployment_enabled
+
+  statement {
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ]
+    resources = [aws_ecr_repository.shared_core[0].arn]
+  }
+}
+
+resource "aws_iam_role" "shared_core_push" {
+  count    = local.deployment_enabled
+  provider = aws.deployment
+
+  name               = "aegis-core-ci-push"
+  assume_role_policy = data.aws_iam_policy_document.shared_core_push_trust[0].json
+}
+
+resource "aws_iam_role_policy" "shared_core_push" {
+  count    = local.deployment_enabled
+  provider = aws.deployment
+
+  name   = "ecr-push"
+  role   = aws_iam_role.shared_core_push[0].id
+  policy = data.aws_iam_policy_document.shared_core_push_permissions[0].json
+}
