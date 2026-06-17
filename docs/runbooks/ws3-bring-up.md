@@ -44,16 +44,35 @@ Deterministic per-account names (no need to look up — derived from account id)
 
 ## Phase 1 — bootstrap STAGING (break-glass creds)
 
-`make bootstrap` runs LOCAL-state Terraform that creates the S3 state bucket +
-the 6 CI roles (ADR-13). Run as the staging break-glass principal:
+`make bootstrap` runs LOCAL-state Terraform that creates the 6 CI roles (ADR-13 —
+`iam:CreateRole`) and manages the S3 state bucket. The org SCP
+`deny-iam-privilege-escalation` denies `iam:CreateRole` for SSO; it exempts
+`AWSControlTowerExecution`, `aegis-emergency-*`, `gh-tf-*`, etc. The per-account
+`aegis-emergency-break-glass` role is the self-serve option BUT its S3 grant is
+scoped to a DIFFERENT project's bucket (`aegis-statefulset-tfstate-*`) — it
+cannot even refresh `aegis-platform-aws-tfstate-*`, so it FAILS this bootstrap.
+Use the full-admin **`AWSControlTowerExecution`** (assumed from the management
+account) for this one-time cold start; afterwards `gh-tf-apply-platform` (also
+SCP-exempt) runs every apply via CI/OIDC — no more break-glass.
+
+> The bootstrap LOCAL state (`terraform/envs/bootstrap/terraform.tfstate`,
+> gitignored) survived 6/12 and already tracks the state bucket → no import; the
+> apply just re-creates the (deleted) roles, bucket is a no-op refresh.
 
 ```bash
-export AWS_PROFILE=<staging-break-glass>     # AWSControlTowerExecution or equiv
+creds=$(aws sts assume-role --role-arn arn:aws:iam::251774439261:role/AWSControlTowerExecution --role-session-name bootstrap-staging --profile aegis-management-admin --query Credentials --output json)
+export AWS_ACCESS_KEY_ID=$(echo "$creds" | jq -r .AccessKeyId)
+export AWS_SECRET_ACCESS_KEY=$(echo "$creds" | jq -r .SecretAccessKey)
+export AWS_SESSION_TOKEN=$(echo "$creds" | jq -r .SessionToken)
+aws sts get-caller-identity --query Arn --output text
 cd /path/to/aegis-platform-aws
-make bootstrap                # terraform/envs/bootstrap apply (LOCAL state)
-make regenerate-backend       # emits ./backend.hcl (gitignored)
-terraform -chdir=terraform/envs/bootstrap output    # note the role ARNs + bucket
+make bootstrap
+make regenerate-backend
+terraform -chdir=terraform/envs/bootstrap output
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 ```
+(Prod bootstrap, Phase 7: same with `506221082337`. AWSControlTowerExecution is
+assumed from `--profile aegis-management-admin` in both cases.)
 
 This creates in staging: `gh-tf-apply-platform`, `gh-tf-destroy-platform`,
 `aegis-platform-aws-ci`, `aegis-greeter-ci`, `github-actions-aegis-core-ecr`,
