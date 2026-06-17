@@ -130,8 +130,15 @@ so most account-specific values are NOT secrets. Set these **repo secrets**
 | `GRAFANA_CLOUD_LOKI_USERNAME` / `_URL` | Loki instance-id / push URL |
 | `GRAFANA_CLOUD_TEMPO_USERNAME` / `_URL` | Tempo instance-id / OTLP host:port |
 | `GRAFANA_CLOUD_PYROSCOPE_USERNAME` / `_URL` | Pyroscope instance-id / push URL |
-| `AWS_INFRA_CI_ROLE_ARN` | `arn:aws:iam::251774439261:role/aegis-platform-aws-ci` (staging — the PR-plan `infra-plan.yml` target) |
-| `TFSTATE_BUCKET` | `aegis-platform-aws-tfstate-251774439261` (staging — `infra-plan.yml`) |
+| `AWS_INFRA_CI_ROLE_ARN` | `arn:aws:iam::251774439261:role/aegis-platform-aws-ci` (staging — the PR-plan `infra-plan.yml` read-only role) |
+| `AWS_INFRA_APPLY_ROLE_ARN` | `arn:aws:iam::251774439261:role/gh-tf-apply-platform` (staging — only the LEGACY break-glass `infra-apply.yml`; the W3 path does not use it) |
+| `TFSTATE_BUCKET` | `aegis-platform-aws-tfstate-251774439261` (staging — used by BOTH `infra-plan.yml` and the legacy `infra-apply.yml`) |
+
+> These three are for the LEGACY workflows only (`infra-plan.yml` PR plan + the
+> `infra-apply.yml` break-glass dispatch), so they carry staging values. The W3
+> apply path (`infra-staging.yml` / `infra-prod.yml`) derives the per-account
+> role (`gh-tf-apply-platform`) + bucket inline from `accounts.json` — operators
+> set NO per-account apply-role/bucket secrets for W3.
 
 **Repo variables:**
 
