@@ -34,16 +34,24 @@ resource "aws_acm_certificate" "gateway" {
 }
 
 resource "aws_route53_record" "acm_validation" {
+  # Key on domain_name, NOT resource_record_name. ACM computes the validation
+  # record NAME server-side (a _<hash>.<domain> CNAME), so it is unknown at plan
+  # on first creation — keying for_each on it fails with "Invalid for_each
+  # argument" (the canonical ACM gotcha). domain_name is static (derived from the
+  # known var.zone_name), so it gives stable keys. The apex + wildcard SAN share
+  # ONE validation record, so two keys write the same CNAME — allow_overwrite
+  # makes the duplicate an idempotent upsert. (HashiCorp's documented pattern.)
   for_each = {
     for dvo in aws_acm_certificate.gateway.domain_validation_options :
-    dvo.resource_record_name => {
+    dvo.domain_name => {
+      name   = dvo.resource_record_name
       type   = dvo.resource_record_type
       record = dvo.resource_record_value
     }
   }
 
   zone_id         = var.zone_id
-  name            = each.key
+  name            = each.value.name
   type            = each.value.type
   records         = [each.value.record]
   ttl             = 60
