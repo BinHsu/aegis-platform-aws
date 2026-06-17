@@ -17,12 +17,11 @@
     "(so no account ID is hardcoded in the public deploy repo). role_name must",
     "match the path+name in the deploy repo's ACK Role CRD.",
     "",
-    "ingress_cert is OPTIONAL — declare it for a workload with a TLS ALB",
-    "gateway. The ApplicationSet injects alb.ingress.kubernetes.io/certificate-arn",
-    "onto the named Ingress so the cert ARN (which embeds an account ID) stays",
-    "out of the public deploy repo. cert_arn must be a region-correct,",
-    "cluster-account ACM cert; a single value is single-region only (multi-region",
-    "wants a per-region lookup — E2E PENDING refinement).",
+    "ingress_cert is OPTIONAL — declare ingress_name for a workload with a TLS",
+    "ALB gateway. WS3-R: the platform provisions a PER-REGION cert (regional",
+    "acm.tf) and the ApplicationSet injects that region's ARN automatically, so",
+    "cert_arn should be OMITTED. Set cert_arn only to override with your own cert",
+    "(it then must be a region-correct, cluster-account ACM ARN).",
     "",
     "ADR-10 — ONE shared registry for ALL clusters. ecr_account_id now points",
     "at the dedicated aegis-deployment account (Deployments OU), NOT a per-",
@@ -32,14 +31,16 @@
     "the build-once/promote-by-digest invariant means every cluster resolves the",
     "same <deployment-account-id>.dkr.ecr.<region>.amazonaws.com/<repo>.",
     "",
-    "WS3 (ADR-18/19) — aegis-core wiring from the envs/platform outputs:",
+    "WS3-R — aegis-core wiring (mostly automatic now):",
     "  engine_irsa.policy_arns = [<model_read_policy_arn>]  (engine reads the S3",
     "    model bucket; the ApplicationSet injects it onto the WorkloadIdentity",
     "    Claim's policyArns, so the account-bound ARN stays out of the public repo).",
-    "  ingress_cert.cert_arn   = <acm_certificate_arn>.",
-    "  Not in THIS map (set on the aegis-core-deploy aws-binding ConfigMaps at",
-    "  deploy): aegis-core-model-store.bucket = <model_bucket_name>;",
-    "  aegis-core-gateway-oidc.{issuer,audience,jwksUrl} = the Cognito outputs."
+    "  ingress_cert.cert_arn — OMIT: the per-region module cert (regional acm.tf)",
+    "    is injected automatically; pin only to override with your own cert.",
+    "  ecr_region — value here is just a default; envs/regional overrides it to",
+    "    the per-apply region so each cluster pulls from its in-region replica.",
+    "  ConfigMaps are filled automatically by the ApplicationSet from the platform",
+    "    outputs (model_bucket_name, Cognito issuer/audience/jwks) — no hand-patch."
   ],
   "workload_registries": {
     "aegis-greeter-deploy": {
@@ -55,8 +56,7 @@
         "policy_arns": ["arn:aws:iam::<cluster-account-id>:policy/aegis-core-model-read"]
       },
       "ingress_cert": {
-        "ingress_name": "aegis-core-gateway",
-        "cert_arn": "arn:aws:acm:<region>:<cluster-account-id>:certificate/<cert-id>"
+        "ingress_name": "aegis-core-gateway"
       }
     }
   }

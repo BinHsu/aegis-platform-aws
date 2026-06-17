@@ -87,10 +87,42 @@ variable "workload_registries" {
     # PENDING refinement). The deploy repo drops its hardcoded cert-arn.
     ingress_cert = optional(object({
       ingress_name = string
-      cert_arn     = string
+      # Optional override (WS3-R): omit to use the per-region module cert
+      # (acm.tf), which is region-correct by construction. Pin only to bring a
+      # workload's own cert.
+      cert_arn = optional(string)
     }))
   }))
   default = {}
+}
+
+# ── WS3-R: platform outputs threaded in for zero-touch ConfigMap injection ──
+# The ApplicationSet fills the aws-binding model-store + gateway-oidc ConfigMaps
+# from these (argocd.tf templatePatch), so a forker never hand-patches them.
+# Per-account values (region-agnostic for JWT validation; single model bucket
+# synced cross-region). Empty default = no injection (the placeholder stays).
+variable "model_bucket" {
+  description = "Engine model S3 bucket name (platform model-store.tf output). Injected into the aws-binding model-store ConfigMap."
+  type        = string
+  default     = ""
+}
+
+variable "cognito_issuer" {
+  description = "Cognito OIDC issuer URL (platform cognito.tf output). Injected into the gateway-oidc ConfigMap."
+  type        = string
+  default     = ""
+}
+
+variable "cognito_audience" {
+  description = "Cognito SPA app-client id = the gateway JWT audience (platform output)."
+  type        = string
+  default     = ""
+}
+
+variable "cognito_jwks_url" {
+  description = "Cognito JWKS URL (platform output) for the gateway OIDCProvider."
+  type        = string
+  default     = ""
 }
 
 variable "scm_token" {

@@ -18,8 +18,31 @@ module "stack" {
   node_min      = var.node_min
   node_max      = var.node_max
 
-  scm_token           = var.github_token
-  workload_registries = var.workload_registries
+  scm_token = var.github_token
+
+  # WS3-R: override ecr_region to THIS apply's region so the ApplicationSet
+  # injects the local-region ECR endpoint (nodes pull from the in-region
+  # replica, not cross-region). The static registries.auto.tfvars.json stays
+  # platform-neutral; the per-region value comes from var.region here. cert_arn
+  # is left unset → the module's per-region cert is used (argocd.tf certArn).
+  workload_registries = {
+    for repo, cfg in var.workload_registries : repo => merge(cfg, {
+      ecr_region = var.region
+    })
+  }
+
+  # WS3-R: platform outputs for zero-touch ConfigMap injection (model bucket +
+  # Cognito issuer/audience/jwks). try() keeps a regional PLAN against stale
+  # platform state from hard-failing before those outputs exist (same pattern as
+  # infra_destroy above). This does NOT silently ship empty config: the
+  # ApplicationSet ConfigMap patch is gated on the value being non-empty
+  # (argocd.tf), so an empty value SKIPS injection and the deploy ConfigMap keeps
+  # its loud REPLACE_WITH_* placeholder rather than a blank. At real apply the
+  # values are present — apply-platform runs before apply-regional (CI needs:).
+  model_bucket     = try(data.terraform_remote_state.platform.outputs.model_bucket_name, "")
+  cognito_issuer   = try(data.terraform_remote_state.platform.outputs.cognito_issuer, "")
+  cognito_audience = try(data.terraform_remote_state.platform.outputs.cognito_app_client_id, "")
+  cognito_jwks_url = try(data.terraform_remote_state.platform.outputs.cognito_jwks_url, "")
 
   # One map = the full cluster-access roster (each entry becomes an EKS
   # ClusterAdmin access entry in the module). The destroy role MUST be here:

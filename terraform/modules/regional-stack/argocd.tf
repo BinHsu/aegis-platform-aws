@@ -136,7 +136,20 @@ locals {
       # WorkloadIdentity Claim's policyArns. (Same opt-in shape as the SA role-arn.)
       enginePolicyArns = (try(cfg.engine_irsa.policy_arns, null) == null || length(try(cfg.engine_irsa.policy_arns, [])) == 0) ? "" : jsonencode(cfg.engine_irsa.policy_arns)
       ingressName      = try(cfg.ingress_cert.ingress_name, "")
-      certArn          = try(cfg.ingress_cert.cert_arn, "")
+      # certArn (WS3-R): default to the per-region module cert when a workload
+      # opts into ingress_cert but does not pin its own ARN. The module cert is
+      # region-correct by construction (acm.tf, region = var.region), replacing
+      # the old single-region flat-map cert_arn. An explicit cert_arn still wins.
+      certArn = cfg.ingress_cert == null ? "" : coalesce(try(cfg.ingress_cert.cert_arn, null), aws_acm_certificate_validation.gateway.certificate_arn)
+      # ConfigMap injection values (WS3-R, zero-touch): platform outputs threaded
+      # through so the ApplicationSet fills the aws-binding model-store +
+      # gateway-oidc ConfigMaps at sync. Per-account (region-agnostic for JWT
+      # validation; single model bucket cross-region). Injected only for engine
+      # workloads (the gate in templatePatch), so greeter is unaffected.
+      modelBucket     = var.model_bucket
+      cognitoIssuer   = var.cognito_issuer
+      cognitoAudience = var.cognito_audience
+      cognitoJwks     = var.cognito_jwks_url
     }
   ]
 }
@@ -294,6 +307,30 @@ resource "helm_release" "argocd_apps" {
                         - op: add
                           path: /metadata/annotations/alb.ingress.kubernetes.io~1certificate-arn
                           value: {{ .certArn }}
+                  {{- end }}
+                  {{- if and .engineServiceAccount .modelBucket }}
+                    - target:
+                        kind: ConfigMap
+                        name: {{ trimSuffix "-deploy" .repository }}-model-store
+                      patch: |-
+                        - op: replace
+                          path: /data/bucket
+                          value: {{ .modelBucket }}
+                  {{- end }}
+                  {{- if and .engineServiceAccount .cognitoIssuer .cognitoAudience .cognitoJwks }}
+                    - target:
+                        kind: ConfigMap
+                        name: {{ trimSuffix "-deploy" .repository }}-gateway-oidc
+                      patch: |-
+                        - op: replace
+                          path: /data/issuer
+                          value: {{ .cognitoIssuer }}
+                        - op: replace
+                          path: /data/audience
+                          value: {{ .cognitoAudience }}
+                        - op: replace
+                          path: /data/jwksUrl
+                          value: {{ .cognitoJwks }}
                   {{- end }}
             {{- end }}
           EOT

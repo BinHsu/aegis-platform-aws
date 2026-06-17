@@ -30,3 +30,8 @@ output "vpc_id" {
 # 6 follow-up) or via a separate post-apply step that reads the Ingress
 # status. Avoiding the chicken-and-egg of "TF creates record pointing at
 # resource TF cannot see yet."
+
+output "acm_certificate_arn" {
+  description = "Per-region ACM cert ARN for the gateway ALB (WS3-R). Injected onto opted-in workload Ingresses by the ApplicationSet certArn (argocd.tf), replacing the old single platform cert."
+  value       = aws_acm_certificate_validation.gateway.certificate_arn
+}
