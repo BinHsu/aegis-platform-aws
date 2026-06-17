@@ -1,12 +1,18 @@
 # WS3 bring-up runbook — first apply of the platform (staging → prod)
 
-> **Status:** authored 2026-06-17. The platform has NEVER been applied
-> (`bootstrap_complete:false` both accounts → zero live resources). Everything
-> below is the operator (human) path; `terraform apply` is **billable**.
+> **Status:** authored 2026-06-17. The platform was applied + torn down on the
+> 6/12 joint-strike; teardown deleted all infra + the CI roles, so today there
+> are **zero live billable resources** (no EKS) — but the state buckets survived
+> (`prevent_destroy`) with empty post-destroy state, and `bootstrap_complete` is
+> still `false`. So bootstrap must be **re-run** (idempotent; re-seeds the roles,
+> adopts the bucket). `terraform apply` is **billable**.
 > Tags: **[YOU]** = manual operator step · **[AUTO]** = CI/Terraform does it.
 
 Accounts (from `accounts.json`): staging `251774439261` · prod `506221082337` ·
-deployment `162975888022`. Region `eu-central-1`. Domain `binhsu.org`.
+deployment `162975888022`. Region `eu-central-1`.
+**DNS (WS3-R):** per-env subdomain under `aws.binhsu.org` — the `binhsu.org` apex
+stays on **Cloudflare** (personal homepage); each account owns its own Route 53
+zone `<env>.aws.binhsu.org`, delegated directly from Cloudflare.
 Path: the **W3** path (`infra-staging.yml` / `infra-prod.yml` + `accounts.json`),
 not the legacy `infra-apply.yml`.
 
@@ -15,15 +21,15 @@ Deterministic per-account names (no need to look up — derived from account id)
 - apply role `arn:aws:iam::<acct>:role/gh-tf-apply-platform`
 - CI plan role `arn:aws:iam::<acct>:role/aegis-platform-aws-ci`
 - model-read policy `arn:aws:iam::<acct>:policy/aegis-core-model-read`
-- zones: prod = `binhsu.org`, staging = `staging.binhsu.org`
-- hosts: staging `aegis-api.staging.binhsu.org` / `app.staging.binhsu.org`;
-  prod `aegis-api.binhsu.org` / `app.binhsu.org`
+- zones: prod = `prod.aws.binhsu.org`, staging = `staging.aws.binhsu.org`
+- hosts: staging `aegis-api.staging.aws.binhsu.org` / `app.staging.aws.binhsu.org`;
+  prod `aegis-api.prod.aws.binhsu.org` / `app.prod.aws.binhsu.org`
 
 ---
 
 ## Phase 0 — prerequisites (one-time)
 
-1. **[YOU] Domain.** `binhsu.org` registered and you can edit its NS at the registrar.
+1. **[YOU] Domain.** `binhsu.org` is on **Cloudflare** (personal homepage — apex untouched). You'll add per-env `NS` records under it to delegate `<env>.aws.binhsu.org` to Route 53 (Phase 5).
 2. **[YOU] GitHub OIDC provider** in BOTH cluster accounts (usually already seeded by the landing zone). If missing in an account:
    ```bash
    aws iam create-open-id-connect-provider \
@@ -52,6 +58,39 @@ terraform -chdir=terraform/envs/bootstrap output    # note the role ARNs + bucke
 This creates in staging: `gh-tf-apply-platform`, `gh-tf-destroy-platform`,
 `aegis-platform-aws-ci`, `aegis-greeter-ci`, `github-actions-aegis-core-ecr`,
 `github-actions-aegis-core-frontend`, + the state bucket.
+
+---
+
+## Phase 1b — fix the deployment-account trust (ADR-10, after staging bootstrap)
+
+Verified read-only on `aegis-deployments` (162975888022): GitHub OIDC,
+`AWSControlTowerExecution`, `gh-tf-apply-deployment` (AdministratorAccess),
+`aegis-greeter-ci-push` + the `aegis-greeter` ECR all **already exist** (6/12
+survivors). The `aegis-core` ECR + `aegis-core-ci-push` are created by the
+platform apply's `deployment-ecr.tf` (`shared_core`) — no manual seed.
+
+**The one fix:** `gh-tf-apply-deployment`'s trust references the OLD (6/12,
+deleted) `gh-tf-apply-platform` role IDs (dangling `AROA…`). The re-bootstrapped
+`gh-tf-apply-platform` has a NEW id → the assume would fail. Re-point the trust
+to the stable ARN (do this AFTER Phase 1 so the role exists). Break-glass (SCP
+blocks SSO from IAM writes):
+
+```bash
+cat > /tmp/deploy-trust.json <<'EOF'
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Principal":{"AWS":"arn:aws:iam::251774439261:role/gh-tf-apply-platform"}}]}
+EOF
+creds=$(aws sts assume-role --role-arn arn:aws:iam::162975888022:role/AWSControlTowerExecution --role-session-name fix-deploy-trust --profile aegis-management-admin --query Credentials --output json)
+export AWS_ACCESS_KEY_ID=$(echo "$creds" | jq -r .AccessKeyId)
+export AWS_SECRET_ACCESS_KEY=$(echo "$creds" | jq -r .SecretAccessKey)
+export AWS_SESSION_TOKEN=$(echo "$creds" | jq -r .SessionToken)
+aws iam update-assume-role-policy --role-name gh-tf-apply-deployment --policy-document file:///tmp/deploy-trust.json
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+```
+(Only staging's `gh-tf-apply-platform` is trusted — staging owns
+`deployment_account_id` in accounts.json, so it is the only apply context that
+assumes this role. Add prod's ARN only if ownership moves.) Hardening
+follow-up: make `gh-tf-apply-deployment` Terraform-managed (landing zone) so the
+trust is reproducible and never dangles again.
 
 ---
 
@@ -128,32 +167,35 @@ outputs — no hand-wiring.)
 
 1. **[YOU]** Edit `accounts.json`: `accounts.staging.bootstrap_complete = true`. Commit + merge to `main`.
 2. **[AUTO]** The merge triggers `infra-staging.yml` → `infra-apply-account.yml`:
-   `version-gate` → `apply-platform` (Cognito pool/client, model S3 bucket + read policy, **`staging.binhsu.org` Route53 zone**, ECR) → `apply-regional` (EKS `aegis-platform-eu-central-1`, **per-region ACM cert**, ALB controller, external-dns, ACK, ArgoCD + the aegis-core/greeter Applications). `apply-regional` runs in the ungated `staging` environment.
+   `version-gate` → `apply-platform` (Cognito pool/client, model S3 bucket + read policy, **`staging.aws.binhsu.org` Route53 zone**, ECR, + the deployment-account `shared_core` ECR via the `gh-tf-apply-deployment` assume) → `apply-regional` (EKS `aegis-platform-eu-central-1`, **per-region ACM cert**, ALB controller, external-dns, ACK, ArgoCD + the aegis-core/greeter Applications). `apply-regional` runs in the ungated `staging` environment.
 3. **[YOU]** Watch the run green (`gh run watch`). **Billable from here** — EKS + NAT + ALB.
 
 ---
 
-## Phase 5 — DNS delegation (after the zones exist)
+## Phase 5 — Cloudflare per-env delegation (do this BEFORE the full apply)
 
-The apex `binhsu.org` lives in the **prod** account; `staging.binhsu.org` in
-staging. So DNS resolves only after both zones exist and are delegated:
+Each env account owns its own zone `<env>.aws.binhsu.org`, delegated DIRECTLY
+from Cloudflare (no AWS-side cross-account delegation). `binhsu.org` apex +
+homepage stay untouched on Cloudflare. To avoid the regional ACM validation
+waiting on un-delegated DNS, **pre-create the zone and delegate before the full
+regional apply** (the W3 auto-apply runs platform→regional in one shot, so there
+is no pause between them):
 
-1. **[YOU]** After staging `apply-platform`, read the staging zone NS:
+1. **[YOU]** After Phase 1 bootstrap, targeted-apply JUST the zone (per account, using the apply role or break-glass):
    ```bash
-   terraform -chdir=terraform/envs/platform output zone_name_servers   # staging.binhsu.org NS
+   terraform -chdir=terraform/envs/platform apply -target=aws_route53_zone.main
+   terraform -chdir=terraform/envs/platform output zone_name_servers   # the 4 NS for <env>.aws.binhsu.org
    ```
-   (Or from the AWS console → Route53 → `staging.binhsu.org`.)
-2. **[YOU]** Bootstrap + apply the **prod** platform too (Phase 1 + 4 for prod, or at least its platform env) so the apex `binhsu.org` zone exists; read its NS.
-3. **[YOU]** At the **registrar**, point `binhsu.org` NS → the prod apex zone's 4 NS.
-4. **[YOU]** Tell the prod apex to delegate the staging subdomain: set in the prod account's `registries`/tfvars `delegated_subdomains`:
-   ```hcl
-   delegated_subdomains = { "staging.binhsu.org" = [ <the 4 staging-zone NS> ] }
-   ```
-   (Passed as `TF_VAR_delegated_subdomains` or a tfvars entry; re-apply prod platform.) Then ACM DNS-01 validation for `*.staging.binhsu.org` resolves and the staging `apply-regional` cert validation completes.
+2. **[YOU]** In **Cloudflare** (the `binhsu.org` zone), add ONE `NS` record per env, pointing the subdomain at that account's 4 NS:
+   - Name `staging.aws` (i.e. `staging.aws.binhsu.org`) → the staging zone's 4 NS
+   - Name `prod.aws` (i.e. `prod.aws.binhsu.org`) → the prod zone's 4 NS
+   (Cloudflare → DNS → Records → Add record → Type NS, one per NS value, or one record set.)
+3. **[YOU]** Confirm delegation: `dig NS staging.aws.binhsu.org +short` returns the AWS NS.
 
-> Until delegation resolves, the regional ACM `aws_acm_certificate_validation`
-> waits (up to its timeout) — do Phase 5 promptly after Phase 4, or expect the
-> first regional apply's cert step to retry.
+After this, the full apply's regional ACM DNS-01 validation resolves immediately
+(no wait). If you skip the pre-create and just flip the gate (Phase 4), the
+`apply-regional` ACM step will WAIT for you to add the Cloudflare NS within its
+validation timeout.
 
 ---
 
@@ -164,9 +206,9 @@ staging. So DNS resolves only after both zones exist and are delegated:
   policyArns, the per-region cert onto the gateway Ingress, and fills the
   model-store + gateway-oidc ConfigMaps from the Cognito/bucket outputs.
 - **[YOU]** Seed a Cognito user (`aws cognito-idp admin-create-user …` — sign-up
-  is admin-only). Confirm gateway 200 over HTTPS at `https://aegis-api.staging.binhsu.org`
-  and the SPA at `app.staging.binhsu.org` (after the frontend deploy, Phase 8).
-- **[YOU]** `dig aegis-api.staging.binhsu.org` resolves to the ALB.
+  is admin-only). Confirm gateway 200 over HTTPS at `https://aegis-api.staging.aws.binhsu.org`
+  and the SPA at `app.staging.aws.binhsu.org` (after the frontend deploy, Phase 8).
+- **[YOU]** `dig aegis-api.staging.aws.binhsu.org` resolves to the ALB.
 
 ---
 
@@ -178,7 +220,7 @@ staging. So DNS resolves only after both zones exist and are delegated:
 4. **[YOU]** Open a PR changing `accounts.prod.pin` from `v0.0.0-PLACEHOLDER` → the tag. Merge to main.
 5. **[AUTO]** `infra-prod.yml` detects the pin change → `infra-apply-account.yml` at the tag → `version-gate` (hard-fails if EKS past support) → `apply-platform` → `apply-regional` in **`prod-apply-gated`**.
 6. **[YOU] APPROVE** the `prod-apply-gated` deployment.
-7. **[YOU]** Verify prod (same as Phase 6, on `binhsu.org`).
+7. **[YOU]** Verify prod (same as Phase 6, on `prod.aws.binhsu.org`).
 
 ---
 
