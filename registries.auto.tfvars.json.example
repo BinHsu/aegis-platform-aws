@@ -30,7 +30,16 @@
     "registry here and pull the same immutable digest the build pushed once. The",
     "old per-account model (ecr_account_id = each env's own account) is replaced;",
     "the build-once/promote-by-digest invariant means every cluster resolves the",
-    "same <deployment-account-id>.dkr.ecr.<region>.amazonaws.com/<repo>."
+    "same <deployment-account-id>.dkr.ecr.<region>.amazonaws.com/<repo>.",
+    "",
+    "WS3 (ADR-18/19) — aegis-core wiring from the envs/platform outputs:",
+    "  engine_irsa.policy_arns = [<model_read_policy_arn>]  (engine reads the S3",
+    "    model bucket; the ApplicationSet injects it onto the WorkloadIdentity",
+    "    Claim's policyArns, so the account-bound ARN stays out of the public repo).",
+    "  ingress_cert.cert_arn   = <acm_certificate_arn>.",
+    "  Not in THIS map (set on the aegis-core-deploy aws-binding ConfigMaps at",
+    "  deploy): aegis-core-model-store.bucket = <model_bucket_name>;",
+    "  aegis-core-gateway-oidc.{issuer,audience,jwksUrl} = the Cognito outputs."
   ],
   "workload_registries": {
     "aegis-greeter-deploy": {
@@ -38,11 +47,12 @@
       "ecr_region": "eu-central-1"
     },
     "aegis-core-deploy": {
-      "ecr_account_id": "<workload-account-id>",
+      "ecr_account_id": "<deployment-account-id>",
       "ecr_region": "eu-central-1",
       "engine_irsa": {
         "service_account": "aegis-core-engine",
-        "role_name": "aegis-workload/aegis-core-engine"
+        "role_name": "aegis-workload/aegis-core-engine",
+        "policy_arns": ["arn:aws:iam::<cluster-account-id>:policy/aegis-core-model-read"]
       },
       "ingress_cert": {
         "ingress_name": "aegis-core-gateway",

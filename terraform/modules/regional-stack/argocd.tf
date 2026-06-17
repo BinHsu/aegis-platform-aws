@@ -129,8 +129,14 @@ locals {
       ecrRegion            = cfg.ecr_region
       engineServiceAccount = try(cfg.engine_irsa.service_account, "")
       engineRoleArn        = cfg.engine_irsa == null ? "" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${cfg.engine_irsa.role_name}"
-      ingressName          = try(cfg.ingress_cert.ingress_name, "")
-      certArn              = try(cfg.ingress_cert.cert_arn, "")
+      # Managed-policy ARNs to attach to the engine's ACK-provisioned role
+      # (WS3, ADR-18/19: the model-read policy carries the account id, so it is
+      # injected here, not committed to the public deploy repo). Empty string
+      # when none — JSON array string otherwise, rendered inline as the
+      # WorkloadIdentity Claim's policyArns. (Same opt-in shape as the SA role-arn.)
+      enginePolicyArns = (try(cfg.engine_irsa.policy_arns, null) == null || length(try(cfg.engine_irsa.policy_arns, [])) == 0) ? "" : jsonencode(cfg.engine_irsa.policy_arns)
+      ingressName      = try(cfg.ingress_cert.ingress_name, "")
+      certArn          = try(cfg.ingress_cert.cert_arn, "")
     }
   ]
 }
@@ -257,7 +263,7 @@ resource "helm_release" "argocd_apps" {
           # here — both ride the commonAnnotations channel above and are
           # workload-owned via the deploy repo's kustomize replacements.
           templatePatch = <<-EOT
-            {{- if or .engineRoleArn .certArn }}
+            {{- if or .engineRoleArn .certArn .enginePolicyArns }}
             spec:
               source:
                 kustomize:
@@ -270,6 +276,15 @@ resource "helm_release" "argocd_apps" {
                         - op: add
                           path: /metadata/annotations/eks.amazonaws.com~1role-arn
                           value: {{ .engineRoleArn }}
+                  {{- end }}
+                  {{- if .enginePolicyArns }}
+                    - target:
+                        kind: WorkloadIdentity
+                        name: {{ .engineServiceAccount }}
+                      patch: |-
+                        - op: add
+                          path: /spec/parameters/policyArns
+                          value: {{ .enginePolicyArns }}
                   {{- end }}
                   {{- if .certArn }}
                     - target:

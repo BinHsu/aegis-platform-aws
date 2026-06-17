@@ -76,6 +76,10 @@ variable "workload_registries" {
     engine_irsa = optional(object({
       service_account = string
       role_name       = string
+      # Optional managed-policy ARNs attached to the engine's ACK-provisioned
+      # role via the WorkloadIdentity Claim's policyArns (WS3, ADR-18/19 — e.g.
+      # the model-read policy). Account-bound → injected, not in the public repo.
+      policy_arns = optional(list(string))
     }))
     # Account-bound (account ID in the ARN) → injected, kept out of the public
     # deploy repo. The cert is per-(workload,region); a single value here is
