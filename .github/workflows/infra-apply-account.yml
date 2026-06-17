@@ -145,6 +145,10 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: apply
         env:
+          # Per-env selector (WS3-R): envs/platform's `environment` var has no
+          # default (high-impact zone/Cognito naming selector), so the apply must
+          # pass it — same as version-gate (regional) and apply-regional do.
+          TF_VAR_environment:              ${{ inputs.environment }}
           # ADR-10 shared registry (deployment-ecr.tf): empty id = gated off.
           TF_VAR_deployment_account_id:    ${{ inputs.deployment_account_id }}
           TF_VAR_cluster_pull_account_ids: ${{ inputs.cluster_pull_account_ids }}
