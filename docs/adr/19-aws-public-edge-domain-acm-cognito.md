@@ -42,26 +42,28 @@ values in**, not designing an auth flow.
 
 ## Decision
 
-### 1. Real domain: `binhsu.org`
+### 1. Real domain: per-env subdomain under `aws.binhsu.org`
 
-Replace the `.test` placeholder with `binhsu.org` (the domain the
-`aegis-core-deploy` manifests already assume — e.g. `aegis-api.staging.binhsu.org`).
-`dns_zone_name` moves from `aegis-platform.test` to `binhsu.org` (or a delegated
-sub-zone). Registrar delegation of the zone to the Route 53 name servers is a
-one-time **operator step**, recorded here as a bootstrap prerequisite, not
-Terraform.
+Replace the `.test` placeholder with real DNS, but keep the `binhsu.org` apex on
+Cloudflare (it's the personal homepage). `dns_zone_name = aws.binhsu.org`; each
+account owns its own Route 53 zone `<env>.aws.binhsu.org` (prod →
+`prod.aws.binhsu.org`, staging → `staging.aws.binhsu.org`), **delegated directly
+from Cloudflare** with one NS record per env subdomain pointing at that
+account's zone name servers. Symmetric, fully account-isolated, no AWS-side
+cross-account delegation, no ghost zone. Registrar delegation (the per-env NS
+records in Cloudflare) is a one-time **operator step**, not Terraform.
 
-Hostnames: `aegis-api.staging.binhsu.org` (staging gateway) /
-`aegis-api.binhsu.org` (prod gateway); the Cognito Hosted UI on its prefix
-domain (`…​.auth.<region>.amazoncognito.com`; a custom `auth.binhsu.org` is
-future hardening — it needs a us-east-1 cert); the frontend SPA on its
-CloudFront distribution (ADR-15).
+Hostnames: `aegis-api.staging.aws.binhsu.org` (staging gateway) /
+`aegis-api.prod.aws.binhsu.org` (prod gateway); `app.<env>.aws.binhsu.org` (SPA);
+the Cognito Hosted UI on its prefix domain (`…​.auth.<region>.amazoncognito.com`;
+a custom domain is future hardening — it needs a us-east-1 cert).
 
 ### 2. TLS via ACM
 
-An `aws_acm_certificate` (DNS-validated against the Route 53 zone) covers the
-gateway + app hosts on `binhsu.org` (the Cognito Hosted UI runs on its own
-prefix domain with Cognito's managed cert). The ALB terminates HTTPS; the cert ARN is injected
+A **per-region** `aws_acm_certificate` (regional module, DNS-validated against
+the env's Route 53 zone) covers `<env>.aws.binhsu.org` + `*.<env>.aws.binhsu.org`
+(the Cognito Hosted UI runs on its own prefix domain with Cognito's managed
+cert). The ALB terminates HTTPS; the cert ARN is injected
 onto the Ingress by the platform ApplicationSet (it embeds the account id, so it
 stays out of the public deploy repo — same posture as the ECR account id).
 
