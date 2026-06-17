@@ -90,7 +90,8 @@ variable "workload_registries" {
     }))
     ingress_cert = optional(object({
       ingress_name = string
-      cert_arn     = string
+      # WS3-R: optional override; omit to use the per-region module cert.
+      cert_arn = optional(string)
     }))
   }))
   default = {}

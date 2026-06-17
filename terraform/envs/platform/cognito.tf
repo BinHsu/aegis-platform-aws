@@ -11,8 +11,18 @@
 # custom domain, to avoid the us-east-1 cert a custom Cognito domain requires.
 # Custom `auth.binhsu.org` is future hardening.
 
+locals {
+  # SPA app host for this env's callback/logout allow-list. Matches the
+  # subdomain-per-env zone split (route53.tf): prod = app.binhsu.org, non-prod =
+  # app.<env>.binhsu.org.
+  cognito_app_host = var.environment == "prod" ? "app.${var.dns_zone_name}" : "app.${var.environment}.${var.dns_zone_name}"
+}
+
 resource "aws_cognito_user_pool" "main" {
-  name = "aegis-core"
+  # Env-distinct name (WS3-R): staging and prod each apply this in their own
+  # account, so the console shows `aegis-core-staging` / `aegis-core-prod`
+  # rather than two identically-named pools.
+  name = "aegis-core-${var.environment}"
 
   # Closed sign-up: Cognito DEFAULTS to allowing self-service SignUp unless this
   # is set, so it must be explicit (CodeRabbit #86). Users are seeded via the
@@ -55,13 +65,13 @@ resource "aws_cognito_user_pool" "main" {
   }
 
   tags = {
-    Name = "aegis-core"
+    Name = "aegis-core-${var.environment}"
   }
 }
 
 # Public SPA client — PKCE, NO client secret (the SPA is a public client).
 resource "aws_cognito_user_pool_client" "spa" {
-  name         = "aegis-core-spa"
+  name         = "aegis-core-spa-${var.environment}"
   user_pool_id = aws_cognito_user_pool.main.id
 
   generate_secret = false # public client (PKCE)
@@ -79,17 +89,15 @@ resource "aws_cognito_user_pool_client" "spa" {
   allowed_oauth_scopes                 = ["openid", "email", "profile"]
   supported_identity_providers         = ["COGNITO"]
 
-  # Callback/logout URLs cover prod + staging app hosts + localhost dev. Cognito
-  # matches the redirect against this allow-list; listing both env hosts lets one
-  # pool serve either without per-env divergence here.
+  # Callback/logout URLs are ENV-SCOPED (CodeRabbit #87): the pool is per-env, so
+  # the staging pool trusts only the staging app host (+ localhost dev), and prod
+  # only prod. local.cognito_app_host derives the host from var.environment.
   callback_urls = [
-    "https://app.${var.dns_zone_name}/auth/callback",
-    "https://app.staging.${var.dns_zone_name}/auth/callback",
+    "https://${local.cognito_app_host}/auth/callback",
     "http://localhost:5173/auth/callback",
   ]
   logout_urls = [
-    "https://app.${var.dns_zone_name}/",
-    "https://app.staging.${var.dns_zone_name}/",
+    "https://${local.cognito_app_host}/",
     "http://localhost:5173/",
   ]
 
