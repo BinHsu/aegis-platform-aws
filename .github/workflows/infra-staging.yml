@@ -13,6 +13,10 @@ on:
       - 'terraform/**'
       - 'regions.auto.tfvars.json'
       - 'accounts.json'
+  # Manual re-apply: resolve reads accounts.json at HEAD, so a dispatch behaves
+  # exactly like a push (same bootstrap_complete gate, same pin=main). Lets the
+  # operator re-run staging after a CI-only fix without a dummy infra commit.
+  workflow_dispatch:
 
 # Workflow-level stays read-only; id-token is granted only to the job that
 # calls the reusable workflow (the reusable's OIDC ceiling is the caller
