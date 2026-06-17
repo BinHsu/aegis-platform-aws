@@ -55,5 +55,20 @@ resource "helm_release" "alb_controller" {
     value = "false"
   }
 
+  # ROOT-CAUSE FIX (2026-06-17): disable the controller-managed shared backend SG.
+  # With this true (chart default) the controller creates ONE standalone
+  # `k8s-traffic-<cluster>-*` security group OUTSIDE terraform state and attaches it
+  # to the node ENIs. If the cluster is torn down before the controller reaps it, that
+  # orphan SG DependencyViolation-blocks the `terraform destroy` VPC delete — the
+  # 2026-06-17 staging teardown wedged 30+ min on exactly this SG. With it false the
+  # controller manages backend rules on the existing (terraform-owned) node SG instead,
+  # so terraform deletes them and nothing orphans. Tradeoff: backend rules live on the
+  # shared node SG (AWS per-SG rule quota) — ample at this stack's LB count. The
+  # infra-ops/infra-apply background SG reaper remains the defense-in-depth net.
+  set {
+    name  = "enableBackendSecurityGroup"
+    value = "false"
+  }
+
   depends_on = [module.eks]
 }

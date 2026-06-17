@@ -286,54 +286,44 @@ jobs:
               sleep 15
             done
             sleep 20
-
-            # Controller-owned SGs (tag elbv2.k8s.aws/cluster=<cluster>) orphan when
-            # the cluster dies before the ALB controller reaps them. Two-phase sweep
-            # (fix for issue #67 — single-pass could DependencyViolation if a peer SG's
-            # UserIdGroupPairs rule still referenced the SG being deleted):
-            #   Phase 1: revoke ALL ingress+egress rules on EVERY tag-matched SG before
-            #            any delete — eliminates ordering sensitivity between peer SGs.
-            #   Phase 2: delete each SG; retry the failed set up to 3 passes (residual
-            #            ENI detach latency). Remaining orphans after 3 passes emit
-            #            ::warning (terraform destroy proceeds; may still hit
-            #            DependencyViolation on the VPC — operator must clear manually).
-            ORPHAN_SGS="$(aws ec2 describe-security-groups --region "$r" \
-              --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" \
-              --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
-            # Phase 1 — revoke all rules across all SGs before any delete.
-            for sg in $ORPHAN_SGS; do
-              ing="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null || echo '[]')"
-              egr="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null || echo '[]')"
-              if [ "$ing" != "[]" ]; then aws ec2 revoke-security-group-ingress --region "$r" --group-id "$sg" --ip-permissions "$ing" >/dev/null 2>&1 || true; fi
-              if [ "$egr" != "[]" ]; then aws ec2 revoke-security-group-egress  --region "$r" --group-id "$sg" --ip-permissions "$egr" >/dev/null 2>&1 || true; fi
-            done
-            # Phase 2 — delete with up to 3 retry passes.
-            pending="$ORPHAN_SGS"
-            for pass in 1 2 3; do
-              [ -z "$pending" ] && break
-              failed=""
-              for sg in $pending; do
-                echo "self-reap backstop: deleting orphaned controller SG ${sg} (pass ${pass}/3)"
-                if ! aws ec2 delete-security-group --region "$r" --group-id "$sg" 2>/dev/null; then
-                  failed="${failed:+$failed }$sg"
-                fi
-              done
-              pending="$failed"
-              [ -n "$pending" ] && [ "$pass" -lt 3 ] && sleep 15
-            done
-            if [ -n "$pending" ]; then
-              echo "::warning::could not delete SG(s) after 3 passes: ${pending} — terraform destroy may hit DependencyViolation on the VPC"
-            fi
+            # The controller-owned backend SG (k8s-traffic-<cluster>-*, tag
+            # elbv2.k8s.aws/cluster) is NOT swept here: a one-shot pre-destroy sweep
+            # runs too early (the SG is still attached to node ENIs). It is reaped by
+            # the background loop that runs CONCURRENTLY with `terraform destroy` below,
+            # behind the enableBackendSecurityGroup=false source fix in
+            # modules/regional-stack/alb-controller.tf (2026-06-17).
           fi
           terraform state list 2>/dev/null | grep -E 'helm_release\.|kubernetes_' | while read -r addr; do
             echo "self-reap: state rm ${addr} (cluster deletion reaps it)"
             terraform state rm "$addr" || true
           done
-          # NEVER mask the destroy exit ("|| echo" made a failed reap report a
-          # green step while the cluster kept billing — caught live 2026-06-10).
-          # A failed reap must be LOUD.
-          terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
-            || { echo "::error::self-reap destroy ALSO failed — resources may STILL BE BILLING. Dispatch infra-ops destroy-region (account ${{ inputs.account_id }}, ${{ matrix.region }}) NOW; ttl-reaper + budget are only the backstops."; exit 1; }
+          # A (2026-06-17 root-fix): reap controller-orphaned SGs CONCURRENTLY with
+          # terraform destroy (terraform's aws_vpc delete retries DependencyViolation
+          # internally and does not give up; the k8s-traffic-* SG only frees once node
+          # ENIs detach DURING this destroy). Reaper runs in the background; destroy
+          # stays foreground.
+          reap_orphan_sgs() {
+            while sleep 20; do
+              for sg in $(aws ec2 describe-security-groups --region "$r" \
+                --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" \
+                --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
+                ing="$(aws ec2 describe-security-groups --region "$r" --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null || echo '[]')"
+                [ "$ing" != "[]" ] && aws ec2 revoke-security-group-ingress --region "$r" --group-id "$sg" --ip-permissions "$ing" >/dev/null 2>&1 || true
+                aws ec2 delete-security-group --region "$r" --group-id "$sg" 2>/dev/null \
+                  && echo "bg-reaper: deleted orphaned controller SG ${sg}" || true
+              done
+            done
+          }
+          reap_orphan_sgs & REAPER_PID=$!
+          DESTROY_RC=0
+          terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" || DESTROY_RC=$?
+          kill "$REAPER_PID" 2>/dev/null || true; wait "$REAPER_PID" 2>/dev/null || true
+          # NEVER mask the destroy exit ("|| echo" made a failed reap report a green
+          # step while the cluster kept billing — caught live 2026-06-10). LOUD failure.
+          if [ "$DESTROY_RC" -ne 0 ]; then
+            echo "::error::self-reap destroy ALSO failed — resources may STILL BE BILLING. Dispatch infra-ops destroy-region (account ${{ inputs.account_id }}, ${{ matrix.region }}) NOW; ttl-reaper + budget are only the backstops."
+            exit 1
+          fi
       - name: partial stack kept (ALLOW_PARTIAL_APPLY)
         if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY == 'true' }}
         run: |
