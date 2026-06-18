@@ -48,11 +48,6 @@ output "infra_destroy_role_arn" {
   value       = aws_iam_role.infra_destroy.arn
 }
 
-output "core_ci_role_arn" {
-  description = "IAM role ARN assumed by aegis-core CI for ECR push (GitHub OIDC). Set as the ECR_PUSH_ROLE_ARN secret / variable in aegis-core."
-  value       = aws_iam_role.core_ci.arn
-}
-
 output "core_frontend_role_arn" {
   description = "IAM role ARN assumed by aegis-core CI for S3 frontend sync + CloudFront invalidation (GitHub OIDC). Set as the FRONTEND_PUSH_ROLE_ARN in aegis-core."
   value       = aws_iam_role.core_frontend.arn
