@@ -75,8 +75,18 @@ module "stack" {
     infra_destroy = try(data.terraform_remote_state.platform.outputs.infra_destroy_role_arn, null)
   }
 
-  zone_id   = try(data.terraform_remote_state.platform.outputs.zone_id, "")
-  zone_name = try(data.terraform_remote_state.platform.outputs.zone_name, "")
+  # Both zone fallbacks are SYNTACTICALLY-VALID placeholders, not "" — the
+  # regional-stack ACM resources validate their shape at PLAN time, so empty
+  # values fail the pre-apply version gate on a cold start:
+  #   - aws_route53_record.acm_validation rejects an empty zone_id
+  #     ("zone_id must not be empty"), so zone_id needs a non-empty Z-id shape.
+  #   - aws_acm_certificate builds SAN = ["*.${zone_name}"] and rejects a SAN
+  #     ending in "." (empty zone_name -> "*."), so zone_name needs a real domain.
+  # example.com is RFC 2606 reserved (never a real zone). At real apply the
+  # platform outputs are present, so these placeholders only ever feed the
+  # throwaway gate plan, never a created cert/record.
+  zone_id   = try(data.terraform_remote_state.platform.outputs.zone_id, "Z0PLACEHOLDERGATEPLAN")
+  zone_name = try(data.terraform_remote_state.platform.outputs.zone_name, "placeholder.example.com")
 
   # Observability toggle — when false the gc_* SSM data lookups are count=0,
   # so we pass "" and the module skips Alloy + its credential Secret.
