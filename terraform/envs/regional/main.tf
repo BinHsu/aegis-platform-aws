@@ -60,15 +60,23 @@ module "stack" {
   # below makes the omission loud. The real apply flow (apply-platform →
   # apply-regional in one run) always sees a fresh state, so the entry is
   # present whenever a cluster is actually created.
+  # All four platform-output reads use try(): the pre-apply version-cost gate
+  # plans this regional stack to read the EKS version BEFORE apply-platform runs,
+  # so on a cold start (empty platform state, zero outputs) a bare reference
+  # hard-fails the gate plan ("object has no attribute"). The real apply flow
+  # (apply-platform -> apply-regional in one run) always sees a populated state,
+  # so the fallbacks (null = entry filtered by the module; "" = empty zone) only
+  # ever apply to the throwaway gate plan, never to a cluster that gets created.
+  # Same pattern and rationale as cognito_* above and infra_destroy here.
   cluster_admin_principals = {
     operator      = var.operator_principal_arn
-    infra_ci      = data.terraform_remote_state.platform.outputs.infra_ci_role_arn
-    infra_apply   = data.terraform_remote_state.platform.outputs.infra_apply_role_arn
+    infra_ci      = try(data.terraform_remote_state.platform.outputs.infra_ci_role_arn, null)
+    infra_apply   = try(data.terraform_remote_state.platform.outputs.infra_apply_role_arn, null)
     infra_destroy = try(data.terraform_remote_state.platform.outputs.infra_destroy_role_arn, null)
   }
 
-  zone_id   = data.terraform_remote_state.platform.outputs.zone_id
-  zone_name = data.terraform_remote_state.platform.outputs.zone_name
+  zone_id   = try(data.terraform_remote_state.platform.outputs.zone_id, "")
+  zone_name = try(data.terraform_remote_state.platform.outputs.zone_name, "")
 
   # Observability toggle — when false the gc_* SSM data lookups are count=0,
   # so we pass "" and the module skips Alloy + its credential Secret.
