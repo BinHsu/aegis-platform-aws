@@ -8,6 +8,12 @@ module "irsa_alb_controller" {
   use_name_prefix = false
 
   attach_load_balancer_controller_policy = true
+  # IAM is account-GLOBAL. The module's default policy name when
+  # attach_load_balancer_controller_policy=true is the fixed string
+  # "AWS_Load_Balancer_Controller", so two regions in one account collide on it
+  # ("EntityAlreadyExists") during a parallel dual-region apply. Region-suffix
+  # the policy name (same fix shape as aegis-core-model-read-<region>).
+  policy_name = "AWS_Load_Balancer_Controller-${var.region}"
 
   oidc_providers = {
     main = {
