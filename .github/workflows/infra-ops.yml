@@ -291,6 +291,19 @@ jobs:
           fi
 
           cd terraform/envs/regional
+          # Guarded auto-unlock (S3 native lock). This job serializes per account+region
+          # via its concurrency group (infra-<account>-<region>), so any <key>.tflock
+          # here is orphaned by a dead predecessor run (cancelled / OOM / timeout), never
+          # a live peer — clear it so an interrupted run self-heals instead of wedging
+          # the next on a stale lock. (2026-06-18: a cancelled destroy left a state-rm
+          # lock that failed the next run. The state-rm loop below is the first lock
+          # acquisition — unlock before it.)
+          BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
+          LOCK="s3://${BKT}/regional/${r}/terraform.tfstate.tflock"
+          if aws s3 ls "$LOCK" >/dev/null 2>&1; then
+            echo "::warning::clearing orphaned terraform lock ${LOCK}"
+            aws s3 rm "$LOCK"
+          fi
           # state rm the in-cluster layer (idempotent: no-op if already gone) so
           # `terraform destroy` skips the deadlock-prone graceful helm uninstall.
           terraform state list 2>/dev/null | grep -E 'helm_release\.|kubernetes_' | while read -r addr; do
@@ -343,6 +356,18 @@ jobs:
             -backend-config="bucket=aegis-platform-aws-tfstate-${{ inputs.account_id }}" \
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="encrypt=true"
+          # Guarded auto-unlock (S3 native lock). This job serializes per account via
+          # its concurrency group (infra-<account>-platform), so any <key>.tflock here
+          # is orphaned by a dead predecessor run (cancelled / OOM / timeout), never a
+          # live peer — clear it so an interrupted run self-heals instead of wedging the
+          # next on a stale lock. (2026-06-18: a cancelled destroy left a state-rm lock
+          # that failed the next run.)
+          BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
+          LOCK="s3://${BKT}/platform/terraform.tfstate.tflock"
+          if aws s3 ls "$LOCK" >/dev/null 2>&1; then
+            echo "::warning::clearing orphaned terraform lock ${LOCK}"
+            aws s3 rm "$LOCK"
+          fi
 
           # ── Self-delete hazard: STRUCTURALLY FIXED by ADR-13 ─────────────────
           # gh-tf-destroy-platform (the role this job runs AS) + its admin
