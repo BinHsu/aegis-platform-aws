@@ -20,6 +20,11 @@ locals {
   frontend_app_host    = local.cognito_app_host # app.<env>.<dns_zone_name>
 }
 
+# Versioning intentionally OFF (AVD-AWS-0090 suppressed): the bundle is a pure,
+# CI-rebuildable artifact with content-hashed immutable filenames, and the
+# release sync runs `aws s3 --delete`. Versioning would only accumulate billable
+# noncurrent versions of replaced builds with no recovery value.
+#trivy:ignore:AVD-AWS-0090
 resource "aws_s3_bucket" "frontend" {
   bucket = local.frontend_bucket_name
 
@@ -109,6 +114,13 @@ data "aws_cloudfront_cache_policy" "caching_optimized" {
   name = "Managed-CachingOptimized"
 }
 
+# AVD-AWS-0010 (access logging) + AVD-AWS-0011 (WAF) suppressed: this
+# distribution serves only the static, public SPA bundle — no dynamic origin, no
+# secrets at the edge. AuthN/AuthZ is enforced at the gateway/API tier (OIDC),
+# not at the CDN; a WAF web ACL + an access-log bucket are production hardening
+# that add cost without security value for a public static bundle.
+#trivy:ignore:AVD-AWS-0010
+#trivy:ignore:AVD-AWS-0011
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   is_ipv6_enabled     = true
