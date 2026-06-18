@@ -207,10 +207,16 @@ resource "aws_s3_bucket_policy" "frontend" {
 }
 
 # Public alias → CloudFront (CloudFront's own hosted_zone_id, not the env zone).
+# The distribution sets is_ipv6_enabled=true, so it answers on both A (IPv4) and
+# AAAA (IPv6). One alias record per family — an A-only zone would leave IPv6-only
+# clients (mobile carriers, IPv6 corporate networks) unable to resolve the SPA.
+# Both alias the same CloudFront target; alias records are free in Route 53.
 resource "aws_route53_record" "frontend_alias" {
+  for_each = toset(["A", "AAAA"])
+
   zone_id = aws_route53_zone.main.zone_id
   name    = local.frontend_app_host
-  type    = "A"
+  type    = each.key
 
   alias {
     name                   = aws_cloudfront_distribution.frontend.domain_name
