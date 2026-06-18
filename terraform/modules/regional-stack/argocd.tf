@@ -190,9 +190,16 @@ resource "helm_release" "argocd_apps" {
             namespace = "aegis-*"
           }]
           # CreateNamespace=true makes a (cluster-scoped) Namespace; ACK
-          # Role/Policy CRDs are namespaced. Allow both, scoped by the
-          # destination allowlist above.
-          clusterResourceWhitelist   = [{ group = "", kind = "Namespace" }]
+          # Role/Policy CRDs are namespaced. kyverno ClusterPolicy is the one
+          # cluster-scoped resource a deploy repo legitimately ships (aegis-core
+          # carries an audio-isolation ClusterPolicy) — without it the sync fails
+          # `kyverno.io:ClusterPolicy is not permitted in project aegis-workloads`
+          # (caught live 2026-06-18). Everything namespaced stays allowed; both
+          # cluster-scoped kinds are scoped by the destination allowlist above.
+          clusterResourceWhitelist = [
+            { group = "", kind = "Namespace" },
+            { group = "kyverno.io", kind = "ClusterPolicy" },
+          ]
           namespaceResourceWhitelist = [{ group = "*", kind = "*" }]
         }
       }
