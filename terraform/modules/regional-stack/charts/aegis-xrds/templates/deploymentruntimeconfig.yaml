@@ -33,6 +33,13 @@ spec:
         spec:
           securityContext:
             runAsNonRoot: true
+            # Numeric UID is REQUIRED, not just runAsNonRoot: the function image's
+            # USER is the non-numeric name "nonroot", so with runAsNonRoot alone the
+            # kubelet cannot verify the user is non-root and fails the pod with
+            # CreateContainerConfigError ("image has non-numeric user (nonroot),
+            # cannot verify user is non-root"). 65532 is the distroless nonroot UID.
+            # (Live-diagnosed 2026-06-18 bring-up #3, after the PSA fix landed.)
+            runAsUser: 65532
             seccompProfile:
               type: RuntimeDefault
           containers:
@@ -40,6 +47,7 @@ spec:
               securityContext:
                 allowPrivilegeEscalation: false
                 runAsNonRoot: true
+                runAsUser: 65532
                 capabilities:
                   drop:
                     - ALL
