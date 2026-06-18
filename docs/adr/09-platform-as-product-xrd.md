@@ -143,3 +143,17 @@ Single-cloud-only stabilization is *not* the cheap path it appears: a `v1` XR lo
 - landing-zone `docs/decisions/030-*` — OIDC `repository_id` pin (informs the trust-subject Kyverno rule).
 - `terraform/modules/regional-stack/charts/aegis-policies/templates/clusterpolicy-trust-subject.yaml` — the cluster admission layer that gets extended to validate XR claims.
 - `terraform/modules/regional-stack/irsa-ack-iam.tf` — the path-scoping policy preserved unchanged under Compositions.
+
+## Amendment 2026-06-18 — fix B: ACK → Crossplane upjet provider-aws-iam
+
+The original Phase 2 design rendered `WorkloadIdentity` into a namespaced ACK `iam.services.k8s.aws/v1alpha1/Role`. That failed at install: `WorkloadIdentity`'s XR is cluster-scoped, and a cluster-scoped XR composing a namespaced managed resource forces `spec.resourceRefs[].namespace` on the XR — a field the XR CRD schema rejects. The Composition never rendered.
+
+Fix B replaces ACK with Crossplane's own upjet provider `provider-aws-iam`. Its `iam.aws.upbound.io/v1beta1/Role` managed resource is **cluster-scoped**, so the cluster-scoped XR composes it with no `resourceRefs[].namespace` and the schema error is gone. Proven live end-to-end 2026-06-18: the engine assumed its rendered `/aegis-workload/` role and pulled its model.
+
+Consequences for the enforcement model:
+
+- **Crossplane now holds AWS credentials.** The provider calls IAM and gets creds via IRSA, **reusing the existing `irsa-ack-iam.tf` role** — the role name keeps its `aegis-platform-aws-ack-iam-` prefix, so the fabric SCP carve-out still matches with no landing-zone change. The trust subject moves to `crossplane-system:provider-aws-iam` (the provider pod's stable SA, named by a DeploymentRuntimeConfig).
+- **Reconcile reads broadened.** upjet observes a not-yet-existing role with `iam:GetRole` against the name-only ARN `role/<name>` (no path), which the path-scoped mutate statements do not cover. The read statement is broadened to `iam:Get*`/`iam:List*` on `*`; the mutating statements stay scoped to `/aegis-workload/*`.
+- **ACK is removed** (`ack-iam.tf` deleted; the `ack-system` namespace and controller go with it).
+- **On-prem is unchanged** — it stays SPIRE→MinIO-STS; this provider is AWS-only.
+- **The provider-neutral seam is intact.** Workloads still declare the `WorkloadIdentity` XR; ACK-vs-upjet is a Composition implementation detail the workload never sees.

@@ -1,0 +1,19 @@
+# Crossplane upjet AWS IAM provider (fix B, 2026-06-18) — replaces ACK.
+# Its iam.aws.upbound.io/Role MR is CLUSTER-scoped, so a cluster-scoped XR can
+# compose it without the spec.resourceRefs[].namespace schema error that the
+# namespaced ACK Role caused. Installing this Provider auto-pulls its dependency
+# upbound-provider-family-aws (which provides the ProviderConfig CRD + shared
+# config). The family provider uses the `default` DRC; this one uses
+# provider-aws-iam-runtime (stable SA + IRSA role-arn annotation).
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-iam
+  annotations:
+    aegis.binhsu.org/adr: "ADR-09 amended (fix B)"
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-iam:v1.21.0
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: provider-aws-iam-runtime

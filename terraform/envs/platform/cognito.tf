@@ -64,6 +64,14 @@ resource "aws_cognito_user_pool" "main" {
     }
   }
 
+  # Pre-Token-Generation Lambda (cognito-lambda.tf). REQUIRED for the PKCE/
+  # Hosted-UI flow to surface custom:tenant_id in the ID token — read_attributes
+  # below grants read access but does NOT put the claim in an OAuth-flow ID token
+  # (WS3 2026-06-18). The lambda copies the attribute into the claims.
+  lambda_config {
+    pre_token_generation = aws_lambda_function.pretoken.arn
+  }
+
   tags = {
     Name = "aegis-core-${var.environment}"
   }
@@ -81,6 +89,13 @@ resource "aws_cognito_user_pool_client" "spa" {
   # all attrs (so a user could set their OWN tenant_id — authz spoofing). Pin
   # both: tenant_id is readable (gateway/frontend map it to the Principal) but
   # NOT writable by end users; only an admin assigns it.
+  #
+  # NOTE: read access is NECESSARY but NOT SUFFICIENT for the OAuth2/Hosted-UI
+  # (PKCE) flow — Cognito does not place a custom attribute into the ID token
+  # for that flow on read access alone. The Pre-Token-Generation Lambda
+  # (cognito-lambda.tf, wired via the pool's lambda_config) is what actually
+  # injects custom:tenant_id into the ID token. Keep read_attributes as-is; it
+  # remains required.
   read_attributes  = ["email", "email_verified", "name", "custom:tenant_id"]
   write_attributes = ["email", "name"]
 

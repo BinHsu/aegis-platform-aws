@@ -6,5 +6,8 @@ terraform {
     grafana = { source = "grafana/grafana", version = "~> 3.10" }
     github  = { source = "integrations/github", version = "~> 6.2" }
     random  = { source = "hashicorp/random", version = "~> 3.6" }
+    # archive: zips the Cognito Pre-Token-Generation Lambda source at plan time
+    # (cognito-lambda.tf).
+    archive = { source = "hashicorp/archive", version = "~> 2.4" }
   }
 }
