@@ -189,10 +189,21 @@ resource "helm_release" "argocd_apps" {
             server    = "https://kubernetes.default.svc"
             namespace = "aegis-*"
           }]
-          # CreateNamespace=true makes a (cluster-scoped) Namespace; ACK
-          # Role/Policy CRDs are namespaced. Allow both, scoped by the
-          # destination allowlist above.
-          clusterResourceWhitelist   = [{ group = "", kind = "Namespace" }]
+          # Namespace is the ONLY cluster-scoped kind a deploy repo may ship:
+          # CreateNamespace=true makes the (cluster-scoped) workload namespace.
+          # Everything else a workload ships is namespaced — ACK Role/Policy CRDs,
+          # and aegis-core's audio-isolation policy, which is a namespaced kyverno
+          # `Policy` (in ns aegis-core), NOT a `ClusterPolicy`. A namespaced Policy
+          # is the correct least-privilege kind: its rules only ever match Pods in
+          # aegis-core, so it never needed cluster scope. Keeping cluster-scoped
+          # kinds to {Namespace} closes the hole where any aegis-workloads repo
+          # could otherwise ship cluster-wide kyverno ClusterPolicy — the
+          # destination allowlist (`aegis-*`) does NOT constrain cluster-scoped
+          # resources, so the whitelist is the only wall. namespaceResourceWhitelist
+          # (* / *) covers the namespaced Policy.
+          clusterResourceWhitelist = [
+            { group = "", kind = "Namespace" },
+          ]
           namespaceResourceWhitelist = [{ group = "*", kind = "*" }]
         }
       }
@@ -339,5 +350,12 @@ resource "helm_release" "argocd_apps" {
     })
   ]
 
-  depends_on = [helm_release.argocd]
+  # argo_rollouts must precede the ApplicationSet: aegis-core's gateway/engine
+  # are argoproj.io Rollouts, so the controller running first (and its CRD
+  # registered) before ArgoCD starts syncing aegis-core avoids a transient
+  # `Rollout.argoproj.io "" not found` sync failure on the first bring-up.
+  depends_on = [
+    helm_release.argocd,
+    helm_release.argo_rollouts,
+  ]
 }

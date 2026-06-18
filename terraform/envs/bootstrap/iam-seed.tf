@@ -434,19 +434,18 @@ data "aws_iam_policy_document" "core_frontend_permissions" {
     resources = ["arn:aws:s3:::aegis-staging-frontend-${data.aws_caller_identity.current.account_id}"]
   }
 
-  # CloudFront cache invalidation. The distribution ID `E5PYHGEEZQ7M8` is a
-  # staging singleton provisioned in the LZ; it does not have a clean Terraform
-  # data-source path from this seed layer (which must have zero upstream
-  # dependency). Scoping to `*` here and noting the id in the comment below is
-  # the least-astonishing option: the policy only grants CreateInvalidation (not
-  # UpdateDistribution or admin actions), so the blast radius of the wildcard is
-  # bounded to "can flush any CloudFront cache in this account", which is
-  # acceptable for a CI-push role.
+  # CloudFront cache invalidation. The distribution is now Terraform-managed in
+  # the platform tier (envs/platform/frontend.tf), but this bootstrap seed layer
+  # must keep zero upstream dependency, so it cannot read the distribution ARN as
+  # a data source. Scoping to `*` here is the least-astonishing option: the
+  # policy only grants CreateInvalidation (not UpdateDistribution or admin
+  # actions), so the blast radius of the wildcard is bounded to "can flush any
+  # CloudFront cache in this account", which is acceptable for a CI-push role.
   #
-  # Distribution: E5PYHGEEZQ7M8 (aegis-staging-frontend; vars.FRONTEND_CLOUDFRONT_DISTRIBUTION_ID
-  # in aegis-core's GH Variables). Tighten to
-  # arn:aws:cloudfront::<account>:distribution/<id> once the distribution ARN
-  # is available as a stable output from a shared layer this bootstrap can read.
+  # The real distribution id is the `frontend_cloudfront_distribution_id` output
+  # of envs/platform; set it as aegis-core's FRONTEND_CLOUDFRONT_DISTRIBUTION_ID
+  # GH Variable (the id changes whenever the distribution is recreated — it is no
+  # longer the old fixed E5PYHGEEZQ7M8).
   statement {
     effect    = "Allow"
     actions   = ["cloudfront:CreateInvalidation"]
