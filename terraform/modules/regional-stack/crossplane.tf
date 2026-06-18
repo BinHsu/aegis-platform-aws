@@ -1,22 +1,29 @@
-# ADR-09 Phase 2 — Crossplane CORE ONLY.
+# ADR-09 Phase 2 — Crossplane core + the upjet AWS IAM provider (fix B).
 #
-# Crossplane in this architecture is a pure Kubernetes-internal abstraction
-# engine: it reconciles platform-defined XRs (e.g. WorkloadIdentity) into ACK
-# CRDs (iam.services.k8s.aws/Role) and stops there. It never calls AWS, holds
-# no AWS credentials, no IRSA, no SCP carve-out — the four-pack stays with
-# ACK (irsa-ack-iam.tf, the management-tier SCP carve-out, the Kyverno
-# trust-subject policy, the default-deny NetworkPolicy). See ADR-09 Phase 2.
+# fix B (live-proven 2026-06-18) replaced ACK with Crossplane's own upjet
+# provider `provider-aws-iam`. The WorkloadIdentity Composition now renders a
+# CLUSTER-scoped iam.aws.upbound.io/Role (not the namespaced ACK
+# iam.services.k8s.aws/Role): a cluster-scoped XR composing a namespaced MR
+# forced spec.resourceRefs[].namespace, which the XR CRD schema rejected. The
+# upjet Role is cluster-scoped, so that schema error is gone.
 #
-# Deliberately NOT installed here:
-#   - provider-aws (no AWS API calls — Compositions render into ACK CRDs)
-#   - ProviderConfig (no provider)
-#   - Any Crossplane-side IRSA / SCP carve-out
+# Unlike the original Phase 2 design, Crossplane is NO LONGER credential-free.
+# provider-aws-iam DOES call AWS IAM, and gets creds via IRSA — reusing the
+# existing role in irsa-ack-iam.tf (whose name keeps the
+# `aegis-platform-aws-ack-iam-` prefix so the fabric SCP carve-out still
+# matches), repointed to the provider's stable SA
+# crossplane-system:provider-aws-iam. ACK is removed (ack-iam.tf deleted).
 #
-# The aegis-xrds chart (sibling resource below) ships the WorkloadIdentity
-# XRD + Composition + the function-patch-and-transform Function package
-# Crossplane uses to render the Composition.
+# Installed here:
+#   - crossplane core (this file)
+#   - aegis-xrds chart: WorkloadIdentity XRD + Composition + the
+#     function-patch-and-transform Function + the provider-aws-iam Provider CR
+#     + its DeploymentRuntimeConfigs (default + provider-aws-iam-runtime)
+#   - aegis-aws-providerconfig chart: the aws.upbound.io ProviderConfig (a
+#     separate chart, applied after a wait — its CRD only exists once the
+#     provider installs)
 #
-# ⚠️ implemented, E2E PENDING platform bootstrap.
+# ⚠️ E2E proven on staging 2026-06-18; PENDING per-account bootstrap elsewhere.
 
 resource "kubernetes_namespace" "crossplane_system" {
   metadata {
@@ -126,5 +133,33 @@ resource "helm_release" "aegis_xrds" {
     value = "/aegis-workload/"
   }
 
+  # fix B: the provider-aws-iam-runtime DRC stamps this ARN onto the provider
+  # SA's eks.amazonaws.com/role-arn annotation so the provider assumes the
+  # reused irsa-ack-iam role via IRSA.
+  set {
+    name  = "providerRoleArn"
+    value = module.irsa_ack_iam.arn
+  }
+
   depends_on = [helm_release.crossplane]
+}
+
+# The aws.upbound.io/v1beta1/ProviderConfig CRD does not exist until
+# provider-aws-iam (shipped by aegis-xrds above) downloads, pulls its
+# upbound-provider-family-aws dependency, and Crossplane establishes both
+# packages' CRDs. Applying the ProviderConfig chart immediately would 404 with
+# "no matches for kind ProviderConfig". 150s covers the package download + CRD
+# establishment observed during the 2026-06-18 bring-up.
+resource "time_sleep" "wait_provider_crds" {
+  depends_on      = [helm_release.aegis_xrds]
+  create_duration = "150s"
+}
+
+# ProviderConfig (separate chart) — installs only after the provider CRDs exist.
+resource "helm_release" "aegis_aws_providerconfig" {
+  timeout    = 600
+  name       = "aegis-aws-providerconfig"
+  namespace  = helm_release.crossplane.namespace
+  chart      = "${path.module}/charts/aegis-aws-providerconfig"
+  depends_on = [time_sleep.wait_provider_crds]
 }

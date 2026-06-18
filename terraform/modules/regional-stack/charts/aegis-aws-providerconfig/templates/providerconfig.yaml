@@ -1,0 +1,11 @@
+# ProviderConfig for the upjet AWS IAM provider — credentials via IRSA (the
+# provider pod's stable SA carries the eks.amazonaws.com/role-arn annotation,
+# set by the provider-aws-iam-runtime DRC). Separate chart because this CRD is
+# created by the provider at install time; a same-chart apply would 404.
+apiVersion: aws.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: IRSA

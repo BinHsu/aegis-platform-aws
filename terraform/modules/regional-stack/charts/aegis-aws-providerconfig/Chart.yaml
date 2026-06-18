@@ -1,0 +1,11 @@
+apiVersion: v2
+name: aegis-aws-providerconfig
+description: >-
+  ProviderConfig for the Crossplane upjet provider-aws-iam (fix B, 2026-06-18).
+  Lives in its own chart because aws.upbound.io/v1beta1/ProviderConfig is a CRD
+  the provider installs at runtime; an aegis-xrds same-chart apply would fail
+  with "no matches for kind ProviderConfig". A Terraform step gated on a wait
+  for the provider CRDs installs this chart after aegis-xrds.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
