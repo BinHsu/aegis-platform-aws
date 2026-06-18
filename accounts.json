@@ -20,7 +20,7 @@
     "prod": {
       "account_id": "506221082337",
       "environment": "prod",
-      "pin": "v0.2.2",
+      "pin": "v0.2.3",
       "enabled_regions": [
         "eu-central-1",
         "eu-west-1"

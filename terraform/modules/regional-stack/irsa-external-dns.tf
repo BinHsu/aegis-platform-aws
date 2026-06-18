@@ -13,6 +13,11 @@ module "irsa_external_dns" {
   # (the API does not support resource scoping for those).
   attach_external_dns_policy    = true
   external_dns_hosted_zone_arns = ["arn:aws:route53:::hostedzone/${var.zone_id}"]
+  # IAM is account-GLOBAL — the module's default policy name "External_DNS" is
+  # region-agnostic, so two regions in one account collide on it during a
+  # parallel dual-region apply. Region-suffix it (same fix as the ALB controller
+  # policy and aegis-core-model-read-<region>).
+  policy_name = "External_DNS-${var.region}"
 
   oidc_providers = {
     main = {

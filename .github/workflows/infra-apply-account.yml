@@ -278,7 +278,18 @@ jobs:
           terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"
       - name: self-reap partial stack (A6)
         # Only after a FAILED apply that actually started (a failed apply can leave
-        # billable resources). ALLOW_PARTIAL_APPLY=true keeps the stack for debugging.
+        # billable resources).
+        #
+        # READ THE FLAG CAREFULLY — the semantics are INVERTED from intuition:
+        #   ALLOW_PARTIAL_APPLY = 'true'  -> reap is OFF: KEEP the partial stack
+        #                                    (for debugging / a live in-place fix).
+        #   ALLOW_PARTIAL_APPLY != 'true' (false / unset) -> reap is ON: this step
+        #                                    runs and DESTROYS the partial stack.
+        # So "false" does NOT mean "do not reap" — false is the value that ENABLES
+        # the destroy. To keep a failed stack alive for a live fix, set it TRUE
+        # BEFORE the run. (2026-06-18 prod dual-region: the run was on false, a
+        # failed apply-regional auto-reaped, and only a fast `gh run cancel` saved
+        # the two live EKS clusters.)
         if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY != 'true' }}
         working-directory: terraform/envs/regional
         # Surface workflow expressions through env, not direct ${{ }} interpolation
