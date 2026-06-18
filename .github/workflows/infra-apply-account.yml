@@ -101,7 +101,7 @@ jobs:
                -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
                -backend-config="key=regional/${r}/terraform.tfstate" \
                -backend-config="encrypt=true" \
-             && terraform plan -out=tfplan -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
+             && terraform plan -lock=false -out=tfplan -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
              && terraform show -json tfplan > /tmp/plan.json; then
             status=$(jq -r '[.checks[]? | select(.address.name=="eks_version_in_standard_support") | .status] | (.[0] // "unknown")' /tmp/plan.json)
             echo "terraform check status: ${status}"
