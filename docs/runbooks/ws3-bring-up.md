@@ -258,11 +258,13 @@ validation timeout.
 
 ---
 
-## Phase 9 — TWO REGIONS (optional, when you want DR)
+## Phase 9 — TWO REGIONS (prod only, validates multi-region/DR)
 
-Wiring is ready (per-region cert + latency DNS + per-region ecr_region). To turn on eu-west-1:
-1. **[YOU]** `regions.auto.tfvars.json`: set `eu-west-1.enabled = true`.
-2. **[YOU]** `accounts.json`: add `"eu-west-1"` to the target account's `enabled_regions`.
+**Decision (2026-06-17): staging stays single-region (`eu-central-1`); prod is dual-region (`eu-central-1` + `eu-west-1`).** Separation of concerns — staging validates the complete flow and function (gateway OIDC, frontend PKCE, engine model-pull, ArgoCD sync, ACM/HTTPS, Cognito login), for which one region suffices and double-billing EKS adds no proof value. Prod adds the one dimension single-region cannot exercise: external-dns coexisting latency records, Route53 health-failover, ECR cross-region replication — the ADR-05 DR posture. Function correctness converges in staging; multi-region/DR is validated only at prod, and the second EKS bill (~+$0.20/hr, dual-region prod ~$0.40/hr) is paid only when actually validating multi-region.
+
+Wiring is ready (per-region cert + latency DNS + per-region ecr_region). To turn on eu-west-1 **at the prod phase**:
+1. **[YOU]** `regions.auto.tfvars.json`: set `eu-west-1.enabled = true` (global flag → ECR replication makes eu-west-1 a real destination).
+2. **[YOU]** `accounts.json`: add `"eu-west-1"` to **prod's** `enabled_regions` only — leave staging at `["eu-central-1"]`; the per-account gate keeps the two environments isolated.
 3. **[AUTO]** Next apply runs `apply-regional` for both regions (matrix). Each region gets its own EKS + ACM cert; external-dns writes coexisting latency records for `aegis-api.<zone>`; ECR replication (already configured) serves the second region.
 4. **[YOU]** Confirm Route53 shows two latency records and `dig` returns the nearest region.
 
