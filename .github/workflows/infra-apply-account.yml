@@ -256,8 +256,15 @@ jobs:
         # billable resources). ALLOW_PARTIAL_APPLY=true keeps the stack for debugging.
         if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY != 'true' }}
         working-directory: terraform/envs/regional
+        # Surface workflow expressions through env, not direct ${{ }} interpolation
+        # into the shell, so an unexpected value can never break out of the string
+        # (GitHub script-injection hardening; account_id/region are operator topology
+        # but the pattern stays safe regardless).
+        env:
+          ACCOUNT_ID: ${{ inputs.account_id }}
+          REGION:     ${{ matrix.region }}
         run: |
-          echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
+          echo "::error::apply failed for ${REGION} (account ${ACCOUNT_ID})"
           echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
           # Ephemeral-cluster teardown — the SAME root-fix as infra-ops
           # destroy-region (2026-06-11): a plain `terraform destroy` here deadlocks
@@ -267,7 +274,7 @@ jobs:
           # helm_release/kubernetes_ so destroy never attempts the deadlock-prone
           # uninstall (the cluster deletion reaps them). kubectl + pre-destroy.sh
           # clean any ALB first (ENIs that would DependencyViolation the VPC).
-          r='${{ matrix.region }}'
+          r="$REGION"
           # Derive the cluster name from the already-initialised terraform state
           # (the init step above ran in this same working-directory). Fall back to
           # the canonical convention so the script stays runnable when state is partial.
@@ -321,11 +328,14 @@ jobs:
           # NEVER mask the destroy exit ("|| echo" made a failed reap report a green
           # step while the cluster kept billing — caught live 2026-06-10). LOUD failure.
           if [ "$DESTROY_RC" -ne 0 ]; then
-            echo "::error::self-reap destroy ALSO failed — resources may STILL BE BILLING. Dispatch infra-ops destroy-region (account ${{ inputs.account_id }}, ${{ matrix.region }}) NOW; ttl-reaper + budget are only the backstops."
+            echo "::error::self-reap destroy ALSO failed — resources may STILL BE BILLING. Dispatch infra-ops destroy-region (account ${ACCOUNT_ID}, ${REGION}) NOW; ttl-reaper + budget are only the backstops."
             exit 1
           fi
       - name: partial stack kept (ALLOW_PARTIAL_APPLY)
         if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY == 'true' }}
+        env:
+          ACCOUNT_ID: ${{ inputs.account_id }}
+          REGION:     ${{ matrix.region }}
         run: |
-          echo "::error::apply failed for ${{ matrix.region }} (account ${{ inputs.account_id }})"
+          echo "::error::apply failed for ${REGION} (account ${ACCOUNT_ID})"
           echo "::warning::ALLOW_PARTIAL_APPLY=true — leaving the partial stack (it may be billing)."
