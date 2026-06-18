@@ -31,15 +31,19 @@ module "stack" {
     })
   }
 
-  # WS3-R: platform outputs for zero-touch ConfigMap injection (model bucket +
-  # Cognito issuer/audience/jwks). try() keeps a regional PLAN against stale
-  # platform state from hard-failing before those outputs exist (same pattern as
+  # WS3-R: platform outputs for zero-touch ConfigMap injection (Cognito
+  # issuer/audience/jwks). try() keeps a regional PLAN against stale platform
+  # state from hard-failing before those outputs exist (same pattern as
   # infra_destroy above). This does NOT silently ship empty config: the
   # ApplicationSet ConfigMap patch is gated on the value being non-empty
   # (argocd.tf), so an empty value SKIPS injection and the deploy ConfigMap keeps
   # its loud REPLACE_WITH_* placeholder rather than a blank. At real apply the
   # values are present — apply-platform runs before apply-regional (CI needs:).
-  model_bucket     = try(data.terraform_remote_state.platform.outputs.model_bucket_name, "")
+  #
+  # ADR-05 dual-region: the model bucket is NO LONGER threaded from platform.
+  # The regional-stack module provisions a PER-REGION bucket (model-store.tf) and
+  # injects its own name + read policy, so each region's engine reads its
+  # in-region bucket. Cognito stays shared (one pool per account, platform_region).
   cognito_issuer   = try(data.terraform_remote_state.platform.outputs.cognito_issuer, "")
   cognito_audience = try(data.terraform_remote_state.platform.outputs.cognito_app_client_id, "")
   cognito_jwks_url = try(data.terraform_remote_state.platform.outputs.cognito_jwks_url, "")

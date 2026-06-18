@@ -129,24 +129,33 @@ locals {
       ecrRegion            = cfg.ecr_region
       engineServiceAccount = try(cfg.engine_irsa.service_account, "")
       engineRoleArn        = cfg.engine_irsa == null ? "" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${cfg.engine_irsa.role_name}"
-      # Managed-policy ARNs to attach to the engine's ACK-provisioned role
-      # (WS3, ADR-18/19: the model-read policy carries the account id, so it is
-      # injected here, not committed to the public deploy repo). Empty string
-      # when none — JSON array string otherwise, rendered inline as the
-      # WorkloadIdentity Claim's policyArns. (Same opt-in shape as the SA role-arn.)
-      enginePolicyArns = (try(cfg.engine_irsa.policy_arns, null) == null || length(try(cfg.engine_irsa.policy_arns, [])) == 0) ? "" : jsonencode(cfg.engine_irsa.policy_arns)
-      ingressName      = try(cfg.ingress_cert.ingress_name, "")
+      # Managed-policy ARNs to attach to the engine's Crossplane-provisioned role
+      # (WS3, ADR-18/19), rendered inline as the WorkloadIdentity Claim's policyArns.
+      #
+      # ADR-05 dual-region: the per-region model-read policy (model-store.tf, this
+      # module) is APPENDED automatically for any engine workload. The bucket and
+      # its read policy are now region-local, so the policy ARN cannot ride a single
+      # platform output or the public deploy repo — the module owns it. A workload
+      # may still declare extra policy ARNs in engine_irsa.policy_arns; those merge
+      # ahead of the model-read policy. Empty for a non-engine workload (greeter
+      # has no engine SA) → no injection.
+      enginePolicyArns = try(cfg.engine_irsa.service_account, "") == "" ? "" : jsonencode(
+        concat(try(cfg.engine_irsa.policy_arns, []), [aws_iam_policy.model_read.arn])
+      )
+      ingressName = try(cfg.ingress_cert.ingress_name, "")
       # certArn (WS3-R): default to the per-region module cert when a workload
       # opts into ingress_cert but does not pin its own ARN. The module cert is
       # region-correct by construction (acm.tf, region = var.region), replacing
       # the old single-region flat-map cert_arn. An explicit cert_arn still wins.
       certArn = cfg.ingress_cert == null ? "" : coalesce(try(cfg.ingress_cert.cert_arn, null), aws_acm_certificate_validation.gateway.certificate_arn)
-      # ConfigMap injection values (WS3-R, zero-touch): platform outputs threaded
-      # through so the ApplicationSet fills the aws-binding model-store +
-      # gateway-oidc ConfigMaps at sync. Per-account (region-agnostic for JWT
-      # validation; single model bucket cross-region). Injected only for engine
-      # workloads (the gate in templatePatch), so greeter is unaffected.
-      modelBucket     = var.model_bucket
+      # ConfigMap injection values (WS3-R, zero-touch): the ApplicationSet fills
+      # the aws-binding model-store + gateway-oidc ConfigMaps at sync. Cognito is
+      # per-account (region-agnostic for JWT validation). The model bucket is now
+      # PER-REGION (ADR-05): it comes from this module's own model-store.tf
+      # resource, not the single-region platform output, so each region's engine
+      # reads its in-region bucket. Injected only for engine workloads (the gate in
+      # templatePatch), so greeter is unaffected.
+      modelBucket     = aws_s3_bucket.models.bucket
       cognitoIssuer   = var.cognito_issuer
       cognitoAudience = var.cognito_audience
       cognitoJwks     = var.cognito_jwks_url

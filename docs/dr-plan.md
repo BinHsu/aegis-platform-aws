@@ -35,11 +35,43 @@ the recovery.
 | **Region lost** | operator / external monitoring | **The drill scenario** — rebuild the region from IaC; ArgoCD reconverges the workload from git | **~20–30 min** (target) |
 | **Multi-region failover** | Route 53 evaluates the ALB alias records' target health | Route 53 drops the unhealthy region's latency record; queries resolve to the surviving region | ~1–2 min (health detection + DNS TTL; not separately timed) |
 
-Two regions are deployed (`eu-central-1` + `eu-west-1`), so a single region
-loss is absorbed by the survivor while the lost region rebuilds. The
-cold-rebuild RTO above is the recovery path for what redundancy *cannot*
-absorb: a correlated failure — operator error, or a bad change GitOps
-propagates to every region — or restoring the lost region itself.
+**Dual-region is a built capability armed by an enable-flip (as of 2026-06-18).**
+The per-region stack, per-region model bucket, per-region ACM cert, and the
+latency + evaluate-target-health Route 53 annotations are implemented, so two
+regions (`eu-central-1` + `eu-west-1`) *can* run active-active — a single region
+loss absorbed by the survivor while the lost region rebuilds. It is **armed**,
+not yet live: prod runs single-region until the go-live flip
+(`eu-west-1.enabled=true` in `regions.auto.tfvars.json` + `eu-west-1` in
+`accounts.prod.enabled_regions`) is applied — see the go-live checklist below.
+The multi-region failover row above is therefore the *target* behavior, live
+once the flip lands. The cold-rebuild RTO is the recovery path for what
+redundancy *cannot* absorb: a correlated failure — operator error, or a bad
+change GitOps propagates to every region — or restoring a lost region itself.
+
+## Dual-region go-live checklist
+
+Capability and activation are kept separate on purpose: the capability lands
+without enabling the second region, because flipping the enable switches in the
+same change as a prod release tag would trigger the gated prod apply. Run this
+checklist to arm dual-region at launch.
+
+1. **Confirm the capability is merged** — the per-region model bucket, per-region
+   ACM cert, and the gateway Ingress latency annotations are on `main` (this
+   change + `aegis-core-deploy` PR #14).
+2. **Flip the region switch** — set `eu-west-1.enabled = true` in
+   `regions.auto.tfvars.json`.
+3. **Flip the account switch** — add `eu-west-1` to
+   `accounts.prod.enabled_regions` in `accounts.json`.
+4. **Apply platform first, then regional** — `apply-platform` must precede
+   `apply-regional` so the shared zone / Cognito outputs exist before the new
+   region's stack reads them (CI ordering already enforces this).
+5. **Populate the new region's model bucket** — the model store is per-region.
+   Upload the model artifacts to `aegis-core-models-<acct>-eu-west-1`; an empty
+   bucket fails the engine's model-fetch init loud.
+6. **Verify** — follow `docs/runbooks/ws3-prod-dual-region-verification.md`:
+   confirm two latency records under `aegis-api.prod.aws.binhsu.org` (distinct
+   `set-identifier`s), then run the failover drill (kill one region, confirm the
+   other serves).
 
 ## The drill — region rebuild
 
