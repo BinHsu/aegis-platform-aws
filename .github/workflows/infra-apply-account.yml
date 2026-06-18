@@ -174,6 +174,17 @@ jobs:
             -backend-config="bucket=${BKT}" \
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="encrypt=true"
+          # Guarded auto-unlock (S3 native lock). This job serializes per account via
+          # its concurrency group (infra-<account>-platform), so any <key>.tflock here
+          # is orphaned by a dead predecessor run (cancelled / OOM / timeout), never a
+          # live peer — clear it so an interrupted run self-heals instead of wedging the
+          # next on a stale lock. (2026-06-18: a cancelled destroy left a state-rm lock
+          # that failed the next run.)
+          LOCK="s3://${BKT}/platform/terraform.tfstate.tflock"
+          if aws s3 ls "$LOCK" >/dev/null 2>&1; then
+            echo "::warning::clearing orphaned terraform lock ${LOCK}"
+            aws s3 rm "$LOCK"
+          fi
           terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
 
   apply-regional:
@@ -245,6 +256,20 @@ jobs:
         id: apply
         working-directory: terraform/envs/regional
         run: |
+          # Guarded auto-unlock (S3 native lock). This job serializes per account+region
+          # via its concurrency group (infra-<account>-<region>), so any <key>.tflock
+          # here is orphaned by a dead predecessor run (cancelled / OOM / timeout), never
+          # a live peer — clear it so an interrupted run self-heals instead of wedging
+          # the next on a stale lock. (2026-06-18: a cancelled destroy left a state-rm
+          # lock that failed the next run.) Placed before apply_started=true so a lock
+          # clear is not treated as an apply that started.
+          BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
+          KEY="regional/${{ matrix.region }}/terraform.tfstate"
+          LOCK="s3://${BKT}/${KEY}.tflock"
+          if aws s3 ls "$LOCK" >/dev/null 2>&1; then
+            echo "::warning::clearing orphaned terraform lock ${LOCK}"
+            aws s3 rm "$LOCK"
+          fi
           # A6 blast-radius bound: flag that terraform apply is ABOUT to mutate the
           # account. Self-reap below fires only when this flag is set, so a pre-apply
           # failure (checkout / init / state lock / provider download) never destroys
