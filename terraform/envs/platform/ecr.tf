@@ -1,56 +1,13 @@
-# AES256 (AWS-managed) is the take-home encryption choice; customer-managed
-# KMS for ECR is documented in docs/tradeoffs.md as production hardening.
-#tfsec:ignore:aws-ecr-repository-customer-key
-resource "aws_ecr_repository" "core" {
-  name = "aegis-core"
-
-  # Teardown-to-zero must delete non-empty repos (2026-06-12 prod RepositoryNotEmptyException).
-  force_delete = true
-
-  # IMMUTABLE — aegis-core's CI pushes unique commit-SHA tags per build.
-  # Tags are never overwritten, so immutability is free correctness.
-  image_tag_mutability = "IMMUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  encryption_configuration {
-    encryption_type = "AES256"
-  }
-}
-
-resource "aws_ecr_lifecycle_policy" "core" {
-  repository = aws_ecr_repository.core.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Expire untagged images after 1 day"
-        selection = {
-          tagStatus   = "untagged"
-          countType   = "sinceImagePushed"
-          countUnit   = "days"
-          countNumber = 1
-        }
-        action = { type = "expire" }
-      },
-      {
-        rulePriority = 2
-        description  = "Keep the last 10 tagged images"
-        selection = {
-          tagStatus      = "tagged"
-          tagPatternList = ["*"]
-          countType      = "imageCountMoreThan"
-          countNumber    = 10
-        }
-        action = { type = "expire" }
-      },
-    ]
-  })
-}
-
+# aegis-core has NO per-account ECR repository. Its image registry is the SHARED
+# deployment-account ECR (deployment-ecr.tf, ADR-10 ph2): the image CI pushes
+# there and staging/prod pull cross-account (shared_core_pull). A per-account
+# aegis-core repo here silently diverged from where the deploy pulls — the CI
+# pushed to the account-local repo while the workloads pulled from the
+# deployment account, causing ImagePullBackOff (2026-06-18). Removing it makes a
+# future mispush fail loud (no repo to push to) instead of failing at runtime.
+#
+# AES256 (AWS-managed) is the take-home encryption choice for the repos below;
+# customer-managed KMS for ECR is documented in docs/tradeoffs.md as hardening.
 #tfsec:ignore:aws-ecr-repository-customer-key
 resource "aws_ecr_repository" "greeter" {
   name = var.ecr_repository_name

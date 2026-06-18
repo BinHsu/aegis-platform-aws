@@ -306,81 +306,14 @@ resource "aws_iam_role_policy_attachment" "infra_destroy_admin" {
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
-# ---- Role E: aegis-core CI -> ECR push --------------------------------------
-# Mirrors the greeter_ci role. Trust pinned to the exact workflow file ref
-# (job_workflow_ref) so the blast radius is tightest — a PR or fork branch
-# on aegis-core CANNOT assume this role; only the release-staging-image.yml
-# workflow running on refs/heads/main can. (trust comment from aegis-core
-# release-staging-image.yml §"Trust scope".)
-data "aws_iam_policy_document" "core_ci_trust" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-
-    # Pinned to the main ref — aegis-core's release-staging-image.yml only
-    # runs on push to main, so the OIDC subject is the exact ref.
-    # Tightest blast radius: a PR / fork branch on aegis-core cannot assume
-    # this role.
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_owner}/aegis-core:ref:refs/heads/main"]
-    }
-  }
-}
-
-data "aws_iam_policy_document" "core_ci_permissions" {
-  # ECR auth token — account-level, cannot be resource-scoped.
-  statement {
-    effect    = "Allow"
-    actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"]
-  }
-
-  # ECR push (+ the layer reads docker push performs) — scoped to the single
-  # aegis-core repo ARN. ARN constructed from account + region + the fixed repo
-  # name `aegis-core` (same name used by envs/platform/ecr.tf) — bootstrap has
-  # zero upstream dependency on platform state.
-  # ecr:DescribeImages is required because release-staging-image.yml calls
-  # `aws ecr describe-images` to source the authoritative digest after push;
-  # without it that step fails with AccessDeniedException (greeter#14 lesson).
-  statement {
-    effect = "Allow"
-    actions = [
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:BatchGetImage",
-      "ecr:CompleteLayerUpload",
-      "ecr:DescribeImages",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:InitiateLayerUpload",
-      "ecr:PutImage",
-      "ecr:UploadLayerPart",
-    ]
-    resources = ["arn:aws:ecr:${var.platform_region}:${data.aws_caller_identity.current.account_id}:repository/aegis-core"]
-  }
-}
-
-resource "aws_iam_role" "core_ci" {
-  name               = "github-actions-aegis-core-ecr"
-  assume_role_policy = data.aws_iam_policy_document.core_ci_trust.json
-}
-
-resource "aws_iam_role_policy" "core_ci" {
-  name   = "ecr-push"
-  role   = aws_iam_role.core_ci.id
-  policy = data.aws_iam_policy_document.core_ci_permissions.json
-}
+# ---- (removed) Role E: aegis-core CI -> per-account ECR push ----------------
+# aegis-core's image CI no longer pushes to a per-account ECR. It pushes to the
+# SHARED deployment-account ECR via the deployment-account role
+# `aegis-core-ci-push` (envs/platform/deployment-ecr.tf); staging/prod pull
+# cross-account. There is therefore no per-account ECR push role here — a
+# per-account repo + role silently diverged from where the deploy pulled and
+# caused ImagePullBackOff (2026-06-18). See envs/platform/ecr.tf for the full
+# rationale. greeter still uses its per-account greeter_ci role below.
 
 # ---- Role F: aegis-core CI -> S3 frontend sync + CloudFront invalidation ----
 # Trust identical to Role E — pinned to refs/heads/main on aegis-core, but via
