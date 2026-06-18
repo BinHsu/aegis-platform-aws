@@ -20,12 +20,11 @@
     "prod": {
       "account_id": "506221082337",
       "environment": "prod",
-      "pin": "v0.2.3",
+      "pin": "v0.0.0-PLACEHOLDER",
       "enabled_regions": [
-        "eu-central-1",
-        "eu-west-1"
+        "eu-central-1"
       ],
-      "bootstrap_complete": true,
+      "bootstrap_complete": false,
       "operator_principal_arn": "arn:aws:iam::506221082337:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_PlatformAdmin_ce1bee9d4ea54a0a"
     }
   }
