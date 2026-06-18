@@ -16,3 +16,11 @@ metadata:
     aegis.binhsu.org/status: "implemented, E2E PENDING platform bootstrap"
 spec:
   package: xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.10.6
+  # Run the function pod under a restricted-PSA-compliant securityContext.
+  # crossplane-system enforces PSA=restricted (crossplane.tf); without this the
+  # function pod is rejected, the Function never goes Healthy, and every
+  # Composition that uses it fails to render. See deploymentruntimeconfig.yaml.
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: aegis-function-runtime

@@ -1,0 +1,47 @@
+# DeploymentRuntimeConfig — supplies the restricted-PSA-compliant securityContext
+# to Crossplane FUNCTION pods (referenced by function-patch-and-transform below).
+#
+# crossplane-system enforces pod-security.kubernetes.io/enforce=restricted
+# (crossplane.tf, defensive posture, by design). The contrib
+# function-patch-and-transform package's runtime pod (container "package-runtime")
+# omits the fields the restricted profile requires — container capabilities.drop
+# =[ALL] and seccompProfile, plus pod-level runAsNonRoot + seccompProfile. The API
+# server then rejects the pod synchronously ("forbidden: violates PodSecurity
+# restricted:latest"), the Function never reaches Healthy, and EVERY Composition
+# that runs through it (WorkloadIdentity -> ACK Role) fails with
+# "rpc error: DeadlineExceeded: no children to pick from".
+#
+# crossplane.tf already supplies these fields to Crossplane's OWN pods via chart
+# values (podSecurityContext{Crossplane,RBACManager}); FUNCTION pods are separate
+# packages with their own runtime Deployment, so they need this DRC.
+#
+# Live-diagnosed 2026-06-18 (WS3 staging bring-up #2): the auto `default` DRC was
+# empty -> function 0/1 Running -> composite never rendered -> ACK Role never
+# created -> engine IRSA role absent -> engine model-fetch AccessDenied. Patching
+# this securityContext in flipped the function to Healthy and unblocked the chain.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: aegis-function-runtime
+  annotations:
+    aegis.binhsu.org/adr: "ADR-09 Phase 3"
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: package-runtime
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
