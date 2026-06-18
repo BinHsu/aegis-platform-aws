@@ -55,9 +55,15 @@ untouched. The full failure-mode matrix and procedure are in
 - The cold-rebuild RTO is the number that matters for the failure class
   redundancy *cannot* cover — operator error, or a bad change GitOps faithfully
   propagates to every region.
-- Multi-region failover (deployed — two regions, external-dns latency records
-  with evaluate-target-health) is a different, smaller number (~1–2 min) for
-  the narrower failure of one region dying.
+- Multi-region failover (external-dns latency records with
+  evaluate-target-health) is a different, smaller number (~1–2 min) for the
+  narrower failure of one region dying. The **capability is implemented** — a
+  per-region stack, per-region model bucket, per-region ACM cert, and the
+  latency + evaluate-target-health Route 53 annotations on the gateway Ingress
+  (2026-06-18). It is **armed by an enable-flip**: `eu-west-1.enabled=true` in
+  `regions.auto.tfvars.json` plus `eu-west-1` in `accounts.prod.enabled_regions`.
+  Until that flip, prod runs single-region (`eu-central-1`) and the failover
+  number is latent, not live. See `dr-plan.md` for the go-live checklist.
 - The drill proves the real claim: Terraform state + git are the source of
   truth; the workload converges from zero with no manual `kubectl`. The report
   it writes is committed to git, not left in a torn-down environment.

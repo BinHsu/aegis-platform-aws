@@ -97,16 +97,14 @@ variable "workload_registries" {
 }
 
 # ── WS3-R: platform outputs threaded in for zero-touch ConfigMap injection ──
-# The ApplicationSet fills the aws-binding model-store + gateway-oidc ConfigMaps
-# from these (argocd.tf templatePatch), so a forker never hand-patches them.
-# Per-account values (region-agnostic for JWT validation; single model bucket
-# synced cross-region). Empty default = no injection (the placeholder stays).
-variable "model_bucket" {
-  description = "Engine model S3 bucket name (platform model-store.tf output). Injected into the aws-binding model-store ConfigMap."
-  type        = string
-  default     = ""
-}
-
+# The ApplicationSet fills the aws-binding gateway-oidc ConfigMap from these
+# (argocd.tf templatePatch), so a forker never hand-patches them. Per-account
+# values (region-agnostic for JWT validation). Empty default = no injection (the
+# placeholder stays).
+#
+# The model bucket is NOT here — ADR-05 made it PER-REGION (model-store.tf, this
+# module), so the module owns the name + read policy and injects them directly;
+# there is no cross-env input to thread.
 variable "cognito_issuer" {
   description = "Cognito OIDC issuer URL (platform cognito.tf output). Injected into the gateway-oidc ConfigMap."
   type        = string
