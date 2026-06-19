@@ -1,9 +1,9 @@
 # ADR-22: The Terraform ↔ Crossplane boundary (Crossplane v2-era)
 
-> **Status: Proposed.** The direction is settled (decided with Bin across three
-> grounded design rounds, 2026-06-19); the ADR stays Proposed until a WS4 cluster
-> bring-up validates the v2 mechanics and the on-prem `provider-minio` fit. Flip to
-> Accepted once both are proven.
+> **Status: Accepted** (2026-06-19, decided with Bin across three grounded design
+> rounds). The decision is committed. The v2 mechanics and the on-prem `provider-minio`
+> fit are *validated* in WS4 (see Consequences → Open validation) — validation is a
+> follow-up to the accepted decision, not a precondition for it.
 
 ## 中文摘要
 

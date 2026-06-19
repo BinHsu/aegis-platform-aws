@@ -1,8 +1,7 @@
 # ADR-20: How the gateway gets the tenant id from a Cognito token
 
-> **Status: Proposed.** Reviewed by Bin (2026-06-19); committed in Proposed state.
-> The decision below (keep the Pre-Token-Generation Lambda) is settled; the ADR
-> stays Proposed pending formal acceptance once prod rides it unchanged.
+> **Status: Accepted** (2026-06-19, reviewed by Bin). The decision below — keep the
+> Pre-Token-Generation Lambda — is committed.
 
 ## 中文摘要
 
@@ -22,7 +21,7 @@ Terraform 的 `for_each` / per-env apply 本就自然做到。
 
 ## Status
 
-Proposed.
+Accepted (2026-06-19).
 
 ## Context
 
