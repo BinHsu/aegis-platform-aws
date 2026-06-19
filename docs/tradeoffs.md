@@ -180,25 +180,22 @@ which the anonymization policy forbids in a committed manifest.
 
 ## DNS
 
-The Route 53 hosted zone (`aegis-platform.test`) is a placeholder — no real
-domain is registered. `.test` is an RFC 6761 special-use TLD: reserved for
-testing and guaranteed never to be delegated on the public internet, so the
-zone cannot collide with a real domain. (`example.com` would seem the obvious
-placeholder but AWS Route 53 explicitly rejects it as reserved.)
+> **Resolved in WS3 (ADR-19).** The `.test` placeholder zone (`aegis-platform.test`)
+> was retired: each account now owns a real per-env zone (`staging.aws.binhsu.org`,
+> `prod.aws.binhsu.org`) under the `binhsu.org` apex, with Cloudflare NS delegation
+> and ACM DNS-01 TLS validation. What remains below is the reasoning that motivated
+> the upgrade — kept for historical context.
 
-external-dns *is* deployed (ADR-05) — it watches the greeter Ingress and
-reconciles the per-region Route 53 latency records; the records resolve and
-fail over by the latency policy's health-check evaluation.
-What is deferred is only the **real domain**: against a `.test` zone,
-resolution works only by querying the zone's nameservers directly
-(`dig @<assigned-nameserver>`), because `.test` has no public delegation.
+~~The Route 53 hosted zone (`aegis-platform.test`) is a placeholder — no real
+domain is registered. `.test` is an RFC 6761 special-use TLD: reserved for testing
+and guaranteed never to be delegated on the public internet, so the zone cannot
+collide with a real domain.~~
 
-- **Production**: register a domain (or delegate a subdomain) and point its NS
-  records at the zone's AWS-assigned nameservers. `dig greeter.<domain>` then
-  resolves from any resolver — no `@<nameserver>` needed.
-- **Trigger**: a publicly reachable service.
-- **Effort**: ~0.5 day (domain registration + NS delegation; the hosted zone
-  and the latency records already exist).
+external-dns watches the gateway Ingress and reconciles per-region Route 53
+latency records with `evaluate-target-health=true` (dual-region, ADR-05). The
+`binhsu.org` apex stays on Cloudflare; each account's env zone is delegated
+directly from Cloudflare with one NS record per env. The hosted zone and latency
+records are fully live; real public DNS resolves `aegis-api.<env>.aws.binhsu.org`.
 
 ## Container image registry
 
@@ -279,16 +276,18 @@ This whole stack is **AWS-only today, by design** — not by accident. The split
 matters (see [ADR-08](adr/08-cluster-multi-tenancy.md), "Multi-cloud"):
 
 - **Platform tier (`aegis-platform-aws`) + landing zone are per-cloud by
-  construction** (VPC/EKS/IRSA/ACK/Route 53/ECR/Organizations/SCPs). Multi-cloud
-  does **not** mean making these cloud-agnostic — it means a parallel per-cloud
-  tier exposing the *same contract* (the ADR-08 five-dimension invariant). The
-  portability unit is the **contract**, not the Terraform.
+  construction** (VPC/EKS/Crossplane/Kyverno/Route 53/ECR/Organizations/SCPs).
+  Multi-cloud does **not** mean making these cloud-agnostic — it means a parallel
+  per-cloud tier exposing the *same contract* (the ADR-08 five-dimension invariant).
+  The portability unit is the **contract**, not the Terraform.
 - **Workload deploy repos are mostly portable K8s**; only the *edges* are
-  AWS-bound: the ALB `Ingress` annotations (both repos), the ACM cert ARN +
-  ACK `Role` CRD + IRSA annotation (core). The intended multi-cloud workload
-  model is **overlay-per-cloud inside one deploy repo** (`overlays/prod-aws`,
-  `prod-gcp`), *not* a forked repo-per-cloud. The seam files (`ingress.yaml`,
-  `iam/`) are already isolated so that future split is mechanical.
+  AWS-bound: the ALB `Ingress` annotations (both repos), the ACM cert ARN, and the
+  `WorkloadIdentity` XR claim (which the Crossplane Composition renders into an
+  AWS IAM Role — the seam is the XR interface, not a vendor CRD, per ADR-09).
+  The intended multi-cloud workload model is **overlay-per-cloud inside one deploy
+  repo** (`overlays/prod-aws`, `prod-gcp`), *not* a forked repo-per-cloud. The
+  seam files (`ingress.yaml`, `components/aws-binding/`) are already isolated so
+  that future split is mechanical.
 
 Two genuinely-newer directions we are **not** on (named so they are tracked, not
 forgotten):

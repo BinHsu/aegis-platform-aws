@@ -1,8 +1,8 @@
 # Disaster recovery plan
 
 How `aegis-platform-aws` recovers from failure, what it targets, and how a drill
-proves it. This is the *plan*; running `scripts/dr/dr-drill.sh` writes the
-drill's timed evidence to [`evidence/`](evidence/README.md).
+proves it. This is the *plan*; running `scripts/dr/dr-drill.sh` sequences and
+times the drill, capturing CLI evidence in a timestamped report.
 
 ## Scope
 
@@ -98,7 +98,7 @@ flowchart LR
 | 1 — destroy | `make destroy-region REGION=<region>` — VPC, EKS, ALB, ArgoCD, Alloy, workload destroyed. The greeter is now down. | T0 → T1 |
 | 2 — rebuild | `make regional-one REGION=<region>` — Terraform re-applies the regional stack. | T1 → T2 |
 | 3 — reconverge | ArgoCD reinstalls, pulls each workload's deploy repo, syncs from its `k8s/overlays/prod/`. Poll until pods Ready. | T2 → T3 |
-| 4 — report | Compute per-phase durations and total RTO (T3 − T1); write the report to [`evidence/`](evidence/README.md). | — |
+| 4 — report | Compute per-phase durations and total RTO (T3 − T1); write a timestamped evidence report. | — |
 
 `make destroy-region` is destructive — the script requires explicit
 confirmation before Phase 1.
@@ -116,12 +116,11 @@ and syncs the workloads in well under a minute. The budget stops at pods Ready
 
 ## Validation — evidence
 
-A drill run is a claim until it is evidenced. `dr-drill.sh` writes a report and
-a CLI log to [`evidence/`](evidence/README.md) (none committed yet — see that
-README for how to reproduce). The operator pairs it with a Grafana dashboard
-screenshot of the drill window.
+A drill run is a claim until it is evidenced. `dr-drill.sh` writes a timestamped
+report and CLI log. The operator pairs it with a Grafana dashboard screenshot of
+the drill window.
 
-The screenshot must be **committed into git** — the live dashboard is not
-durable evidence: the cluster is destroyed after the drill, and Grafana Cloud's
-free tier retains data only ~14 days, so the proof would otherwise be gone by
-the time anyone looked. The evidence directory keeps it self-contained.
+The screenshot must be **committed into git** — the live dashboard is not durable
+evidence: the cluster is destroyed after the drill, and Grafana Cloud's free tier
+retains data only ~14 days, so the proof would otherwise be gone by the time anyone
+looked. Commit both the report and the screenshot together.
