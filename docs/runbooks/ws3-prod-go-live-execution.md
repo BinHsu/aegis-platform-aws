@@ -564,6 +564,31 @@ The known `VPC DependencyViolation` from orphaned ALB security groups is handled
 by the two-phase sweep / background SG reaper in `infra-apply-account.yml`
 (merged with #103's stale-lock fix).
 
+> **Known orphan — the engine IRSA role (until Pod Identity lands).** The engine's
+> IAM role is composed IN-CLUSTER by Crossplane (the `aegis-xrds` WorkloadIdentity
+> Composition), so its lifecycle is the controller's reconcile loop, NOT the
+> Terraform stack. Tearing down the cluster before the `WorkloadIdentity` claim is
+> reconcile-deleted ORPHANS the role at IAM path `/aegis-workload/aegis-core-engine`
+> (created the moment ArgoCD syncs the engine). It is **free** (IAM), so it does not
+> block `$0`, BUT it will collide on the next bring-up (`aegis-core-model-read-<region>`
+> duplicate-name on re-apply). Two reasons it survives a normal cleanup: Terraform
+> doesn't manage it, and an SCP blocks `PlatformAdmin` from deleting `/aegis-workload/`.
+> **Clean it before the next eu-west-1 apply** by assuming the SCP-exempt break-glass
+> role (2026-06-18 observed; 2026-06-19 cleaned this way):
+>
+> ```bash
+> creds=$(aws sts assume-role --role-arn arn:aws:iam::<acct>:role/aegis-emergency-break-glass \
+>   --role-session-name orphan-cleanup --profile aegis-prod-admin --query Credentials --output json)
+> # export the creds, then:
+> aws iam detach-role-policy --role-name aegis-core-engine --policy-arn arn:aws:iam::<acct>:policy/aegis-core-model-read-<region>
+> aws iam delete-policy --policy-arn arn:aws:iam::<acct>:policy/aegis-core-model-read-<region>
+> aws iam delete-role  --role-name aegis-core-engine
+> ```
+>
+> **Permanent fix:** the EKS Pod Identity migration (ADR-21 §A) makes the engine role
+> Terraform-managed → destroyed cleanly with the stack → no orphan, no break-glass.
+> Once that lands, delete this note.
+
 **After teardown:**
 
 1. Flip `accounts.prod.bootstrap_complete` back to `false` in `accounts.json`
