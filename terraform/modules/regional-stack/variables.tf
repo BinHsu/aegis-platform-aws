@@ -9,11 +9,10 @@ variable "github_owner" {
   default     = "BinHsu"
 }
 
-variable "vpc_cidr" {
-  description = "VPC CIDR block. Provisioned across 3 AZs with public+private subnets."
-  type        = string
-}
-
+# NOTE (WS4 / ADR-23): var.vpc_cidr is gone. The VPC CIDR is no longer an input
+# — it is allocated from the landing-zone IPAM pool resolved by locale
+# (vpc-ipam.tf). IPAM is the single allocator, so there is no per-region CIDR to
+# pass in. The subnets in locals.tf derive from the allocation.
 variable "environment" {
   description = "Which deploy-repo overlay this cluster syncs: ArgoCD's ApplicationSet uses k8s/overlays/<environment> as both the discovery gate (pathsExist) and the sync path. Default prod (the original single-environment behavior); the W3 callers pass TF_VAR_environment from accounts.json."
   type        = string

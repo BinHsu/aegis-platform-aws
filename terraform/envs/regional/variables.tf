@@ -8,11 +8,9 @@ variable "region" {
   type        = string
 }
 
-variable "vpc_cidr" {
-  description = "VPC CIDR for this region. From regions.auto.tfvars.json entry."
-  type        = string
-}
-
+# NOTE (WS4 / ADR-23): vpc_cidr removed. The regional VPC CIDR now comes from
+# the landing-zone IPAM pool (regional-stack/vpc-ipam.tf, resolved by locale),
+# not from regions.auto.tfvars.json. CI no longer sets TF_VAR_vpc_cidr.
 variable "environment" {
   description = "Environment name for this cluster (staging | prod). Selects the deploy-repo overlay ArgoCD syncs (k8s/overlays/<environment>). Default prod preserves the pre-multi-account behavior; the W3 account callers inject TF_VAR_environment from accounts.json."
   type        = string

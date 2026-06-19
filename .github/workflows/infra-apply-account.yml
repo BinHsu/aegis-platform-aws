@@ -88,11 +88,10 @@ jobs:
           export TF_VAR_region="$r" TF_VAR_platform_region="$r"
           # effective scalars = base regions[r] * overrides (override wins)
           eff="$(jq -c --arg r "$r" --argjson ov "$OVERRIDES_JSON" '.regions[$r] * $ov' regions.auto.tfvars.json)"
-          TF_VAR_vpc_cidr="$(echo "$eff" | jq -r '.cidr')"
           TF_VAR_node_instance="$(echo "$eff" | jq -r '.node_instance')"
           TF_VAR_node_min="$(echo "$eff" | jq -r '.node_min')"
           TF_VAR_node_max="$(echo "$eff" | jq -r '.node_max')"
-          export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
+          export TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
           printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
           gate=true # fail-safe default
           plan_ok=false
@@ -249,7 +248,6 @@ jobs:
           eff="$(jq -c --arg r "$r" --argjson ov "$OVERRIDES_JSON" '.regions[$r] * $ov' regions.auto.tfvars.json)"
           {
             echo "TF_VAR_region=$r"
-            echo "TF_VAR_vpc_cidr=$(echo "$eff" | jq -r '.cidr')"
             echo "TF_VAR_node_instance=$(echo "$eff" | jq -r '.node_instance')"
             echo "TF_VAR_node_min=$(echo "$eff" | jq -r '.node_min')"
             echo "TF_VAR_node_max=$(echo "$eff" | jq -r '.node_max')"

@@ -125,13 +125,14 @@ mock_provider "aws" {
 mock_provider "kubernetes" {}
 mock_provider "helm" {}
 
-# Fixtures matching the env's required vars (region/vpc_cidr/node_*/platform_region/
+# Fixtures matching the env's required vars (region/node_*/platform_region/
 # tfstate_*/github_token/operator_principal_arn). Values mirror a real eu-central-1
 # regional apply; tfstate_* are placeholders — the remote_state is overridden below,
-# so they are never dialed.
+# so they are never dialed. NOTE (WS4 / ADR-23): vpc_cidr is no longer a var — the
+# CIDR is allocated from the landing-zone IPAM pool (mocked above), so there is
+# nothing to set here.
 variables {
   region                 = "eu-central-1"
-  vpc_cidr               = "10.20.0.0/16"
   environment            = "staging"
   node_instance          = "t3.large"
   node_min               = 2
@@ -172,6 +173,22 @@ run "cold_start_empty_platform_state_plans_clean" {
     target = data.terraform_remote_state.platform
     values = {
       outputs = {}
+    }
+  }
+
+  # WS4 / ADR-23: the regional VPC CIDR is allocated from the landing-zone IPAM
+  # pool (regional-stack/vpc-ipam.tf), resolved by locale. The module derives the
+  # pool id from the data source ARN (NOT .id — .id is the SDK identity, not a
+  # schema attribute, so it is unmockable; see vpc-ipam.tf). Override .arn with a
+  # well-formed IPAM-pool ARN so the derived ipam_pool_id is KNOWN and non-null at
+  # plan. The allocation's .cidr stays unknown-after-apply, so this run still
+  # exercises the real cold-start contract: subnets derived from an UNKNOWN cidr
+  # over a static range(3) — known count, unknown values, no for_each on the
+  # unknown — must plan clean.
+  override_data {
+    target = module.stack.data.aws_vpc_ipam_pool.regional
+    values = {
+      arn = "arn:aws:ec2::111122223333:ipam-pool/ipam-pool-00000000000000000"
     }
   }
 
@@ -270,6 +287,16 @@ run "cold_start_zone_id_placeholder_is_nonempty" {
     target = data.terraform_remote_state.platform
     values = {
       outputs = {}
+    }
+  }
+
+  # WS4 / ADR-23: same IPAM-pool override as the first run — set .arn (the
+  # mockable attribute the module derives the pool id from) so the /16 allocation
+  # has a non-null ipam_pool_id at plan; .cidr stays unknown.
+  override_data {
+    target = module.stack.data.aws_vpc_ipam_pool.regional
+    values = {
+      arn = "arn:aws:ec2::111122223333:ipam-pool/ipam-pool-00000000000000000"
     }
   }
 
