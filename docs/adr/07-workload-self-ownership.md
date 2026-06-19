@@ -26,7 +26,7 @@ the landing-zone tier below it:
 2. **Workload IAM** — `aegis-core-deploy`'s engine ServiceAccount carries a
    role-arn annotation pointing at `aegis-staging-aegis-engine` (trust subject
    `system:serviceaccount:aegis-core:aegis-core-engine`), but that role was
-   **never actually provisioned** in `aegis-aws-landing-zone`'s Terraform — it
+   **never actually provisioned** in `aegis-landing-zone-aws`'s Terraform — it
    is a dangling reference. The open question is whether the fabric tier should
    own per-workload IAM at all; today it owns neither a working role nor should.
 
@@ -35,7 +35,7 @@ moved manifests into deploy repos applies here: the boundary should follow the
 unit of ownership.
 
 This boundary is the workload-tier end of a lineage the sibling repo already
-recorded: **[ldz ADR-017](https://github.com/BinHsu/aegis-aws-landing-zone/blob/main/docs/decisions/017-platform-tier-extraction.md)**
+recorded: **[ldz ADR-017](https://github.com/BinHsu/aegis-landing-zone-aws/blob/main/docs/decisions/017-platform-tier-extraction.md)**
 descoped the landing zone to account-fabric-only and extracted the platform
 tier into this repo. ldz ADR-017's own consequence — "per-workload IRSA roles
 do not live in the landing zone; they are provisioned by the workload per
@@ -99,7 +99,7 @@ non-automatable tier closes the residual gap:
    CRD whose trust subject does not name the same namespace the CRD lives in.
    `aegis-greeter`'s deploy repo cannot declare an IAM role that trusts
    `system:serviceaccount:aegis-core:...`.
-3. **Org-level SCP `deny-iam-privilege-escalation`** ([ldz ADR-015](https://github.com/BinHsu/aegis-aws-landing-zone/blob/main/docs/decisions/015-permission-boundary-hardening.md),
+3. **Org-level SCP `deny-iam-privilege-escalation`** ([ldz ADR-015](https://github.com/BinHsu/aegis-landing-zone-aws/blob/main/docs/decisions/015-permission-boundary-hardening.md),
    `management/scps`) — escalation ceiling. ADR-015 §A2 *rejected* per-role
    permission boundaries (a role can drop its own boundary) and put the wall at
    the SCP layer, which member-account roles cannot self-modify. The SCP denies
@@ -189,7 +189,7 @@ real technical benefits in the meantime.
 - Onboarding a new workload becomes self-service. Create the deploy repo, tag
   it with the GitHub topic `aegis-workload`, declare
   `argocd/application.yaml` and `k8s/base/iam/*.yaml`. Zero PR to
-  `aegis-platform-aws`, zero PR to `aegis-aws-landing-zone`.
+  `aegis-platform-aws`, zero PR to `aegis-landing-zone-aws`.
 - The platform tier narrows to **paved-road provider**: EKS, the ArgoCD root
   + `ApplicationSet`, the ACK IAM controller, cert-manager, the ALB
   controller, the Alloy DaemonSet, the observability wiring. It stops being
@@ -229,7 +229,7 @@ down the fabric's now-orphaned role.
 3. **`aegis-core-deploy`** — the **second consumer**, applying the now-proven
    interface to the engine: `argocd/application.yaml` +
    `k8s/base/iam/aegis-core-engine-role.yaml`, same `aegis-workload` topic.
-4. **`aegis-aws-landing-zone`** — add the ACK IAM controller role to the
+4. **`aegis-landing-zone-aws`** — add the ACK IAM controller role to the
    `deny-iam-privilege-escalation` SCP allow-list (scoped carve-out, like the
    Karpenter entry) so ACK can provision workload roles; then reconcile the
    dangling `aegis-staging-aegis-engine` role-arn annotation (point the engine

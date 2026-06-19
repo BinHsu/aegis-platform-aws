@@ -30,7 +30,7 @@ The right answer is neither — a default with a named, paved escape hatch.
 This decision sits on the same lineage as ADR-07: [ADR-01](01-architecture-and-topology.md)
 drew the lifecycle / blast-radius line inside this repo, [ADR-03](03-delivery-cicd-gitops.md)
 established per-cluster ArgoCD + deploy repos, and
-[ldz ADR-017](https://github.com/BinHsu/aegis-aws-landing-zone/blob/main/docs/decisions/017-platform-tier-extraction.md)
+[ldz ADR-017](https://github.com/BinHsu/aegis-landing-zone-aws/blob/main/docs/decisions/017-platform-tier-extraction.md)
 descoped the landing zone to account-fabric-only so this platform tier owns the
 cluster question outright. Where ADR-07 fixed *what a workload owns*, this ADR
 fixes *where it runs* — and, more importantly below, the **contract** the

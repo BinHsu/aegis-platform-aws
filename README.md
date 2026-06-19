@@ -1,50 +1,81 @@
-# aegis-platform-aws
+# aegis-platform-aws — the platform tier: EKS substrate, per-cluster ArgoCD, Crossplane, observability
 
 The platform tier for a fleet of Kubernetes workloads on AWS — Terraform for the
-cloud substrate, per-cluster ArgoCD for in-cluster GitOps, Grafana Cloud for
-observability, and a DR drill that rebuilds a region from git.
+cloud substrate, per-cluster ArgoCD for in-cluster GitOps, Crossplane for
+workload-scoped cloud identity, Grafana Cloud for observability, and a DR drill
+that rebuilds a region from git.
 
 `aegis-platform-aws` is shared infrastructure. It provisions the EKS clusters and
 runs the ArgoCD that reconciles **workload deploy repos** onto them. It owns no
-application code and no Kubernetes manifests — those live in their own repos:
+application code and no Kubernetes manifests — those live in their own repos.
 
-- **Application repos** (e.g. `aegis-greeter`) — service code, Dockerfile, and
-  the CI that builds and publishes the container image.
-- **Deploy repos** (e.g. `aegis-greeter_deploy`) — the Kubernetes manifests for
-  one workload. ArgoCD watches these.
+## The Aegis portfolio (4 repos)
 
-A workload onboards itself (ADR-07): tag its deploy repo with the GitHub topic
-`aegis-workload` and ArgoCD's `ApplicationSet` discovers it — no edit to this
-repo. The platform owns the paved road (EKS, ArgoCD, ACK, Kyverno guardrails);
-each deploy repo owns its own manifests and IAM intent.
+| Tier | Repo | Role |
+|------|------|------|
+| Account fabric | [`aegis-landing-zone-aws`](https://github.com/BinHsu/aegis-landing-zone-aws) | AWS Organizations, OIDC trust anchor, SCPs |
+| Platform | [`aegis-platform-aws`](https://github.com/BinHsu/aegis-platform-aws) | Terraform substrate (EKS/VPC), ArgoCD, Crossplane XRDs, observability |
+| Application | [`aegis-core`](https://github.com/BinHsu/aegis-core) | The service — gateway + C++ engine + web frontend |
+| Deploy (GitOps) | [`aegis-core-deploy`](https://github.com/BinHsu/aegis-core-deploy) | Kustomize + Crossplane claims; ArgoCD syncs from here |
 
-## Who is this for
+> **You are here: `aegis-platform-aws`.**
+
+```mermaid
+flowchart LR
+    dev([Developer]) --> core["aegis-core<br/>app code"]
+    core -->|"CI build → image"| ecr[("ECR / registry")]
+    core -->|"manifests"| deploy["aegis-core-deploy<br/>GitOps source of truth"]
+    deploy -->|"ArgoCD sync"| platform["aegis-platform-aws<br/>EKS · ArgoCD · Crossplane"]
+    ecr -->|"pull by digest"| platform
+    platform -->|"runs in accounts &<br/>OIDC trust from"| ldz["aegis-landing-zone-aws<br/>account fabric"]
+    classDef here fill:#1f6feb,stroke:#0d2a52,color:#fff;
+    class platform here;
+```
+
+## What this is & who it's for
+
+This repo owns the paved road — EKS, ArgoCD, ACK, Crossplane XRDs, Kyverno
+guardrails — and nothing application-specific. Workloads live in their own pairs of
+repos and onboard themselves:
+
+- **Application repos** (e.g. `aegis-core`) — service code, Dockerfile, and the CI
+  that builds and publishes the container image.
+- **Deploy repos** (e.g. `aegis-core-deploy`) — the Kubernetes manifests and
+  Crossplane claims for one workload. ArgoCD watches these.
+
+A workload onboards by getting one `registries` entry (ADR-07); ArgoCD's
+`ApplicationSet` then renders an `Application` for it — no edit to this repo. The
+platform owns the paved road; each deploy repo owns its own manifests and IAM
+intent.
 
 | You want to… | Start here |
 |---|---|
 | Understand the architecture | [Architecture](#architecture) below, then [`docs/adr/`](docs/adr/README.md) |
+| See how a workload syncs | [Key flow](#key-flow) below — the ArgoCD + Crossplane diagrams |
 | Read the reasoning behind a decision | [`docs/adr/README.md`](docs/adr/README.md) — ADR index with a reading order per audience |
-| Stand it up from scratch | [First-time setup](#first-time-setup) below |
-| Operate it day-to-day | [Day-to-day operations](#day-to-day-operations) below |
+| Stand it up from scratch | [Quick start / first-time setup](#quick-start--first-time-setup) below |
+| Operate it day-to-day | [Day-to-day operations](#day-to-day-operations) below + [`docs/runbooks/`](docs/runbooks/) |
+| Step through a real bring-up / go-live | [`docs/runbooks/`](docs/runbooks/) — bring-up, dual-region verification, prod go-live execution |
 | See what's monitored and alerted on | [`docs/metrics-and-alerts.md`](docs/metrics-and-alerts.md) — panel + alert catalog |
 | Run / understand the DR drill | [`docs/dr-plan.md`](docs/dr-plan.md) + [DR drill](#dr-drill) below |
 | Know what it costs to run | [`docs/finops.md`](docs/finops.md) — cost model + the ephemeral-destroy strategy |
 | See what was deliberately deferred | [`docs/tradeoffs.md`](docs/tradeoffs.md) |
+| Read the lessons from the last live run | [`RETRO-ws3-staging-e2e-2026-06-18.md`](RETRO-ws3-staging-e2e-2026-06-18.md) — staging E2E retrospective |
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    subgraph app_repo["application repo · e.g. aegis-greeter"]
+    subgraph app_repo["application repo · e.g. aegis-core"]
         app["service code · Dockerfile · publish CI"]
     end
-    subgraph deploy_repo["deploy repo · e.g. aegis-greeter_deploy"]
+    subgraph deploy_repo["deploy repo · e.g. aegis-core-deploy"]
         kust["k8s/overlays/prod/kustomization.yaml"]
     end
     subgraph this_repo["aegis-platform-aws — this repo"]
         tf["terraform/ · bootstrap / platform / regional"]
         argocd["ArgoCD ApplicationSet · per cluster"]
-        ack["ACK IAM controller · Kyverno guardrails"]
+        ack["ACK IAM · Crossplane XRDs · Kyverno guardrails"]
     end
     subgraph aws["AWS · per region"]
         eks["EKS — workload Deployments + Grafana Alloy DaemonSet"]
@@ -56,7 +87,7 @@ flowchart TB
     app -->|build + push image| ecr
     app -->|commit image-tag bump| kust
     tf -->|provisions| eks
-    argocd -->|discovers by aegis-workload topic| deploy_repo
+    argocd -->|reconciles registries-driven workloads| deploy_repo
     kust --> argocd
     argocd -->|syncs| eks
     ecr -.image.-> eks
@@ -65,34 +96,101 @@ flowchart TB
 ```
 
 - **Terraform**, three lifecycle-separated environments: `bootstrap` (state
-  backend), `platform` (slow lifecycle — Route 53, ECR, OIDC, budgets, Grafana
-  dashboards), `regional` (fast lifecycle — VPC + EKS + ArgoCD + Alloy, applied
-  once per region).
+  backend + CI roles), `platform` (slow lifecycle — Route 53, ECR, OIDC, budgets,
+  Grafana dashboards), `regional` (fast lifecycle — VPC + EKS + ArgoCD + Alloy,
+  applied once per region).
 - **Multi-region topology as data** — the region set is data
   (`regions.auto.tfvars.json`), not code. Adding a region is a one-line data
   change; an external loop (Makefile / GitHub Actions matrix) applies `regional`
   once per region with per-region state isolation.
-- **Workloads discover themselves** (ADR-07) — there is no catalog. ArgoCD's
-  `ApplicationSet` (SCM-provider generator) scans the org for repos tagged
-  `aegis-workload` and reconciles each. Onboarding is: tag the deploy repo (+ one
-  gitignored `registries.auto.tfvars.json` entry if it pulls private ECR). The
-  safety floor that makes this safe to hand to a workload team is the
-  enforcement four-pack: AppProject destination-allowlist + ApplicationSet
-  namespace-derivation, Kyverno (ACK-role trust-subject↔namespace, default-deny
-  NetworkPolicy baseline), and the org-level `deny-iam-privilege-escalation` SCP.
-- **Workload IAM is self-owned** (ADR-07) — the platform installs the ACK IAM
-  controller; each deploy repo declares its own IAM as `Role`/`Policy` CRDs
-  under `k8s/base/iam/`. The platform tier no longer owns per-workload IAM.
+- **Workloads enrol via the registries map** (ADR-07) — there is no catalog.
+  ArgoCD's `ApplicationSet` is driven by a List generator whose elements come from
+  `var.workload_registries`; a workload enrols by getting a registries entry. (The
+  SCM-provider generator was dropped: `GET /orgs/<owner>/repos` 404s on a personal
+  GitHub account — caught live on the 2026-06-12 prod proof cluster.) The safety
+  floor that makes self-service safe is the enforcement four-pack: AppProject
+  destination-allowlist + ApplicationSet namespace-derivation, Kyverno
+  (trust-subject↔namespace, default-deny NetworkPolicy baseline), and the
+  org-level `deny-iam-privilege-escalation` SCP.
+- **Workload IAM is self-owned** (ADR-07/09) — a deploy repo declares its identity
+  intent as a Crossplane `WorkloadIdentity` claim; the platform's Composition
+  renders the IAM role. As of ADR-21/22, **EKS Pod Identity now owns the engine's
+  identity** (Terraform-managed) so it tears down cleanly; Crossplane returns in
+  WS4 (v2) for workload-scoped cloud only. The platform tier owns no per-workload
+  IAM by hand.
 - **ArgoCD per cluster** — each EKS cluster runs its own ArgoCD, eliminating a
-  GitOps-layer single point of failure. Deploy repos are public, so ArgoCD
-  clones them anonymously; one org-read token lets the SCM generator enumerate
-  them by topic (no per-workload deploy keys).
+  GitOps-layer single point of failure. Deploy repos are public, so ArgoCD clones
+  them anonymously over HTTPS — no per-workload deploy keys.
 - **Observability** — workloads emit OpenTelemetry + Pyroscope to a node-local
   Grafana Alloy DaemonSet, which forwards to Grafana Cloud. CloudWatch is kept
   only for EKS control-plane logs + ALB access logs (audit side-effect).
 
 See [`docs/adr/`](docs/adr/README.md) for the reasoning behind each decision and
 [`docs/tradeoffs.md`](docs/tradeoffs.md) for what was deliberately deferred.
+
+### Workload-identity chain (Crossplane XRD → IAM)
+
+A deploy repo declares *intent* — which ServiceAccount needs a role, and optionally
+which managed policies — and the platform renders the AWS IAM. The trust subject is
+derived from the claim's own namespace, so a claim cannot forge a foreign-namespace
+trust (ADR-09).
+
+```mermaid
+flowchart TB
+    subgraph deploy["aegis-core-deploy (deploy repo)"]
+        claim["WorkloadIdentity claim<br/>serviceAccountName + policyArns"]
+    end
+    subgraph platform["aegis-platform-aws (this repo · regional-stack)"]
+        xrd["XRD: XWorkloadIdentity<br/>(cluster-scoped XR)"]
+        comp["Composition (Pipeline +<br/>function-patch-and-transform)"]
+        upjet["upjet iam.aws.upbound.io/Role<br/>(cluster-scoped MR)"]
+    end
+    aws["AWS IAM Role<br/>name = serviceAccountName · path = iamRolePath<br/>trust = OIDC sub system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;"]
+
+    claim -->|claimRef| xrd
+    xrd --> comp
+    comp -->|"patch ns+sa → name, trust policy,<br/>managedPolicyArns"| upjet
+    upjet -->|provider-aws-iam reconcile| aws
+
+    note["ADR-21/22: EKS Pod Identity (Terraform)<br/>now owns the ENGINE identity;<br/>this XRD path returns in WS4 as Crossplane v2<br/>for workload-scoped cloud only"]
+    note -.- platform
+```
+
+## Key flow
+
+### How a workload syncs — ApplicationSet fan-out
+
+One ArgoCD `ApplicationSet`, a single List generator, renders one `Application` per
+workload. Account-bound values a public deploy repo must not hardcode are injected
+per workload via the `templatePatch` — only for workloads that opt in (greeter
+declares none, so it renders nothing).
+
+```mermaid
+flowchart TB
+    reg["var.workload_registries<br/>(registries.auto.tfvars.json)"]
+    reg -->|"workload_list_elements"| gen["ApplicationSet · List generator"]
+    gen -->|"one element per workload"| tmpl["template → Application<br/>repoURL · targetRevision · path=overlays/&lt;env&gt;"]
+
+    tmpl --> appG["Application: aegis-greeter<br/>(no opt-in injections)"]
+    tmpl --> appC["Application: aegis-core<br/>(engine + gateway)"]
+
+    appC -->|"templatePatch (per-workload)"| inj
+    subgraph inj["conditional kustomize patches — keyed off empty strings"]
+        roleArn["SA role-arn annotation → engineRoleArn"]
+        policy["WorkloadIdentity policyArns → enginePolicyArns"]
+        cert["Ingress cert-arn → certArn (ACM)"]
+        model["ConfigMap model-store → modelBucket (per-region S3)"]
+        oidc["ConfigMap gateway-oidc → Cognito issuer/audience/jwksUrl"]
+    end
+
+    appG -->|"sync (auto: prune + selfHeal)"| eks["EKS reconcile<br/>ns derived from repo name · CreateNamespace"]
+    inj -->|"sync (auto: prune + selfHeal)"| eks
+```
+
+The region (`aegis.binhsu.org/region`) and the ECR repository
+(`aegis.binhsu.org/ecr-repository`) ride a generic `commonAnnotations` channel the
+cluster owns; the deploy repo's own kustomize replacements apply them, so the
+platform never learns a workload's internal deployment/container names (ADR-12, -16).
 
 ## Release model
 
@@ -148,15 +246,17 @@ flowchart LR
 
 ```
 regions.auto.tfvars.json    Region topology — platform_region + regions{}
-registries.auto.tfvars.json Per-workload ECR/IRSA params (gitignored; account IDs). NOT a catalog — discovery is by the aegis-workload topic. See *.example
+registries.auto.tfvars.json Per-workload ECR/IRSA params (gitignored; account IDs). The workload roster — the List generator enumerates from here. See *.example
 terraform/
-  envs/bootstrap/           S3 state bucket (local state, one-shot)
+  envs/bootstrap/           S3 state bucket + CI roles (local state, one-shot)
   envs/platform/            Route 53, ECR, OIDC, budget, SSM, Grafana, branch protection
   envs/regional/            VPC + EKS + ArgoCD + Alloy — applied once per region
   modules/regional-stack/   The per-region stack, invoked by envs/regional/
+    charts/aegis-xrds/       Crossplane XRD + Composition (WorkloadIdentity → IAM)
 grafana/dashboards/         Dashboard JSON, applied by the grafana/grafana TF provider
 .github/workflows/          infra-plan, infra-apply, infra-ops
 docs/adr/                   Architecture Decision Records
+docs/runbooks/              Bring-up, dual-region verification, prod go-live execution
 docs/tradeoffs.md           Deferred work + production-hardening path
 Makefile                    Local dev + emergency apply (CI is the canonical path)
 scripts/install-tools.sh    Pinned project-local toolchain → ./bin/
@@ -171,11 +271,12 @@ scripts/install-tools.sh    Pinned project-local toolchain → ./bin/
   the Actions secrets/variables during setup). All other tools (tflint, trivy,
   jq, gitleaks) install into `./bin/` via `make dev-setup`.
 
-## First-time setup
+## Quick start / first-time setup
 
 The CI pipeline cannot create the very infrastructure it authenticates against,
 so the foundation is bootstrapped once from an operator's machine; CI takes over
-after that.
+after that. For a narrated, step-by-step walkthrough of a real bring-up, see
+[`docs/runbooks/ws3-bring-up.md`](docs/runbooks/ws3-bring-up.md).
 
 ```bash
 # 1. Project-local toolchain → ./bin/ + wire the pre-commit hook.
@@ -195,13 +296,12 @@ cp terraform/envs/regional/secrets.auto.tfvars.example terraform/envs/regional/s
 #        and eu-west-1 both ship `enabled: true`; flip a region's `enabled`
 #        flag to add or drop one.
 
-# 4. Register workloads — there is no catalog. Tag each deploy repo with the
-#    GitHub topic `aegis-workload` (ArgoCD discovers it). If a workload pulls
-#    private ECR, add one entry to registries.auto.tfvars.json (copy from the
-#    *.example; gitignored, since it holds account IDs).
+# 4. Register workloads — there is no catalog. Add one entry per workload to
+#    registries.auto.tfvars.json (copy from the *.example; gitignored, since it
+#    holds account IDs). The List generator enumerates from this file.
 cp registries.auto.tfvars.json.example registries.auto.tfvars.json  # then edit
 
-# 5. Create the remote state backend (local state, one-shot).
+# 5. Create the remote state backend + CI roles (local state, one-shot).
 export AWS_PROFILE=<your-profile>
 make bootstrap
 
@@ -248,7 +348,8 @@ kubectl get pods -n monitoring       # Alloy + node-exporter + kube-state-metric
 ```
 
 From here, every push to `main` runs `infra-plan` (PR) / `infra-apply`
-(merge); see [CI/CD](#cicd) below.
+(merge); see [CI/CD](#cicd) below. For dual-region and prod-specific verification,
+see [`docs/runbooks/ws3-prod-dual-region-verification.md`](docs/runbooks/ws3-prod-dual-region-verification.md).
 
 ## Day-to-day operations
 
@@ -265,6 +366,20 @@ make regional-one REGION=eu-central-1   # apply a single region
 
 The pre-commit hook (`.githooks/pre-commit`, wired by `make dev-setup`) runs
 `terraform fmt -check` + a `gitleaks` secret scan on every commit.
+
+Operational procedures — bring-up, dual-region verification, prod go-live
+execution, and the joint-strike patterns — are in
+[`docs/runbooks/`](docs/runbooks/). Postmortems live in
+[`docs/postmortems/`](docs/postmortems/), and the most recent live-run lessons in
+[`RETRO-ws3-staging-e2e-2026-06-18.md`](RETRO-ws3-staging-e2e-2026-06-18.md).
+
+## Decisions & trade-offs
+
+The reasoning behind each architectural choice is recorded as a thematic
+Architecture Decision Record. The index — with a reading order per audience
+(platform reviewer, DR, security, observability) — is in
+[`docs/adr/README.md`](docs/adr/README.md). What was deliberately deferred, and the
+path to production hardening, is in [`docs/tradeoffs.md`](docs/tradeoffs.md).
 
 ## Cost
 
@@ -291,7 +406,9 @@ matrix, RTO/RPO targets, and the full procedure are in
 [`docs/dr-plan.md`](docs/dr-plan.md).
 
 Run it with the helper script — it sequences the phases, times each, captures
-CLI evidence, and writes a timestamped report under `docs/evidence/`:
+CLI evidence, and writes a timestamped report under
+[`docs/evidence/`](docs/evidence/README.md) (no drill artifacts are committed yet;
+that README explains how to reproduce them):
 
 ```bash
 scripts/dr/dr-drill.sh eu-central-1
@@ -328,7 +445,7 @@ Cloud. Dashboards and alert rules are declared in Terraform
 edits, so the DR drill reconstructs them from git. The full panel and alert
 inventory is in [`docs/metrics-and-alerts.md`](docs/metrics-and-alerts.md).
 
-Sample queries (full set in `docs/runbooks/`):
+Sample queries (full set in [`docs/runbooks/observability-queries.md`](docs/runbooks/observability-queries.md)):
 
 ```promql
 # request latency p95

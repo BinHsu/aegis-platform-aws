@@ -45,7 +45,7 @@ identity row, and §6's scoreboard as superseded by the points above + ADR-22.
 
 ---
 
-## 中文摘要
+## 中文摘要 (Chinese summary)
 
 WS4 的目標:讓「加一個 workload」像「加一塊積木 (Block)」一樣零摩擦。今天要上一個
 workload(以 WS3 的 `aegis-core` 為例),操作分散在六、七個地方,而且很多缺口是

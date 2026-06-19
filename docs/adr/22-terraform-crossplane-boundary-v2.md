@@ -157,7 +157,7 @@ Crossplane side**. Choosing v2 now forecloses nothing.
 - The two dormant `WorkloadIdentity` Kyverno ClusterPolicies left by PR #117 match
   kinds that no longer exist (inert). WS4 either prunes them or re-purposes them for
   the v2 XRs.
-- The `/aegis-workload/` SCP carve-out in `aegis-aws-landing-zone` is now unused by
+- The `/aegis-workload/` SCP carve-out in `aegis-landing-zone-aws` is now unused by
   this repo (no principal creates roles under that path). A fabric follow-up can
   remove it; the pre-existing orphan role from ADR-21 §A.5 still needs its break-glass
   cleanup.
