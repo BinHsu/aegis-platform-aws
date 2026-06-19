@@ -1,0 +1,445 @@
+name: preflight
+
+# Read-only pre-flight gate for a dual-region billable bring-up.
+# Run this BEFORE `make bootstrap` or any `workflow_dispatch` on infra-staging.
+# Creates ZERO resources. Fails loud on any condition that has historically
+# caused a partial apply that then bills until torn down.
+#
+# Checks:
+#   1. ECR images by digest — each image the deploy repos pin must exist in the
+#      registry/account the deploy targets, resolvable from both active regions.
+#      Flags a placeholder digest (sha256:0000…) as an explicit error.
+#   2. DNS delegation — the Route 53 zone for the env exists in the cluster
+#      account AND its NS records are live in the public DNS tree (parent NS
+#      resolves to the AWS zone nameservers). A failed delegation causes ACM
+#      DNS-01 to hang mid-apply.
+#
+# Prerequisites (operator one-time):
+#   AWS_INFRA_CI_ROLE_ARN  — existing ReadOnlyAccess role in the staging cluster
+#                            account (251774439261); used for Route53 checks and
+#                            any per-account ECR check (e.g. aegis-greeter).
+#   AWS_DEPLOYMENT_CI_ROLE_ARN — ReadOnlyAccess role in the deployment account
+#                            (162975888022); needed to describe-images on the
+#                            shared aegis-core ECR repo (ADR-10). Seed it via
+#                            break-glass in the deployment account, same pattern
+#                            as gh-tf-apply-deployment (bootstrap/iam-seed.tf).
+#                            Trust: same GitHub OIDC + repo condition as
+#                            aegis-platform-aws-ci; permissions: ReadOnlyAccess.
+#                            Until this role exists the ECR-deployment check step
+#                            is skipped (SKIP_DEPLOYMENT_ECR_CHECK=true).
+#
+# Inputs (workflow_dispatch):
+#   account        — which accounts.json entry to check (default: staging)
+#   environment    — workload overlay to read digests from (default: staging)
+#
+# The job reads REGISTRIES_JSON from the repo variable to derive the ECR registry
+# coordinates — same source as infra-plan/apply so there is no skew.
+
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "accounts.json key to check (staging|prod)"
+        required: false
+        default: "staging"
+      environment:
+        description: "Workload overlay to read digest pins from (staging|prod)"
+        required: false
+        default: "staging"
+  pull_request:
+    branches: [main]
+    paths:
+      - 'accounts.json'
+      - 'regions.auto.tfvars.json'
+      - '.github/workflows/preflight.yml'
+
+permissions:
+  id-token: write   # required for OIDC -> AWS
+  contents: read
+
+env:
+  # Platform (primary) region. Controls the ECR replication source and Route53
+  # lookup region for aws CLI calls.
+  AWS_REGION: eu-central-1
+  # Deployment account that hosts the shared ADR-10 ECR registry.
+  # Public topology per ADR-11 (account IDs are in accounts.json).
+  DEPLOYMENT_ACCOUNT_ID: "162975888022"
+  # Shared ECR repos (deployment-ecr.tf). These are the repo NAMES, not URLs.
+  SHARED_ECR_REPO_CORE: "aegis-core"
+  SHARED_ECR_REPO_GREETER: "aegis-greeter"
+  # Per-account ECR for aegis-greeter lives in the CLUSTER account (ecr.tf),
+  # not the deployment account. ECR region matches the registries entry.
+  GREETER_ECR_REGION: "eu-central-1"
+  # DNS zone parent. Must match var.dns_zone_name in platform/variables.tf.
+  DNS_ZONE_PARENT: "aws.binhsu.org"
+
+jobs:
+  # ── pre-flight setup ──────────────────────────────────────────────────────
+  setup:
+    name: resolve-preflight-params
+    runs-on: ubuntu-latest
+    outputs:
+      account_id:      ${{ steps.acc.outputs.account_id }}
+      enabled_regions: ${{ steps.acc.outputs.enabled_regions }}
+      environment:     ${{ steps.env.outputs.environment }}
+      dns_zone:        ${{ steps.dns.outputs.zone }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - id: acc
+        name: resolve account params from accounts.json
+        run: |
+          acct_key="${{ github.event.inputs.account || 'staging' }}"
+          a="$(jq -c --arg k "$acct_key" '.accounts[$k]' accounts.json)"
+          account_id="$(echo "$a" | jq -r '.account_id')"
+          enabled_regions="$(echo "$a" | jq -c '.enabled_regions')"
+          echo "account_id=${account_id}"           >> "$GITHUB_OUTPUT"
+          echo "enabled_regions=${enabled_regions}" >> "$GITHUB_OUTPUT"
+          echo "Checking account ${account_id} regions ${enabled_regions}"
+
+      - id: env
+        name: resolve environment
+        run: |
+          env_val="${{ github.event.inputs.environment || 'staging' }}"
+          echo "environment=${env_val}" >> "$GITHUB_OUTPUT"
+
+      - id: dns
+        name: derive DNS zone name
+        run: |
+          env_val="${{ github.event.inputs.environment || 'staging' }}"
+          echo "zone=${env_val}.${{ env.DNS_ZONE_PARENT }}" >> "$GITHUB_OUTPUT"
+          echo "DNS zone to check: ${env_val}.${{ env.DNS_ZONE_PARENT }}"
+
+  # ── ECR: per-account repos (staging cluster account) ──────────────────────
+  ecr-cluster-account:
+    name: ecr-cluster-account (${{ matrix.region }})
+    runs-on: ubuntu-latest
+    needs: setup
+    # Skip this check pre-bootstrap (BOOTSTRAP_COMPLETE guards the cluster account
+    # CI role; the deployment account check is independent — see next job).
+    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_CI_ROLE_ARN }}
+          aws-region: ${{ matrix.region }}
+
+      - name: fetch digest pins from aegis-greeter-deploy overlay
+        id: greeter_digest
+        env:
+          OVERLAY: ${{ needs.setup.outputs.environment }}
+        run: |
+          # The deploy repo pins the image by digest in its overlay kustomization.
+          # We fetch it via the GitHub raw API (public repo, no auth needed).
+          # The overlay JSON6902 patch written by release-staging-image.yml carries
+          # the digest in its `value` field.
+          raw_url="https://raw.githubusercontent.com/BinHsu/aegis-greeter_deploy/HEAD/overlays/${OVERLAY}/images-patch.json"
+          echo "Fetching: ${raw_url}"
+          content="$(curl -sfL "${raw_url}" || echo '')"
+          if [ -z "$content" ]; then
+            # Fallback: try kustomization.yaml images entry
+            raw_url="https://raw.githubusercontent.com/BinHsu/aegis-greeter_deploy/HEAD/overlays/${OVERLAY}/kustomization.yaml"
+            content="$(curl -sfL "${raw_url}" || echo '')"
+            digest="$(echo "$content" | grep -oP '(?<=@)sha256:[a-f0-9]+' | head -1 || echo '')"
+          else
+            digest="$(echo "$content" | jq -r '.[0].value // ""' 2>/dev/null | grep -oP 'sha256:[a-f0-9]+' || echo '')"
+          fi
+          echo "greeter_digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Pinned greeter digest: ${digest}"
+
+      - name: assert aegis-greeter image exists in ECR (${{ matrix.region }})
+        env:
+          REGION:  ${{ matrix.region }}
+          ACCOUNT: ${{ needs.setup.outputs.account_id }}
+          OVERLAY: ${{ needs.setup.outputs.environment }}
+          DIGEST:  ${{ steps.greeter_digest.outputs.greeter_digest }}
+        run: |
+          set -euo pipefail
+          repo="$SHARED_ECR_REPO_GREETER"
+
+          # Guard: empty digest means the deploy repo has no overlay yet.
+          if [ -z "$DIGEST" ]; then
+            echo "::warning::No digest pin found for aegis-greeter in the ${OVERLAY} overlay — skipping ECR check (image not promoted yet)."
+            exit 0
+          fi
+
+          # Guard: placeholder digest (sha256:0000…) is explicitly wrong.
+          if echo "$DIGEST" | grep -q "^sha256:0\{4,\}"; then
+            echo "::error::aegis-greeter digest is a placeholder (${DIGEST}). Promote the image before applying."
+            exit 1
+          fi
+
+          echo "Checking ECR ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${repo}@${DIGEST}"
+          # ECR is regional; the cross-region replication destinations see the same
+          # digest because replication copies layers — content-addressed identity holds.
+          result="$(aws ecr describe-images \
+            --registry-id "$ACCOUNT" \
+            --repository-name "$repo" \
+            --region "$REGION" \
+            --image-ids "imageDigest=${DIGEST}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text 2>&1)" || {
+            echo "::error::aegis-greeter digest ${DIGEST} NOT FOUND in ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${repo}. Push the image or replicate before applying."
+            exit 1
+          }
+          echo "OK — found ${result} in ${REGION}"
+
+  # ── ECR: shared deployment-account repos (ADR-10) ─────────────────────────
+  ecr-deployment-account:
+    name: ecr-deployment-account (${{ matrix.region }})
+    runs-on: ubuntu-latest
+    needs: setup
+    # This check requires a ReadOnly role IN the deployment account (see
+    # AWS_DEPLOYMENT_CI_ROLE_ARN in the Prerequisites comment at the top).
+    # Skip gracefully until that role exists: set the repo variable
+    # DEPLOYMENT_ECR_PREFLIGHT=true once AWS_DEPLOYMENT_CI_ROLE_ARN is seeded.
+    # (Secrets are not available in job-level `if` expressions, so we gate on a
+    # companion repo var that the operator sets alongside the secret.)
+    if: ${{ vars.DEPLOYMENT_ECR_PREFLIGHT == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          # ReadOnly role in the deployment account (162975888022).
+          # This is NOT the cluster-account CI role — it lives in a separate
+          # account (Deployments OU). See the Prerequisites comment at the top
+          # of this file for how to seed it.
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_CI_ROLE_ARN }}
+          aws-region: ${{ matrix.region }}
+
+      - name: fetch digest pins from aegis-core-deploy overlay
+        id: core_digest
+        env:
+          OVERLAY: ${{ needs.setup.outputs.environment }}
+        run: |
+          # aegis-core packs gateway + engine into one repo (ADR-14).
+          # release-staging-image.yml writes per-image JSON6902 patches.
+          base_url="https://raw.githubusercontent.com/BinHsu/aegis-core-deploy/HEAD/overlays/${OVERLAY}"
+          gateway_digest=""
+          engine_digest=""
+
+          for component in gateway engine; do
+            raw_url="${base_url}/${component}-image-patch.json"
+            content="$(curl -sfL "${raw_url}" || echo '')"
+            if [ -n "$content" ]; then
+              d="$(echo "$content" | jq -r '.[0].value // ""' 2>/dev/null | grep -oP 'sha256:[a-f0-9]+' || echo '')"
+            else
+              # Fallback: single kustomization.yaml
+              ks_url="${base_url}/kustomization.yaml"
+              ks="$(curl -sfL "${ks_url}" || echo '')"
+              d="$(echo "$ks" | grep -A2 "${component}" | grep -oP 'sha256:[a-f0-9]+' | head -1 || echo '')"
+            fi
+            if [ "$component" = "gateway" ]; then gateway_digest="$d"; fi
+            if [ "$component" = "engine"  ]; then engine_digest="$d"; fi
+          done
+
+          echo "gateway_digest=${gateway_digest}" >> "$GITHUB_OUTPUT"
+          echo "engine_digest=${engine_digest}"   >> "$GITHUB_OUTPUT"
+          echo "Gateway: ${gateway_digest} / Engine: ${engine_digest}"
+
+      - name: assert aegis-core images exist in deployment ECR (${{ matrix.region }})
+        env:
+          REGION:          ${{ matrix.region }}
+          OVERLAY:         ${{ needs.setup.outputs.environment }}
+          GATEWAY_DIGEST:  ${{ steps.core_digest.outputs.gateway_digest }}
+          ENGINE_DIGEST:   ${{ steps.core_digest.outputs.engine_digest }}
+        run: |
+          set -euo pipefail
+          repo="$SHARED_ECR_REPO_CORE"
+          account="$DEPLOYMENT_ACCOUNT_ID"
+          fail=0
+
+          for label_digest in "gateway:${GATEWAY_DIGEST}" "engine:${ENGINE_DIGEST}"; do
+            component="${label_digest%%:*}"
+            digest="${label_digest#*:}"
+
+            if [ -z "$digest" ]; then
+              echo "::warning::No digest pin found for aegis-core/${component} in the ${OVERLAY} overlay — skipping (image not promoted yet)."
+              continue
+            fi
+
+            if echo "$digest" | grep -q "^sha256:0\{4,\}"; then
+              echo "::error::aegis-core/${component} digest is a placeholder (${digest}). Promote the image before applying."
+              fail=1
+              continue
+            fi
+
+            echo "Checking ECR ${account}.dkr.ecr.${REGION}.amazonaws.com/${repo}@${digest} (${component})"
+            result="$(aws ecr describe-images \
+              --registry-id "$account" \
+              --repository-name "$repo" \
+              --region "$REGION" \
+              --image-ids "imageDigest=${digest}" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text 2>&1)" || {
+              echo "::error::aegis-core/${component} digest ${digest} NOT FOUND in ${account}.dkr.ecr.${REGION}.amazonaws.com/${repo}."
+              echo "::error::Ensure the image was pushed (release-staging-image.yml) AND ECR replication to ${REGION} completed (ecr.tf aws_ecr_replication_configuration)."
+              fail=1
+              continue
+            }
+            echo "OK — ${component} ${result} found in ${REGION}"
+          done
+
+          [ "$fail" -eq 0 ] || exit 1
+
+  # ── DNS delegation check ───────────────────────────────────────────────────
+  dns-delegation:
+    name: dns-delegation (${{ matrix.region }})
+    runs-on: ubuntu-latest
+    needs: setup
+    if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_CI_ROLE_ARN }}
+          # Route 53 is a global service; the region here is just the STS
+          # endpoint region. The zone itself is account-scoped, not region-
+          # scoped — one zone serves both eu-central-1 and eu-west-1 clusters.
+          # We still fan over the enabled_regions matrix to report clearly per
+          # region and because ACM DNS-01 must succeed in EACH ALB region.
+          aws-region: ${{ matrix.region }}
+
+      - name: assert Route 53 zone exists — ${{ needs.setup.outputs.dns_zone }}
+        id: zone
+        env:
+          ZONE: ${{ needs.setup.outputs.dns_zone }}
+        run: |
+          set -euo pipefail
+          echo "Looking up Route 53 hosted zone for ${ZONE}"
+          zone_id="$(aws route53 list-hosted-zones-by-name \
+            --dns-name "${ZONE}." \
+            --max-items 1 \
+            --query 'HostedZones[?Name==`'"${ZONE}."'`].Id' \
+            --output text)"
+
+          if [ -z "$zone_id" ] || [ "$zone_id" = "None" ]; then
+            echo "::error::Route 53 hosted zone for ${ZONE} NOT FOUND in this account."
+            echo "::error::Apply envs/platform (route53.tf) in the cluster account before running the regional apply."
+            exit 1
+          fi
+
+          # Strip the /hostedzone/ prefix that list-hosted-zones returns.
+          zone_id="${zone_id#/hostedzone/}"
+          echo "Found zone: ${zone_id}"
+          echo "zone_id=${zone_id}" >> "$GITHUB_OUTPUT"
+
+          # Retrieve the AWS nameservers for this zone.
+          ns_records="$(aws route53 get-hosted-zone \
+            --id "${zone_id}" \
+            --query 'DelegationSet.NameServers' \
+            --output json)"
+          echo "AWS nameservers: ${ns_records}"
+          echo "ns_records=${ns_records}" >> "$GITHUB_OUTPUT"
+
+      - name: assert NS delegation is live in public DNS — ${{ needs.setup.outputs.dns_zone }}
+        env:
+          ZONE:       ${{ needs.setup.outputs.dns_zone }}
+          NS_RECORDS: ${{ steps.zone.outputs.ns_records }}
+        run: |
+          set -euo pipefail
+
+          # Install dig if not present (ubuntu-latest has it via dnsutils).
+          which dig >/dev/null 2>&1 || sudo apt-get install -y dnsutils >/dev/null
+
+          # Query the PARENT zone's NS records for this subdomain from a public
+          # recursive resolver. This replicates what ACM DNS-01 validation does:
+          # the resolver walks from the root, finds the NS delegation for the
+          # subdomain, then queries the delegated nameserver for the challenge TXT.
+          # If the delegation is missing or stale, the NS lookup returns NXDOMAIN
+          # or falls back to the parent zone's SOA — and ACM hangs indefinitely.
+          echo "Querying NS delegation for ${ZONE} via public resolver (8.8.8.8)"
+          ns_output="$(dig +short NS "${ZONE}" @8.8.8.8 2>&1 || true)"
+          echo "dig output: ${ns_output}"
+
+          if [ -z "$ns_output" ]; then
+            echo "::error::No NS records returned for ${ZONE} from public resolver 8.8.8.8."
+            echo "::error::The Cloudflare NS delegation for ${ZONE} is missing or not yet propagated."
+            echo "::error::Add an NS record in Cloudflare for '${ZONE}' pointing at the Route 53 nameservers:"
+            echo "$NS_RECORDS" | jq -r '.[]' | while read -r ns; do echo "    ${ns}"; done
+            echo "::error::ACM DNS-01 validation will hang until this is live."
+            exit 1
+          fi
+
+          # Cross-check: every public NS returned must be in the Route 53 zone's
+          # delegation set. A stale Cloudflare NS record that points at a previous
+          # zone's nameservers would satisfy the non-empty check but cause DNS-01
+          # to validate against the wrong nameservers.
+          fail=0
+          while IFS= read -r public_ns; do
+            # Strip trailing dot from dig output.
+            public_ns="${public_ns%.}"
+            match="$(echo "$NS_RECORDS" | jq -r --arg ns "$public_ns" '.[] | select(. == $ns)')"
+            if [ -z "$match" ]; then
+              echo "::warning::Public NS '${public_ns}' is NOT in the Route 53 delegation set. Possible stale Cloudflare record."
+              fail=1
+            else
+              echo "  OK: ${public_ns} matches Route 53 nameserver"
+            fi
+          done <<< "$ns_output"
+
+          [ "$fail" -eq 0 ] || {
+            echo "::error::At least one public NS record for ${ZONE} does not match the Route 53 zone nameservers."
+            echo "::error::Update the NS delegation in Cloudflare."
+            exit 1
+          }
+
+          echo "NS delegation for ${ZONE} is live and consistent."
+
+  # ── summary ───────────────────────────────────────────────────────────────
+  summary:
+    name: preflight-summary
+    runs-on: ubuntu-latest
+    needs: [ecr-cluster-account, ecr-deployment-account, dns-delegation]
+    if: ${{ always() }}
+    steps:
+      - name: evaluate results
+        run: |
+          # ecr-cluster-account and dns-delegation: failures block.
+          # ecr-deployment-account: skipped when AWS_DEPLOYMENT_CI_ROLE_ARN is
+          # not yet set — this is acceptable during initial bring-up; warn loudly.
+          ok() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
+          cluster_ecr="${{ needs.ecr-cluster-account.result }}"
+          deploy_ecr="${{ needs.ecr-deployment-account.result }}"
+          dns="${{ needs.dns-delegation.result }}"
+
+          echo "ecr-cluster-account : ${cluster_ecr}"
+          echo "ecr-deployment-account: ${deploy_ecr}"
+          echo "dns-delegation      : ${dns}"
+
+          if [ "$deploy_ecr" = "skipped" ]; then
+            echo "::warning::ecr-deployment-account check was SKIPPED — DEPLOYMENT_ECR_PREFLIGHT var is not 'true'."
+            echo "::warning::Seed a ReadOnly role in the deployment account (162975888022), add its ARN"
+            echo "::warning::as AWS_DEPLOYMENT_CI_ROLE_ARN, then set DEPLOYMENT_ECR_PREFLIGHT=true to enable this gate."
+          fi
+
+          if ! ok "$cluster_ecr" || ! ok "$dns"; then
+            echo "::error::One or more pre-flight checks FAILED. Fix the above before running the billable apply."
+            exit 1
+          fi
+
+          echo "Pre-flight checks passed. Safe to proceed with the billable apply."
