@@ -59,7 +59,7 @@ resource "aws_iam_role" "engine" {
   # leaves behind; a Terraform-owned role uses the module's standard path (/).
   name               = "aegis-core-engine-${var.region}"
   assume_role_policy = data.aws_iam_policy_document.engine_pod_identity_trust.json
-  description        = "EKS Pod Identity role for the aegis-core engine in ${var.region} (ADR-21 §A — replaces the Crossplane-composed IRSA role). Terraform-owned, destroyed cleanly with the stack."
+  description        = "EKS Pod Identity role for the aegis-core engine in ${var.region} (ADR-21 sect A - replaces the Crossplane-composed IRSA role). Terraform-owned, destroyed cleanly with the stack."
 
   tags = local.common_tags
 }

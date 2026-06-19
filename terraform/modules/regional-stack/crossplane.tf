@@ -26,6 +26,10 @@
 # provider/function pod — which is exactly why every DRC in the chart ships a
 # non-empty securityContext (charts/aegis-xrds-v2/templates/deploymentruntimeconfig.yaml).
 resource "kubernetes_namespace" "crossplane_system" {
+  # Wait for the EKS access-entry -> authorizer propagation (eks.tf) before the
+  # first cluster-scoped create — see kubernetes_namespace.argocd / run 27843245290.
+  depends_on = [time_sleep.eks_access_propagation]
+
   metadata {
     name = "crossplane-system"
     labels = {
@@ -88,7 +92,9 @@ resource "helm_release" "crossplane" {
   wait    = false
   timeout = 300
 
-  depends_on = [module.eks]
+  # time_sleep (eks.tf) chains off module.eks AND adds the access-entry -> authorizer
+  # propagation wait that the WS4 dual-region burn proved necessary (run 27843245290).
+  depends_on = [time_sleep.eks_access_propagation]
 }
 
 # The platform XRD/Composition + provider + MRAP + DRC + ClusterProviderConfig
@@ -157,7 +163,7 @@ resource "aws_iam_role" "crossplane_s3_provider" {
   # Standard path `/`, NOT /aegis-workload/.
   name               = "aegis-crossplane-s3-${var.region}"
   assume_role_policy = data.aws_iam_policy_document.crossplane_s3_provider_pod_identity_trust.json
-  description        = "EKS Pod Identity role for the Crossplane upjet S3 provider in ${var.region} (ADR-22 WS4 Axis A). Terraform-owned, destroyed cleanly with the stack — NOT /aegis-workload/, no orphan-at-teardown."
+  description        = "EKS Pod Identity role for the Crossplane upjet S3 provider in ${var.region} (ADR-22 WS4 Axis A). Terraform-owned, destroyed cleanly with the stack - NOT /aegis-workload/, no orphan-at-teardown."
 
   tags = local.common_tags
 }

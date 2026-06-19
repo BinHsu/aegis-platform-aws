@@ -40,4 +40,9 @@ resource "helm_release" "argo_rollouts" {
   # ArgoCD syncs aegis-core. timeout bounds any residual wait.
   wait    = false
   timeout = 300
+
+  # create_namespace=true so this is a cluster-scoped create with no namespace
+  # resource to chain through — gate it on the access-entry -> authorizer
+  # propagation wait directly (eks.tf / run 27843245290).
+  depends_on = [time_sleep.eks_access_propagation]
 }

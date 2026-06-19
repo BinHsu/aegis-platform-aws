@@ -19,14 +19,23 @@ module "stack" {
 
   scm_token = var.github_token
 
-  # WS3-R: override ecr_region to THIS apply's region so the ApplicationSet
-  # injects the local-region ECR endpoint (nodes pull from the in-region
-  # replica, not cross-region). The static registries.auto.tfvars.json stays
-  # platform-neutral; the per-region value comes from var.region here. cert_arn
-  # is left unset → the module's per-region cert is used (argocd.tf certArn).
+  # WS4: override ecr_region to the PLATFORM region so every region's workload
+  # pulls the image from the single deployment-account ECR, which lives only in
+  # platform_region (deployment-ecr.tf is single-region). A non-primary region
+  # has an EMPTY in-region ECR, so the old `ecr_region = var.region` pointed
+  # eu-west-1 workloads at a registry with no image -> ImagePullBackOff (hit prod
+  # WS3 and again on the WS4 dual-region burn). Cross-region pull from the source
+  # region is already permitted: the deployment ECR repo policy
+  # AllowClusterAccountsPull is account-scoped (region-agnostic) and node roles
+  # carry ecr:GetAuthorizationToken on *. In-region replicas (per-region ECR with
+  # cross-region replication) are a future prod-DR enhancement — they'd need
+  # deployment-ecr.tf replication config + per-region repo policies; not required
+  # to make the workload pull. The static registries.auto.tfvars.json stays
+  # platform-neutral; the per-region value comes from var.platform_region here.
+  # cert_arn is left unset → the module's per-region cert is used (argocd.tf certArn).
   workload_registries = {
     for repo, cfg in var.workload_registries : repo => merge(cfg, {
-      ecr_region = var.region
+      ecr_region = var.platform_region
     })
   }
 
