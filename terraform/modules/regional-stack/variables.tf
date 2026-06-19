@@ -73,13 +73,18 @@ variable "workload_registries" {
   type = map(object({
     ecr_account_id = string
     ecr_region     = string
+    # engine_irsa is now consumed ONLY for its service_account, which gates the
+    # per-engine ConfigMap injections in argocd.tf (model-store, gateway-oidc).
+    # The engine's IAM role is no longer composed via Crossplane WorkloadIdentity:
+    # ADR-21 §A moved it to a Terraform-owned EKS Pod Identity association
+    # (pod-identity-engine.tf), which uses a fixed role name (aegis-core-engine-
+    # <region>) and attaches the model-read policy directly. role_name and
+    # policy_arns are therefore VESTIGIAL — kept so the gitignored
+    # registries.auto.tfvars.json still parses; a follow-up may drop them.
     engine_irsa = optional(object({
       service_account = string
-      role_name       = string
-      # Optional managed-policy ARNs attached to the engine's ACK-provisioned
-      # role via the WorkloadIdentity Claim's policyArns (WS3, ADR-18/19 — e.g.
-      # the model-read policy). Account-bound → injected, not in the public repo.
-      policy_arns = optional(list(string))
+      role_name       = string                 # vestigial (see above) — Pod Identity names the role
+      policy_arns     = optional(list(string)) # vestigial — model-read attached in pod-identity-engine.tf
     }))
     # Account-bound (account ID in the ARN) → injected, kept out of the public
     # deploy repo. The cert is per-(workload,region); a single value here is

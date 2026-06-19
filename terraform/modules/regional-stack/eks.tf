@@ -21,6 +21,14 @@ module "eks" {
     vpc-cni = {
       before_compute = true
     }
+    # EKS Pod Identity (ADR-21 §A). The agent DaemonSet intercepts the
+    # workload's AWS SDK credential requests and serves short-lived creds for the
+    # role bound to its ServiceAccount via aws_eks_pod_identity_association
+    # (pod-identity-engine.tf). Without this add-on the association exists but no
+    # pod ever receives credentials — the engine's `aws s3 sync` model-fetch
+    # AccessDenies. This replaces the in-cluster Crossplane IRSA machinery the
+    # engine used before (crossplane.tf / irsa-ack-iam.tf, retired this PR).
+    eks-pod-identity-agent = {}
   }
 
   # All 5 control-plane log types → CloudWatch (audit / forensics

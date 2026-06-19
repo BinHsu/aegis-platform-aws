@@ -16,6 +16,11 @@
 # A region whose bucket is empty fails LOUD at the engine's model-fetch init
 # (the `aws s3 sync` gate), it does not silently fall back to another region.
 
+# Account ID for the globally-unique bucket name. Declared here (was in the now-
+# retired irsa-ack-iam.tf — ADR-21 §A removed the Crossplane IRSA provider role);
+# model-store.tf is the only remaining consumer.
+data "aws_caller_identity" "current" {}
+
 # Globally-unique name: workload + account + region (no random suffix so the
 # name is reproducible and the module can wire it into the deploy ConfigMap).
 locals {

@@ -84,6 +84,32 @@ jobs:
         # LOW S3-logging findings are informational).
         run: ./bin/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
 
+  terraform-test:
+    # Cold-start gate (ADR-21 §D.2 layer 1). Runs the mock-only
+    # tests/cold_start.tftest.hcl against envs/regional with NO AWS credentials —
+    # mock_provider makes zero cloud calls and `command = plan` creates nothing, so
+    # this is a FREE PR gate that runs on every PR (no BOOTSTRAP_COMPLETE gate, no
+    # OIDC). It catches the cold-start plan-time bug classes the WS3 prod go-live hit
+    # (empty-state survival #106, zone-fallback placeholders #107, region-suffix IAM
+    # name collisions #108 / ADR-21 §C) before they reach a billable apply.
+    name: terraform-test
+    runs-on: ubuntu-latest
+    needs: [lint-validate]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - name: terraform test (regional cold-start, mock-only, no AWS creds)
+        run: |
+          cd terraform/envs/regional
+          # -backend=false: the test mocks the providers and overrides the platform
+          # remote_state, so no S3 backend / no credentials are needed. init only
+          # installs the modules + provider plugins.
+          terraform init -backend=false
+          terraform test
+
   plan-platform:
     name: plan-platform
     runs-on: ubuntu-latest
@@ -254,17 +280,19 @@ jobs:
     # all upstream jobs are green.
     name: summary
     runs-on: ubuntu-latest
-    needs: [gitleaks, lint-validate, plan-platform, plan-regional]
+    needs: [gitleaks, lint-validate, terraform-test, plan-platform, plan-regional]
     if: ${{ always() }}
     steps:
       - name: verify all upstream jobs succeeded
         run: |
-          # gitleaks + lint-validate MUST succeed. plan jobs may be
-          # `skipped` pre-bootstrap (BOOTSTRAP_COMPLETE unset) — that is
-          # acceptable; only an actual `failure` fails the summary.
+          # gitleaks + lint-validate + terraform-test MUST succeed (all run
+          # credential-free, so they never skip). plan jobs may be `skipped`
+          # pre-bootstrap (BOOTSTRAP_COMPLETE unset) — that is acceptable; only an
+          # actual `failure` fails the summary.
           ok() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
           if [[ "${{ needs.gitleaks.result }}" != "success" ]] \
              || [[ "${{ needs.lint-validate.result }}" != "success" ]] \
+             || [[ "${{ needs.terraform-test.result }}" != "success" ]] \
              || ! ok "${{ needs.plan-platform.result }}" \
              || ! ok "${{ needs.plan-regional.result }}"; then
             echo "::error::A required job failed."

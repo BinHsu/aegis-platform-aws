@@ -6,6 +6,8 @@ terraform {
     kubernetes = { source = "hashicorp/kubernetes", version = "~> 2.30" }
     helm       = { source = "hashicorp/helm", version = "~> 2.13" }
     null       = { source = "hashicorp/null", version = "~> 3.0" }
-    time       = { source = "hashicorp/time", version = "~> 0.11" }
+    # `time` provider removed (ADR-21 §A): its only use was
+    # time_sleep.wait_provider_crds in the retired crossplane.tf (waiting on the
+    # upjet provider CRDs to establish). Pod Identity needs no such wait.
   }
 }
