@@ -1,9 +1,12 @@
 # ---- Pattern X: regions (read from repo-root regions.auto.tfvars.json) ----
 variable "regions" {
   description = "Multi-region topology — single source of truth at repo-root regions.auto.tfvars.json. Platform reads it for ECR replication targeting (only enabled entries are real destinations)."
+  # NOTE (WS4 / ADR-23): `cidr` is gone — the regional VPC CIDR is now allocated
+  # from the landing-zone IPAM pool (modules/regional-stack/vpc-ipam.tf), not
+  # carried in regions.auto.tfvars.json. Platform only consumes `enabled` + the
+  # region keys for ECR replication, so the schema drops the unused field.
   type = map(object({
     enabled       = bool
-    cidr          = string
     node_instance = string
     node_min      = number
     node_max      = number
