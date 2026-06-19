@@ -1,0 +1,137 @@
+# DeploymentRuntimeConfigs — supply a NON-EMPTY restricted-PSA securityContext to
+# every Crossplane pod this chart creates: the function pod, the provider-family
+# pod, and the provider-aws-s3 pod (ADR-22 §4: "the function-pod DRC
+# securityContext is IaC'd FROM THE START").
+#
+# WHY non-empty from the start (the fix-B #2a + the prod 2026-06-18 lesson):
+# crossplane-system enforces pod-security.kubernetes.io/enforce=restricted
+# (crossplane.tf). The upjet provider + contrib function package runtime pods
+# omit the fields the restricted profile requires (container capabilities.drop
+# =[ALL] + seccompProfile, pod-level runAsNonRoot + numeric runAsUser +
+# seccompProfile). Shipping an EMPTY DRC — or relying on Crossplane's auto-created
+# `default` DRC — leaves the pod with no securityContext, the API server rejects
+# it ("forbidden: violates PodSecurity restricted:latest"), the provider/function
+# never reaches Healthy, and the Composition never renders. On prod eu-west-1
+# this orphaned an entire bring-up. Each provider/function below binds to a
+# named, fully-populated DRC; NO `default` DRC exists in this chart, so Crossplane
+# never auto-creates one to race.
+#
+# runAsUser 65532 is the distroless `nonroot` UID. A numeric UID is REQUIRED
+# (not just runAsNonRoot): the images set USER to the non-numeric name "nonroot",
+# so with runAsNonRoot alone the kubelet cannot verify non-root and fails the pod
+# with CreateContainerConfigError. (Live-diagnosed 2026-06-18.)
+#
+# The container name `package-runtime` is the runtime container Crossplane names
+# for every provider/function Deployment.
+
+# --- function runtime (function-patch-and-transform) ------------------------
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: aegis-function-runtime
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: package-runtime
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65532
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+---
+# --- provider-family-aws runtime --------------------------------------------
+# The family provider makes no AWS API calls and holds no credentials (it ships
+# the ProviderConfig/ClusterProviderConfig CRDs + shared config). It needs ONLY
+# the restricted-PSA securityContext — no ServiceAccount annotation, no Pod
+# Identity. The S3 service provider (below) is the one that actually calls AWS.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: family-aws-runtime
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: package-runtime
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65532
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+---
+# --- provider-aws-s3 runtime ------------------------------------------------
+# The S3 provider is the pod that CALLS AWS, so it carries TWO jobs:
+#   1. The restricted-PSA securityContext (same as above).
+#   2. A STABLE ServiceAccount name (`provider-aws-s3`) — load-bearing: the
+#      Terraform-owned aws_eks_pod_identity_association (crossplane.tf) binds the
+#      provider IAM role to namespace `crossplane-system` + this exact SA name.
+#      Let Crossplane auto-name the SA and the Pod Identity association no longer
+#      matches → the provider gets no AWS credentials → every Bucket MR
+#      AccessDenies.
+#
+# NOTE — Pod Identity vs IRSA: unlike the retired v1 path, there is NO
+# eks.amazonaws.com/role-arn annotation here. EKS Pod Identity binds the role to
+# the (namespace, ServiceAccount) pair via the control-plane association
+# (crossplane.tf) + the eks-pod-identity-agent addon (eks.tf) — the SA needs no
+# annotation, only its stable name. This is the exact construct that removed the
+# /aegis-workload/ IRSA role + SCP carve-out the v1 stack orphaned at teardown.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: provider-aws-s3-runtime
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+spec:
+  serviceAccountTemplate:
+    metadata:
+      name: provider-aws-s3
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: package-runtime
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65532
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault

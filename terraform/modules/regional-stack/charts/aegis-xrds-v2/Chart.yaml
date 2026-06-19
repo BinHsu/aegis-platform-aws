@@ -1,0 +1,17 @@
+apiVersion: v2
+name: aegis-xrds-v2
+description: >-
+  Platform-defined Crossplane v2 CompositeResourceDefinitions and Compositions
+  for NON-identity, workload-scoped cloud resources (ADR-22, WS4 Axis A).
+  Identity is EKS Pod Identity (Terraform-owned), NOT a Crossplane claim — this
+  chart never composes IAM identity. The first XRD is XBucket (a namespaced v2
+  XR) whose Composition renders an upjet s3.aws.m.upbound.io/Bucket +
+  BucketPublicAccessBlock. v2-native throughout: namespaced XRs, composition
+  functions (function-patch-and-transform), provider family + an explicit MRAP
+  activating ONLY the S3 MRDs, provider pod credentials via EKS Pod Identity, and
+  a DeploymentRuntimeConfig carrying a non-empty restricted-PSA securityContext
+  from the start. Proposed (ADR-22); OFFLINE-validated only — E2E PENDING a WS4
+  cluster bring-up.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

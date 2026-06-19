@@ -1,0 +1,62 @@
+# Crossplane v2 AWS provider — the family package + ONLY the S3 service provider
+# (ADR-22 §4). Axis A's first cloud resource is an S3 bucket, so this chart pulls
+# exactly two upjet packages: the family (ships the ProviderConfig /
+# ClusterProviderConfig CRDs + shared runtime) and provider-aws-s3 (the S3
+# Managed Resource Definitions). Adding XQueue/XTable later adds provider-aws-sqs
+# / provider-aws-dynamodb here — never the monolithic provider-aws (which would
+# install 100+ CRDs; the MRAP in managedresourceactivationpolicy.yaml gates that
+# down regardless, but installing only the service providers we use is the first
+# line).
+#
+# VERSION PINS — verify before the bootstrap apply (same convention as
+# kyverno.tf / argo-rollouts.tf; a stale pin surfaces as a plan/install error,
+# not silent drift):
+#   - provider-family-aws v2.6.1 — latest family release as of 2026-06-17. The
+#     family is a `>=` transitive dependency of the service providers; declaring
+#     it EXPLICITLY with its own runtimeConfigRef kills the empty-`default`-DRC
+#     race that bit prod on 2026-06-18 (the v1 chart's fix; carried forward).
+#   - provider-aws-s3 v2.6.1 — same release train. Its v2 packages expose the
+#     NAMESPACED managed resources under s3.aws.m.upbound.io (the `.m.` infix),
+#     which is what the XBucket Composition composes.
+# Confirm both against the Upbound marketplace before merge:
+#   crossplane xpkg inspect xpkg.upbound.io/upbound/provider-aws-s3:v2.6.1
+#
+# The DeploymentRuntimeConfig each provider binds to carries a non-empty
+# restricted-PSA securityContext FROM THE START (deploymentruntimeconfig.yaml) —
+# the fix-B #2a lesson: never ship an empty DRC into a PSA=restricted namespace.
+
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-family-aws
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+    aegis.binhsu.org/status: "implemented, E2E PENDING WS4 cluster bring-up"
+    aegis.binhsu.org/note: >-
+      Family declared EXPLICITLY (not left as a transitive dependency) so
+      Crossplane never auto-creates an empty `default` DRC to race ours — the
+      prod 2026-06-18 failure mode. Bound to family-aws-runtime.
+spec:
+  package: xpkg.upbound.io/upbound/provider-family-aws:v2.6.1
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: family-aws-runtime
+---
+# provider-aws-s3 — the S3 service provider. Ships the namespaced
+# s3.aws.m.upbound.io Managed Resource Definitions (Bucket,
+# BucketPublicAccessBlock, ...). The MRAP gates WHICH of those MRDs actually get
+# activated as CRDs (managedresourceactivationpolicy.yaml).
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-s3
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+    aegis.binhsu.org/status: "implemented, E2E PENDING WS4 cluster bring-up"
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-s3:v2.6.1
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: provider-aws-s3-runtime

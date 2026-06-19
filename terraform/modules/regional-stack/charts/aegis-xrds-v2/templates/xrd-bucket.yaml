@@ -1,0 +1,87 @@
+# XBucket — the first v2-native XRD in the WS4 Axis A vocabulary (ADR-22).
+#
+# NAMESPACED (scope: Namespaced — the v2 default). This is the whole point of the
+# v2 rewrite: a namespaced XR composes namespaced managed resources cleanly, with
+# NO spec.resourceRefs[].namespace schema error — the fix-B v1 pain
+# (cluster-scoped XR composing a namespaced MR) is gone (ADR-22 Context). There
+# is no separate Claim type in v2; the workload deploy repo declares the XBucket
+# XR directly in its own namespace.
+#
+# Shape: deliberately minimal (ADR-09 — declare only what is genuinely
+# workload-owned). Two fields:
+#   - name:   the logical bucket name the workload wants. The Composition derives
+#             the globally-unique AWS bucket name from it (see composition).
+#   - access: read | readwrite — the IAM grant the WORKLOAD needs to its bucket.
+#             IMPORTANT SEAM (ADR-22 §2): identity is Pod Identity now, so this
+#             does NOT compose an IAM role/policy inside Crossplane. The
+#             Composition EMITS an access-block-aware bucket; the read/write IAM
+#             policy that grants the workload's Pod Identity role access to this
+#             bucket is authored in TERRAFROM and attached to the workload's
+#             Terraform-owned Pod Identity role (pod-identity-engine.tf pattern).
+#             `access` is surfaced here as the workload's DECLARED intent and is
+#             echoed to status so the platform/operator can wire the matching
+#             Terraform policy. See the composition header for the exact binding.
+#
+# Versioning: v1alpha1 with an explicit breaking-change license (ADR-09).
+# Stabilization to v1 is gated on a second-cloud (on-prem provider-minio)
+# Composition or six months steady-state — NOT on single-cloud use alone.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xbuckets.platform.aegis.io
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+    aegis.binhsu.org/status: "implemented, E2E PENDING WS4 cluster bring-up"
+spec:
+  # v2: Namespaced is the default; declared explicitly for readability. A
+  # Namespaced XR can only compose resources in its own namespace — which is
+  # exactly the isolation we want (a workload's bucket is its own).
+  scope: Namespaced
+  group: platform.aegis.io
+  names:
+    kind: XBucket
+    plural: xbuckets
+  defaultCompositionRef:
+    name: xbucket-aws-s3
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: >-
+                    Logical bucket name. The Composition derives the
+                    globally-unique AWS bucket name from this; the deploy repo
+                    declares only the short logical name.
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  minLength: 3
+                  maxLength: 40
+                access:
+                  type: string
+                  description: >-
+                    The IAM access the workload needs to this bucket. Declared
+                    intent only — the matching IAM policy is attached to the
+                    workload's Terraform-owned Pod Identity role (ADR-22 §2),
+                    NOT composed in Crossplane.
+                  enum:
+                    - read
+                    - readwrite
+                  default: read
+              required:
+                - name
+            status:
+              type: object
+              properties:
+                bucketName:
+                  type: string
+                  description: The resolved AWS bucket name (echoed from the composed Bucket).
+                access:
+                  type: string
+                  description: The access level the workload declared (for the operator to wire the TF policy).

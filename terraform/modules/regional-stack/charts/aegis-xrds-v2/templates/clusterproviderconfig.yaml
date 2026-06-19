@@ -1,0 +1,28 @@
+# ClusterProviderConfig — how the upjet S3 provider authenticates to AWS
+# (ADR-22 §4: "the upjet provider-aws ProviderConfig with source: PodIdentity").
+#
+# WHY ClusterProviderConfig (not the namespaced ProviderConfig): in Crossplane v2
+# the namespaced ProviderConfig applies only to MRs in ITS namespace, whereas a
+# ClusterProviderConfig applies cluster-wide. XBucket is a namespaced XR that can
+# be claimed in ANY workload namespace, and its composed Bucket lands in that same
+# namespace. A single cluster-wide config — named `default` — lets every
+# workload's composed Bucket resolve the same shared platform provider without a
+# per-namespace ProviderConfig. The Composition references it explicitly
+# (providerConfigRef.kind: ClusterProviderConfig, name: default).
+#
+# source: PodIdentity — the provider pod gets short-lived AWS credentials from the
+# fixed pods.eks.amazonaws.com trust principal via the Terraform-owned
+# aws_eks_pod_identity_association (crossplane.tf) + the eks-pod-identity-agent
+# addon (eks.tf). NO IRSA OIDC threading, NO /aegis-workload/ role, NO SCP
+# carve-out — the exact constructs the v1 stack orphaned at teardown (ADR-21 §A,
+# ADR-22 Context).
+apiVersion: aws.m.upbound.io/v1beta1
+kind: ClusterProviderConfig
+metadata:
+  name: default
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+    aegis.binhsu.org/status: "implemented, E2E PENDING WS4 cluster bring-up"
+spec:
+  credentials:
+    source: PodIdentity

@@ -1,0 +1,32 @@
+# Crossplane Function package — function-patch-and-transform.
+#
+# In Crossplane v2 there is NO native patch-and-transform; composition FUNCTIONS
+# are the only path (ADR-22 §4). We deliberately stay on this single function
+# (not go-templating, not KCL, not function-kro) per ADR-09's reasoning: the
+# XBucket Composition is a fixed two-resource shape (Bucket + PublicAccessBlock)
+# with straight field copies — CombineFromComposite + FromCompositeFieldPath
+# handle it without templating logic. Adopt go-templating / function-kro only
+# when a Composition genuinely needs branching or loops (ADR-22 notes function-kro
+# stays available from the Crossplane side later — the convergence is one-way).
+#
+# Version pin: v0.10.x is the stable line. Verify against the marketplace before
+# the bootstrap apply (same convention as the provider pins):
+#   crossplane xpkg inspect xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.10.6
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-patch-and-transform
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+    aegis.binhsu.org/status: "implemented, E2E PENDING WS4 cluster bring-up"
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.10.6
+  # Restricted-PSA securityContext for the function pod — crossplane-system
+  # enforces PSA=restricted (crossplane.tf). EVERY composition in v2 rides the
+  # function runtime, so an empty/missing DRC here rejects the function pod at
+  # admission and NO composition renders. This is the fix-B #2a lesson, more
+  # central in v2 than v1. See deploymentruntimeconfig.yaml.
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: aegis-function-runtime
