@@ -1,5 +1,9 @@
 # aegis-platform-aws — the platform tier: EKS substrate, per-cluster ArgoCD, Crossplane, observability
 
+[![infra-plan](https://github.com/BinHsu/aegis-platform-aws/actions/workflows/infra-plan.yml/badge.svg)](https://github.com/BinHsu/aegis-platform-aws/actions/workflows/infra-plan.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/BinHsu/aegis-platform-aws/badge)](https://securityscorecards.dev/viewer/?uri=github.com/BinHsu/aegis-platform-aws)
+
 The platform tier for a fleet of Kubernetes workloads on AWS — Terraform for the
 cloud substrate, per-cluster ArgoCD for in-cluster GitOps, Crossplane for
 workload-scoped cloud identity, Grafana Cloud for observability, and a DR drill
@@ -60,7 +64,7 @@ intent.
 | Run / understand the DR drill | [`docs/dr-plan.md`](docs/dr-plan.md) + [DR drill](#dr-drill) below |
 | Know what it costs to run | [`docs/finops.md`](docs/finops.md) — cost model + the ephemeral-destroy strategy |
 | See what was deliberately deferred | [`docs/tradeoffs.md`](docs/tradeoffs.md) |
-| Read the lessons from the last live run | [`RETRO-ws3-staging-e2e-2026-06-18.md`](RETRO-ws3-staging-e2e-2026-06-18.md) — staging E2E retrospective |
+| Read the lessons from the last live run | [`docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md`](docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md) — staging E2E retrospective |
 
 ## Architecture
 
@@ -127,6 +131,86 @@ flowchart TB
 
 See [`docs/adr/`](docs/adr/README.md) for the reasoning behind each decision and
 [`docs/tradeoffs.md`](docs/tradeoffs.md) for what was deliberately deferred.
+
+### regional-stack component map (C4 Level 3)
+
+One `terraform apply` of `envs/regional` — per enabled region — creates this set of
+components. Each box is a discrete AWS resource or in-cluster controller; arrows show
+provision/configure relationships.
+
+```mermaid
+graph TB
+    subgraph aws_region["AWS region (var.region)"]
+        subgraph network["Network"]
+            vpc["VPC\n(3 AZ, private + public subnets)"]
+            nat["NAT Gateways"]
+            alb_ctrl["AWS Load Balancer Controller\n(Helm · IRSA role)"]
+        end
+
+        subgraph compute["Compute"]
+            eks["EKS cluster\n(managed node group · Spot)"]
+            ng["Node Group\n(AL2023 arm64 · min/max from var)"]
+        end
+
+        subgraph identity["Workload Identity"]
+            xrd["Crossplane XRD\nXWorkloadIdentity"]
+            upjet["upjet provider-aws-iam\nRole + policy attach"]
+            pod_id["EKS Pod Identity\n(engine role — Terraform-managed)"]
+            kyverno["Kyverno\nguardrails: trust-subject↔namespace\ndefault-deny NetworkPolicy"]
+        end
+
+        subgraph gitops["GitOps"]
+            argocd["ArgoCD\n(per-cluster, no hub-spoke)"]
+            appset["ApplicationSet\n(List generator · registries-driven)"]
+            appproj["AppProject aegis-workloads\n(destination allowlist aegis-*)"]
+            rollouts["Argo Rollouts\n(canary controller)"]
+        end
+
+        subgraph storage["Storage"]
+            s3["S3 model bucket\naegis-core-models-{acct}-{region}"]
+            s3_policy["IAM policy\nmodel-read (IRSA/Pod Identity)"]
+        end
+
+        subgraph tls["TLS / DNS"]
+            acm["ACM wildcard cert\n*.{zone_name}"]
+            r53["Route 53 records\nDNS-01 validation + A/CNAME"]
+            ext_dns["ExternalDNS\n(Helm · IRSA role)"]
+        end
+
+        subgraph obs["Observability"]
+            alloy["Grafana Alloy DaemonSet\nOTLP + Pyroscope → Grafana Cloud"]
+            cw["CloudWatch\nEKS control-plane logs (audit only)"]
+        end
+
+        subgraph oidc_cfg["OIDC injection (ConfigMap)"]
+            cm_oidc["gateway-oidc ConfigMap\nissuer · audience · jwksUrl\n(Cognito — platform tier output)"]
+            cm_model["model-store ConfigMap\nbucket name (this region)"]
+        end
+    end
+
+    vpc -->|subnets| eks
+    nat --> vpc
+    eks --> ng
+    eks -->|IRSA OIDC provider| xrd
+    eks -->|Pod Identity association| pod_id
+    xrd --> upjet
+    upjet -->|IAM Role reconcile| aws_iam[("AWS IAM")]
+    pod_id -->|IAM Role| aws_iam
+    argocd --> appset
+    appset --> appproj
+    appset -->|renders Application per workload| deploy_repo[("deploy repos\n(public GitHub)")]
+    appset -->|injects| cm_oidc
+    appset -->|injects| cm_model
+    rollouts -->|CRD| argocd
+    s3 --> s3_policy
+    s3_policy --> pod_id
+    acm -->|DNS validation| r53
+    ext_dns --> r53
+    alb_ctrl -->|provisions ALB| aws_alb[("ALB")]
+    alloy -->|OTLP/Pyroscope| gc[("Grafana Cloud")]
+    eks -->|control-plane logs| cw
+    kyverno -->|admission webhook| eks
+```
 
 ### Workload-identity chain (Crossplane XRD → IAM)
 
@@ -371,7 +455,7 @@ Operational procedures — bring-up, dual-region verification, prod go-live
 execution, and the joint-strike patterns — are in
 [`docs/runbooks/`](docs/runbooks/). Postmortems live in
 [`docs/postmortems/`](docs/postmortems/), and the most recent live-run lessons in
-[`RETRO-ws3-staging-e2e-2026-06-18.md`](RETRO-ws3-staging-e2e-2026-06-18.md).
+[`docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md`](docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md).
 
 ## Decisions & trade-offs
 

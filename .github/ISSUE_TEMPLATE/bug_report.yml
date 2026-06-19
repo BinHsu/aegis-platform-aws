@@ -1,0 +1,52 @@
+name: Bug report
+description: Something is broken in the platform IaC or CI.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: check [`docs/runbooks/`](../docs/runbooks/) and open ADRs for known caveats.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the unexpected behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Terraform commands, CI run URLs, or Makefile targets.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        - Terraform version:
+        - AWS region:
+        - Environment (bootstrap / platform / regional):
+        - Relevant CI run URL (if applicable):
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste error messages or plan output. Redact account IDs.
+      render: shell
+    validations:
+      required: false

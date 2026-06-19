@@ -1,0 +1,51 @@
+name: OpenSSF Scorecard
+
+on:
+  # Run on every push to the default branch.
+  push:
+    branches: ["main"]
+  # Run on a weekly schedule to catch supply-chain drift.
+  schedule:
+    - cron: "30 3 * * 1" # every Monday 03:30 UTC
+  # Allow manual runs.
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload the SARIF results to the Security tab.
+      security-events: write
+      # Required by ossf/scorecard-action to read the commit data.
+      id-token: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@f49aabe0b5af0936a0987cfb85d86b75b3f23dc3 # v2.4.1
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          # Publish results to the OpenSSF REST API for the badge.
+          publish_results: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: SARIF file
+          path: scorecard-results.sarif
+          retention-days: 5
+
+      - name: Upload SARIF results to Security tab
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f # v3.28.18
+        with:
+          sarif_file: scorecard-results.sarif
