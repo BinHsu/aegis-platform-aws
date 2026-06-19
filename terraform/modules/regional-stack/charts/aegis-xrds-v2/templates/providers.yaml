@@ -1,3 +1,5 @@
+{{- /* definitions stage: providers install before the ClusterProviderConfig wave (ADR-22 install-ordering fix). */ -}}
+{{- if or (eq .Values.installStage "all") (eq .Values.installStage "definitions") }}
 # Crossplane v2 AWS provider — the family package + ONLY the S3 service provider
 # (ADR-22 §4). Axis A's first cloud resource is an S3 bucket, so this chart pulls
 # exactly two upjet packages: the family (ships the ProviderConfig /
@@ -60,3 +62,4 @@ spec:
     apiVersion: pkg.crossplane.io/v1beta1
     kind: DeploymentRuntimeConfig
     name: provider-aws-s3-runtime
+{{- end }}

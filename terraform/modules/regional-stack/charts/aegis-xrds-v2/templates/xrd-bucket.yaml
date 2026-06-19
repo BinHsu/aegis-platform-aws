@@ -1,3 +1,4 @@
+{{- if or (eq .Values.installStage "all") (eq .Values.installStage "definitions") }}
 # XBucket — the first v2-native XRD in the WS4 Axis A vocabulary (ADR-22).
 #
 # NAMESPACED (scope: Namespaced — the v2 default). This is the whole point of the
@@ -85,3 +86,4 @@ spec:
                 access:
                   type: string
                   description: The access level the workload declared (for the operator to wire the TF policy).
+{{- end }}

@@ -1,3 +1,6 @@
+{{- /* providerconfig stage: applied ONLY after provider-family-aws is Healthy and the
+       aws.m.upbound.io CRD is established (ADR-22 install-ordering fix, crossplane.tf wave 2). */ -}}
+{{- if or (eq .Values.installStage "all") (eq .Values.installStage "providerconfig") }}
 # ClusterProviderConfig — how the upjet S3 provider authenticates to AWS
 # (ADR-22 §4: "the upjet provider-aws ProviderConfig with source: PodIdentity").
 #
@@ -26,3 +29,4 @@ metadata:
 spec:
   credentials:
     source: PodIdentity
+{{- end }}

@@ -1,3 +1,4 @@
+{{- if or (eq .Values.installStage "all") (eq .Values.installStage "definitions") }}
 # Crossplane Function package — function-patch-and-transform.
 #
 # In Crossplane v2 there is NO native patch-and-transform; composition FUNCTIONS
@@ -30,3 +31,4 @@ spec:
     apiVersion: pkg.crossplane.io/v1beta1
     kind: DeploymentRuntimeConfig
     name: aegis-function-runtime
+{{- end }}
