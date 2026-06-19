@@ -1,7 +1,9 @@
 # ADR-20: How the gateway gets the tenant id from a Cognito token
 
-> **Status: Accepted** (2026-06-19, reviewed by Bin). The decision below — keep the
-> Pre-Token-Generation Lambda — is committed.
+> **Status: Accepted** (2026-06-19, Bin). **Decision changed same day** from Option 1
+> (keep the V1 id_token Lambda) to **Option 4 — validate the access token** (V2 Lambda
+> + Cognito Essentials), to use the canonical OAuth2 resource-server design. The
+> superseded Option-1 analysis is retained below for the audit trail.
 
 ## 中文摘要
 
@@ -209,46 +211,60 @@ for the client. Switch the gateway to validate the access token.
 
 ## Decision
 
-**Keep the Pre-Token-Generation Lambda (Option 1).**
+**Validate the ACCESS token as an OAuth2 resource server (Option 4).**
 
-It is AWS's documented and canonical mechanism for adding a custom claim to an
-OAuth-flow token, it runs on the current tier with no paid upgrade, it is already
-proven live end-to-end, and it requires **zero** gateway / frontend / user-seeding
-change. Every Lambda-free alternative is worse:
+> *Decision changed 2026-06-19 (Bin): supersedes the earlier choice of Option 1.
+> Rationale — do the canonical thing. Validating the id_token at a resource server
+> works but is not the industry-mainstream design; the OAuth2 BCP authorizes APIs on
+> the access token. We accept the small tier cost to be correct.*
 
-- **Option 3 doesn't exist** — config-only custom claims aren't a Cognito feature.
-- **Option 4 doesn't remove the Lambda** — it moves it to V2 and adds the
-  Essentials paid tier; more surface, more cost, for a correctness purity that
-  buys nothing here (the gateway validates iss/aud/exp/signature on the ID token
-  exactly as it would on the access token).
-- **Option 2 (groups) is the only genuinely Lambda-free path, but it pays for
-  that by overloading a coarse authz primitive as a tenant id**: an array claim
-  with multiple-group ambiguity, a 10k-tenant ceiling, group-name == tenant-id
-  constraints, and a gateway + seeding rewrite. That is more code and weaker
-  semantics to delete one well-understood, low-risk Lambda.
+The gateway is an API; per the OAuth2 BCP the resource server authorizes on the
+**access token**, and the id_token is for the SPA to learn who the user is — sending
+the id_token to an API is explicitly called out as a misuse (Auth0 / AWS / OAuth WG).
+The SPA **already sends the access token** (`auth.ts` returns
+`cachedUser.access_token`), so the *frontend is already correct*; the defect was only
+that the access token did not carry `custom:tenant_id`. Option 4 closes that the
+canonical way:
 
-The Lambda's cost is small and bounded: it fires once per token issuance (per
-session, not per request), it carries only `AWSLambdaBasicExecutionRole`, and the
-function body is 16 lines with no external calls. The operational surface it adds
-is far cheaper than the semantic debt option 2 would create.
+- The pre-token Lambda moves **V1 → V2** (`pre_token_generation_config`,
+  `LambdaVersion = "V2_0"`) to inject `custom:tenant_id` into the **access token**.
+- This requires the Cognito **Essentials feature plan** (V2/V3 triggers are gated to
+  Essentials/Plus). Cost: $0.015/MAU above a 10,000-MAU free allowance — at aegis's
+  scale effectively **$0**, but it is a deliberate tier upgrade (Lite → Essentials),
+  flagged as a billing-surface change.
+- The gateway adds an explicit **`token_use = "access"`** assertion and adjusts
+  audience handling (a Cognito access token carries `client_id` + `scope`, not the
+  id_token's `aud`).
+
+Why not the alternatives:
+- **Option 1 (id_token — the prior choice)** is free and works, but sends the id_token
+  to an API — the non-canonical path. We are choosing correctness over the cheaper,
+  non-mainstream design.
+- **Option 2 (`cognito:groups`)** is access-token-native and Lambda-free, but overloads
+  a coarse authz primitive as a tenant id (array claim, 10k-tenant ceiling, gateway +
+  seeding rewrite) — more code, weaker semantics. Rejected.
+- **Option 3** does not exist (Cognito has no config-only custom-claim mechanism).
 
 ### Scoreboard
 
 | Option | Lambda-free? | Tier | Gateway change | Frontend change | Semantics | Verdict |
 |---|---|---|---|---|---|---|
-| **1. Pre-Token Lambda V1 (current)** | No | Lite/Basic (no upgrade) | None | None | Clean (scalar attr) | **CHOSEN** |
+| **4. Validate access token (V2 Lambda)** | No | **Essentials** (~$0 at our MAU) | `token_use` + aud | **None** (SPA already sends access tok) | Canonical (scalar attr) | **CHOSEN** |
+| 1. Pre-Token Lambda V1 (id_token) | No | Lite/Basic | None | None | Works but non-canonical | Superseded — prior choice |
 | 2. `cognito:groups` | **Yes** | Lite/Basic | Rewrite (array parse) | None | Stretched (authz overload, 10k cap) | Rejected — semantic debt |
 | 3. Config-only, no Lambda | — | — | — | — | — | Rejected — does not exist |
-| 4. Validate access token | No (needs V2) | **Essentials (paid)** | Yes (token + aud) | Yes (send access tok) | Canonical but pricier | Rejected — more surface, more cost |
 
 ## Consequences
 
-- The gateway keeps validating the **ID token** and reading `custom:tenant_id` —
-  no `aegis-core` code change. The RETRO's "ID-token validation is non-canonical"
-  note is acknowledged and consciously accepted: the gateway fully verifies
-  signature + iss + aud + exp on the ID token, so the security properties match an
-  access-token check; the canonical-purity gain does not justify the paid tier +
-  Lambda-relocation cost.
+- The gateway now validates the **access token** (an `aegis-core` change): add a
+  `token_use = "access"` assertion and switch audience handling from the id_token's
+  `aud` to the access token's `client_id`/`scope`. The SPA is unchanged — `auth.ts`
+  already sends the access token. The RETRO's "ID-token validation is non-canonical"
+  note is resolved, not just acknowledged.
+- The pre-token Lambda is upgraded **V1 → V2** and the Cognito user pool moves to the
+  **Essentials feature plan** (the V2 trigger gate). `cognito.tf` sets the feature plan
+  + `pre_token_generation_config { lambda_version = "V2_0" }`; `lambda/pretoken/index.mjs`
+  switches to the V2 event shape to add the claim to the access token.
 - One Lambda + IAM exec role per pool remains a managed artifact. Owner action on
   Node.js runtime EOL: bump `runtime` in `cognito-lambda.tf` (currently
   `nodejs20.x`).
