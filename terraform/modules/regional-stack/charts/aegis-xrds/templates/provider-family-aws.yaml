@@ -1,0 +1,64 @@
+# Explicit upbound-provider-family-aws Provider (race fix, 2026-06-19).
+#
+# WHY THIS EXISTS — the `default` DRC race
+# -----------------------------------------
+# provider-aws-iam:v1.21.0 declares a dependency on the AWS provider *family*
+# package (upbound-provider-family-aws), which ships the ProviderConfig CRD and
+# shared config that the IAM provider needs. Before this template, the family
+# provider was NOT declared in the chart: Crossplane's package manager
+# auto-installed it as a transitive dependency, and an auto-installed Provider
+# with no runtimeConfigRef falls back to the DeploymentRuntimeConfig named
+# `default`.
+#
+# That created a race (observed live on prod eu-west-1, 2026-06-18):
+#   1. The family provider installs as a dependency.
+#   2. Crossplane IMMEDIATELY auto-creates an EMPTY DRC named `default`
+#      (spec: {}) so the provider has something to bind to.
+#   3. The chart ALSO ships a `default` DRC carrying the restricted-PSA
+#      securityContext. Helm "adopts" the auto-created object (sets ownership
+#      labels) but on prod left spec EMPTY -> family pod got NO securityContext
+#      -> PodSecurity `restricted` rejected it at admission (ReplicaSet created,
+#      0 pods) -> family provider Healthy=False -> the WorkloadIdentity
+#      Composition could not render the engine IAM Role -> aegis-core ArgoCD
+#      sync failed.
+#
+# THE FIX (Crossplane/Upbound canonical pattern):
+#   - Declare the family Provider EXPLICITLY here.
+#   - Bind it to a chart-owned DRC via an explicit runtimeConfigRef
+#     (`family-aws-runtime`, the renamed former `default` DRC).
+#   - There is now NO DRC named `default` in the chart, so Crossplane never
+#     needs to auto-create one. Race eliminated.
+#
+# VERSION PIN — READ BEFORE BUMPING provider-aws-iam
+# --------------------------------------------------
+# spec.package MUST be the family version that provider-aws-iam:v1.21.0 actually
+# depends on. v2.6.1 was the version OBSERVED LIVE on prod (the version
+# Crossplane auto-resolved). Upbound family providers declare a `>=` dependency
+# and the package manager resolves to the latest matching family release, so the
+# resolved version can DRIFT as new family releases ship. Pinning it here makes
+# the dependency explicit and reproducible, but it must stay >= what the IAM
+# provider requires and ideally exactly the resolved version.
+#
+# CONFIRM the exact required version before merge:
+#   crossplane xpkg inspect xpkg.upbound.io/upbound/provider-aws-iam:v1.21.0
+#     # read the spec.dependsOn[].version constraint for provider-family-aws
+# or pull the package and read its crossplane.yaml `dependsOn`. If you bump
+# provider-aws-iam, re-check and update this pin in the same change.
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-family-aws
+  annotations:
+    aegis.binhsu.org/adr: "ADR-09 amended (fix B), race fix 2026-06-19"
+    aegis.binhsu.org/note: >-
+      Version pinned to the family release observed live (v2.6.1). VERIFY it
+      matches provider-aws-iam:v1.21.0's dependsOn constraint before merge —
+      see comment above. NEEDS crossplane render + live-cluster test.
+spec:
+  # OBSERVED-LIVE value (2026-06-18 prod). Verify against provider-aws-iam
+  # v1.21.0's dependsOn before merge — see the version-pin note above.
+  package: xpkg.upbound.io/upbound/provider-family-aws:v2.6.1
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: family-aws-runtime
