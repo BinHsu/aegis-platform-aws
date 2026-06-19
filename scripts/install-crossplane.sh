@@ -40,18 +40,21 @@ esac
 # Known-good SHA256 digests for the pinned version. Fill in a digest the first
 # time a new (os,arch) is needed; an unknown combo aborts rather than trusting an
 # unverified download. (darwin_arm64 captured at author time, 2026-06-19.)
-declare -A CRANK_SHA256
-CRANK_SHA256[darwin_arm64]=382c9f29511ff122ad08a0651e592c617d1edd7be38c7581c65ccd2eb7857eba
-# linux_amd64 is the CI runner target. PINNED 2026-06-19 after verifying the
-# binary is deterministic across re-downloads AND the same bucket's darwin_arm64
-# artifact matches its independent pin above (bucket integrity corroborated).
-# NOTE: the upstream `crank.sha256` sidecar for this release is WRONG — it
-# publishes 9d2c8bba…04b60e while the served binary (twice, deterministic) is the
-# digest below. The sidecar is therefore NOT trusted; the pinned digest is the
-# only verification authority (supply-chain guardrail h).
-CRANK_SHA256[linux_amd64]=cb1fc84c0f04b7b3b88374a8037701b6c65a36007c28544968bde1011ca5491e
-CRANK_SHA256[linux_arm64]=""
-CRANK_SHA256[darwin_amd64]=""
+# A case lookup (not `declare -A`) so the script runs on macOS's stock Bash 3.2
+# as well as CI's Bash 5 — assoc arrays need Bash 4+. linux_amd64 PINNED
+# 2026-06-19 after verifying the binary is deterministic across re-downloads AND
+# the same bucket's darwin_arm64 artifact matches its independent pin (bucket
+# integrity corroborated). NOTE: the upstream `crank.sha256` sidecar for this
+# release is WRONG — it publishes 9d2c8bba…04b60e while the served binary (twice,
+# deterministic) is cb1fc84c…a5491e. The sidecar is NOT trusted; the pinned
+# digest is the only verification authority (supply-chain guardrail h).
+crank_sha256() {
+  case "$1" in
+    darwin_arm64) echo "382c9f29511ff122ad08a0651e592c617d1edd7be38c7581c65ccd2eb7857eba" ;;
+    linux_amd64)  echo "cb1fc84c0f04b7b3b88374a8037701b6c65a36007c28544968bde1011ca5491e" ;;
+    *)            echo "" ;;   # unknown (os,arch) → fail closed below
+  esac
+}
 
 KEY="${OS}_${ARCH}"
 URL="https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/${OS}_${ARCH}/crank"
@@ -62,7 +65,7 @@ trap 'rm -rf "$TMP"' EXIT
 echo ">>> crossplane CLI ${CROSSPLANE_VERSION} (${KEY})"
 curl -fsSL -o "$TMP/crank" "$URL"
 
-EXPECTED="${CRANK_SHA256[$KEY]:-}"
+EXPECTED="$(crank_sha256 "$KEY")"
 if [ -z "$EXPECTED" ]; then
   # No pinned digest for this (os,arch). The upstream `crank.sha256` sidecar has
   # been observed WRONG for this release (see the linux_amd64 note above), so it
