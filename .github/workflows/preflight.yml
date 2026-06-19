@@ -46,12 +46,11 @@ on:
         description: "Workload overlay to read digest pins from (staging|prod)"
         required: false
         default: "staging"
-  pull_request:
-    branches: [main]
-    paths:
-      - 'accounts.json'
-      - 'regions.auto.tfvars.json'
-      - '.github/workflows/preflight.yml'
+  # workflow_dispatch ONLY — this is an operator gate run BEFORE a billable apply,
+  # not a PR check. It asserts against live external state (DNS delegation, ECR
+  # images) that is intentionally absent between bring-ups (e.g. the Cloudflare NS
+  # delegation is torn down with the env), so a red here is "the gate working", not
+  # a code defect — it must not block a docs/config PR from merging.
 
 permissions:
   id-token: write   # required for OIDC -> AWS
