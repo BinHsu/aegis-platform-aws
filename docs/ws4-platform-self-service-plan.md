@@ -1,9 +1,43 @@
 # WS4 — Platform Self-Service: One Declaration to Onboard a Workload
 
-> **Status:** DRAFT for review — committed as a draft plan, not an ADR yet. Seeds a future
-> ADR (Terraform↔Crossplane boundary) and an ADR for the onboarding XR. The Crossplane
-> direction in §2/§5/§6 is under active review (2026-06-19) — see the "how to correctly
-> introduce Crossplane" discussion; expect a revision before this graduates to an ADR.
+> **Status:** DRAFT plan. The Crossplane engine choice + the Terraform↔Crossplane
+> boundary are now decided in **ADR-22 (Crossplane v2-era), which is authoritative**;
+> this plan defers to it and is not re-litigating the engine. Axis B's `XService`
+> onboarding XR is still a draft awaiting its own ADR.
+
+## 0. Revision note — 2026-06-19 (read first; supersedes the as-written §2/§3/§5/§6 where they conflict)
+
+After three grounded design rounds, the engine question is settled in **ADR-22**. The
+corrections below override this plan's original text wherever they disagree — ADR-22 is
+the source of truth, this plan is the build sequence:
+
+1. **Engine = Crossplane v2** (GA 2025-08, CNCF Graduated), not v1. The whole fix-B
+   namespace fight was a v1 cluster-scoped-vs-namespaced artifact that **disappears** in
+   v2 (namespaced XRs by default). Authoring is v2-native: composition **functions**,
+   **provider family + MRAP** (activate only the resource types we use), provider pod
+   credentials via **EKS Pod Identity** (not the retired `/aegis-workload/` IRSA role).
+2. **Identity left Crossplane.** ADR-21 §A + PR #117 moved engine IAM to **EKS Pod
+   Identity + Terraform**. So Axis A's original premise — "extend `XWorkloadIdentity`" —
+   is **void**. Crossplane never re-owns identity; Axis A is **non-identity** workload
+   cloud only (`XBucket`/`XQueue`/`XTable`).
+3. **Stateful stays in Terraform.** Crossplane has no `plan`/dry-run and a history of
+   silent deletion on upgrade. Crossplane claims cover only **rebuildable, small-blast**
+   resources; every data-bearing resource (RDS-class) stays in Terraform. The no-plan
+   engine never owns a data store.
+4. **Engine alternatives were evaluated and rejected** (ADR-22 §Options): **tofu-controller**
+   keeps `plan` but is module-per-cloud with no app-facing neutral abstraction (fails the
+   decisive criterion: multi-cloud complexity belongs to the platform engineer, not the
+   backend engineer); **KRO** is only the composition layer (~1/3 of the stack), makes zero
+   cloud API calls, has no on-prem path, and is still `v1alpha1`; **Kratix** is overkill for
+   1–3 workloads. Crossplane v2 is the only tool with all three layers **and** an on-prem
+   path. `function-kro` (Crossplane-side) means KRO's authoring ergonomics stay available
+   later without migrating off Crossplane — the convergence is one-directional.
+5. **Crossplane is scenario-justified, not premature.** The gate is (multi-cloud intent ×
+   a dedicated platform role), not workload count. aegis passes both; the earlier
+   "premature at 1–3 workloads" framing is withdrawn.
+
+Everything below is the original plan; treat §2's "extend `XWorkloadIdentity`", §5's
+identity row, and §6's scoreboard as superseded by the points above + ADR-22.
 > **Scope:** the *platform* layer of `aegis-platform-aws` plus the deploy-repo contract.
 > **Author context:** written after the WS3 staging end-to-end bring-up
 > (`RETRO-ws3-staging-e2e-2026-06-18.md`), which is the empirical source for the
@@ -276,7 +310,8 @@ workload roles only *after* Terraform has granted Crossplane its own.
 | Account/org fabric, SCPs, OIDC provider trust anchor | **Terraform** (landing zone) | Cross-account, org-level; pre-exists any cluster. ADR-07: landing zone narrows to "OIDC trust anchor only." |
 | Shared edge: Route53 zone, Cognito user pool, ECR repos, wildcard ACM | **Terraform** | Shared across workloads / spans accounts; ADR-09's promotion triggers (≥2 consumers, cross-account) put these firmly in TF. ADR-19: the zone is delegated from Cloudflare (a one-time operator step), the deployment-account ECR is one shared registry (ADR-10). |
 | ArgoCD, argo-rollouts, Kyverno, the XRDs/Compositions themselves | **Terraform** (Helm) | The control-plane machinery the claims depend on. A claim cannot install the controller that reconciles it. |
-| Per-workload **identity** (IRSA role) | **Crossplane** (`XWorkloadIdentity`) | Workload-scoped; reconciles in the workload's namespace; the upjet Role is cluster-scoped so it composes cleanly (fix-B). |
+| Per-workload **identity** (IAM role) | **Terraform + EKS Pod Identity** (ADR-21 §A, ADR-22) | ~~Crossplane `XWorkloadIdentity`~~ **superseded.** Terraform owns the role; an `aws_eks_pod_identity_association` binds it to the namespace/SA. Destroyed cleanly with the stack — no orphan, no `/aegis-workload/`. Crossplane never owns identity. |
+| Per-workload **stateful / data-bearing** cloud (RDS-class, anything whose deletion loses data) | **Terraform** | Crossplane has no `plan`/dry-run + a silent-deletion-on-upgrade history (ADR-22 §3). Keep `plan` where data is at stake; the no-plan engine never owns a data store. |
 | Per-workload **cloud**: buckets, queues, tables (Axis A) | **Crossplane** (`XBucket`/`XQueue`/`XTable`) | Workload-scoped, single-consumer; ADR-09 default-ownership. Promotes to TF only on the five triggers. |
 | The onboarding fan-out itself (Axis B) | **Crossplane** (`XService` Composition) | Composes the workload-scoped claims + references the TF-owned shared edge via injected values — same channel as today's `templatePatch`. |
 
