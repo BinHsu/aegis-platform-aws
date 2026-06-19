@@ -29,7 +29,7 @@ jobs:
     outputs:
       enabled_regions: ${{ steps.regions.outputs.list }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - id: regions
         name: extract enabled regions from regions.auto.tfvars.json
         run: |
@@ -41,7 +41,7 @@ jobs:
     name: gitleaks-secret-scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0 # full history so the scan sees every commit
       - name: gitleaks
@@ -60,8 +60,8 @@ jobs:
     name: fmt-validate-lint-sec
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
@@ -95,12 +95,12 @@ jobs:
     # failing on an unavoidable bootstrap-ordering gap.
     if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with:
           role-to-assume: ${{ secrets.AWS_INFRA_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -144,7 +144,7 @@ jobs:
           # -lock=false on plan: ReadOnly IAM role can't write .tflock.
           terraform plan -lock=false -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json" -out=plan.bin
           terraform show -no-color plan.bin > plan.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: plan-platform
           path: terraform/envs/platform/plan.txt
@@ -160,12 +160,12 @@ jobs:
       matrix:
         region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with:
           role-to-assume: ${{ secrets.AWS_INFRA_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -208,7 +208,7 @@ jobs:
           # acquires the lock normally.
           terraform plan -lock=false -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" -out=plan.bin
           terraform show -no-color plan.bin > plan-${{ matrix.region }}.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: plan-regional-${{ matrix.region }}
           path: terraform/envs/regional/plan-${{ matrix.region }}.txt
@@ -219,12 +219,12 @@ jobs:
     needs: [plan-platform, plan-regional]
     if: ${{ always() && github.event_name == 'pull_request' && vars.BOOTSTRAP_COMPLETE == 'true' }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: plans/
       - name: post combined plan diff as PR comment
-        uses: marocchino/sticky-pull-request-comment@v3
+        uses: marocchino/sticky-pull-request-comment@d4d6b0936434b21bc8345ad45a440c5f7d2c40ff # v3
         with:
           header: terraform-plan
           message: |

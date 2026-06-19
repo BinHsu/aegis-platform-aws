@@ -61,15 +61,15 @@ jobs:
     outputs:
       gate: ${{ steps.check.outputs.gate }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with:
           role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-apply-platform
           aws-region: ${{ env.AWS_REGION }}
@@ -144,15 +144,15 @@ jobs:
       group: infra-${{ inputs.account_id }}-platform
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with:
           role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-apply-platform
           aws-region: ${{ env.AWS_REGION }}
@@ -229,15 +229,15 @@ jobs:
       TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
       TF_VAR_operator_principal_arn: ${{ inputs.operator_principal_arn }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with:
           role-to-assume: arn:aws:iam::${{ inputs.account_id }}:role/gh-tf-apply-platform
           aws-region: ${{ matrix.region }}
