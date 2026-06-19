@@ -54,6 +54,16 @@ output "model_read_policy_name" {
   value       = aws_iam_policy.model_read.name
 }
 
+output "model_write_policy_name" {
+  description = "Name of the per-region model-populator write policy (pod-identity-model-populator.tf, Phase 4c). Region-suffixed — same #108 collision class the cold-start gate guards. Held by the populator identity only; the engine role stays read-only."
+  value       = aws_iam_policy.model_write.name
+}
+
+output "model_populator_iam_role_name" {
+  description = "Name of the model-populator's EKS Pod Identity IAM role (pod-identity-model-populator.tf, Phase 4c). Region-suffixed (aegis-core-model-populator-<region>) — the dual-region EntityAlreadyExists class."
+  value       = aws_iam_role.model_populator.name
+}
+
 output "gateway_cert_domain_name" {
   description = "domain_name of the gateway ACM cert (acm.tf). On a cold start this comes from the zone_name placeholder; the gate asserts it is non-empty (#107)."
   value       = aws_acm_certificate.gateway.domain_name

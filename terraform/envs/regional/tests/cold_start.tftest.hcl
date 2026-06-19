@@ -257,6 +257,19 @@ run "cold_start_empty_platform_state_plans_clean" {
     error_message = "model-read policy name does not contain the region — the #108 collision class. Expected 'aegis-core-model-read-${var.region}'."
   }
 
+  # Phase 4c: the model-populator role + write policy are the newest names in the
+  # §C region-suffix class (pod-identity-model-populator.tf). A bare name collides
+  # across two regions in one account (EntityAlreadyExists at apply), exactly like
+  # #108. Guard both the role and the policy name shapes.
+  assert {
+    condition     = module.stack.model_populator_iam_role_name == "aegis-core-model-populator-${var.region}"
+    error_message = "model-populator IAM role name is not the expected region-suffixed 'aegis-core-model-populator-${var.region}' — dual-region EntityAlreadyExists hazard (ADR-21 §C)."
+  }
+  assert {
+    condition     = module.stack.model_write_policy_name == "aegis-core-model-write-${var.region}"
+    error_message = "model-write policy name is not the expected region-suffixed 'aegis-core-model-write-${var.region}' — the #108 collision class."
+  }
+
   # CLASS 2 — provider-rejected shape: ACM cert SAN. On a cold start the zone_name
   # falls back to the syntactically-valid placeholder "placeholder.example.com"
   # (main.tf), NOT "". An empty zone_name would build SAN ["*."] which the real
