@@ -42,7 +42,7 @@ TF_REGIONAL  := terraform/envs/regional
 # until regions.auto.tfvars.json is created.
 ACTIVE_REGIONS = $(shell jq -r '.regions | to_entries[] | select(.value.enabled) | .key' $(TFVARS_JSON) 2>/dev/null)
 
-.PHONY: help dev-setup pre-commit-install fmt validate lint sec \
+.PHONY: help dev-setup pre-commit-install fmt validate lint sec crossplane-validate \
         bootstrap regenerate-backend platform regional regional-one \
         all destroy-region destroy-platform clean-bin clean-backend
 
@@ -54,6 +54,7 @@ help:
 	@echo "  validate               terraform validate in each env (no backend init)"
 	@echo "  lint                   tflint --recursive --chdir=terraform/"
 	@echo "  sec                    trivy config terraform/ (MEDIUM+)"
+	@echo "  crossplane-validate    offline XBucket composition gate (crossplane render + resource validate; WS4 Axis A)"
 	@echo "  bootstrap              Apply bootstrap (one-time; LOCAL state; creates remote backend)"
 	@echo "  regenerate-backend     Re-emit ./backend.hcl from bootstrap outputs (run after bootstrap)"
 	@echo "  platform               Apply platform env (slow lifecycle; survives DR drill)"
@@ -69,6 +70,7 @@ help:
 
 dev-setup:
 	./scripts/install-tools.sh $(BIN)
+	./scripts/install-crossplane.sh $(BIN)
 	@$(MAKE) --no-print-directory pre-commit-install
 
 # Wire git to the committed hook directory. `.githooks/pre-commit` then runs
@@ -98,6 +100,13 @@ sec:
 	# endpoint, VPC flow logs) are noted in docs/tradeoffs.md. --skip-dirs drops
 	# the example k8s manifests bundled inside those modules. Gate on MEDIUM+.
 	$(BIN)/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
+
+# WS4 Axis A (ADR-22): offline composition gate for the XBucket XRD/Composition.
+# Helm-renders the chart, then crossplane resource validate (XRD + provider
+# schemas) + composition render (needs Docker; skipped without it). Same gate CI
+# runs in infra-plan.yml :: crossplane-validate.
+crossplane-validate:
+	BIN=$(BIN) ./scripts/crossplane-validate.sh
 
 # ----------------------------------------------------------------------------
 # Apply pipeline (local override path; CI is canonical)

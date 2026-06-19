@@ -1,0 +1,32 @@
+# ManagedResourceActivationPolicy (MRAP) — Crossplane v2's CRD-explosion valve
+# (ADR-22 §4: "an explicit MRAP allow-listing only the resource types we use").
+#
+# In v2 a provider family ships its Managed Resource Definitions (MRDs) INACTIVE
+# by default — the CRDs are not established until an MRAP activates them. Without
+# this object, installing provider-aws-s3 would still establish nothing useful;
+# with a naive "activate everything" it would establish 100+ CRDs. This policy
+# activates ONLY the S3 namespaced MRDs (the `.m.` v2 group) — the exact set the
+# XBucket Composition composes (Bucket + BucketPublicAccessBlock) plus the rest
+# of the S3 surface we may add to the Composition later.
+#
+# Pattern rules (Crossplane v2): `*` is only valid as a LEADING wildcard
+# (`*.s3.aws.m.upbound.io`); `s3.*.aws.m.upbound.io` and `*.s3.*` are rejected.
+# We activate the namespaced S3 group only. The XBucket XR is itself namespaced
+# and composes namespaced MRs, so we do NOT need the cluster-scoped legacy group
+# (`*.s3.aws.upbound.io`) — leaving it inactive keeps the CRD set minimal.
+#
+# When Axis A grows XQueue / XTable, add `*.sqs.aws.m.upbound.io` /
+# `*.dynamodb.aws.m.upbound.io` here alongside the matching service provider in
+# providers.yaml — one line, no CRD explosion.
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: ManagedResourceActivationPolicy
+metadata:
+  name: aegis-activate-s3
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+    aegis.binhsu.org/status: "implemented, E2E PENDING WS4 cluster bring-up"
+spec:
+  activate:
+    # Namespaced S3 MRDs only (Bucket, BucketPublicAccessBlock, ...). Leading-`*`
+    # glob is the only form v2 accepts.
+    - "*.s3.aws.m.upbound.io"

@@ -1,0 +1,20 @@
+# Function package manifest for `crossplane render` (offline composition test).
+#
+# `crossplane render <xr> <composition> <functions>` runs each pipeline function.
+# By default it pulls + runs the function image via Docker. The
+# render.crossplane.io/runtime annotation controls that:
+#   - Docker (default): pulls the image, needs a Docker daemon + network.
+#   - Development: connects to a function you run manually (gRPC target).
+#
+# The CI gate (.github/workflows/infra-plan.yml :: crossplane-validate) runs
+# render with Docker (GitHub runners have Docker), so this manifest names the
+# real function package. Locally without Docker the render step is skipped with a
+# clear message — see scripts/crossplane-validate.sh.
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-patch-and-transform
+  annotations:
+    render.crossplane.io/runtime: Docker
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.10.6

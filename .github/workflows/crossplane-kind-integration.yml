@@ -1,0 +1,62 @@
+name: crossplane-kind-integration
+
+# NON-BILLABLE kind-in-CI integration gate for the WS4 Axis A XBucket v2 stack
+# (ADR-22). The "run the seam cheaply before the billable one" discipline from
+# RETRO §7A / §8 P1.
+#
+# This is SEPARATE from infra-plan.yml's offline `crossplane-validate` job (which
+# only RENDERS the composition). This one stands up a real Kubernetes API server
+# (kind) and installs the SAME Crossplane v2 stack crossplane.tf installs — with
+# ZERO AWS creds, ZERO AWS calls, ZERO billable resources. Its whole point is to
+# catch the RUNTIME admission class the offline gate cannot see (RETRO §7F): the
+# prod 2026-06-18 / fix-B #2(a) failure where a PSA=restricted namespace REJECTS a
+# provider/function pod whose DRC securityContext is empty.
+#
+# No AWS: this workflow declares NO id-token permission and assumes NO AWS role.
+# The S3 provider pod runs without credentials BY DESIGN; the test asserts up to
+# managed-resource (Bucket) OBJECT creation, never a real S3 reconcile.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # Only run when the Crossplane v2 stack or this test changes — the kind
+      # spin-up + image pulls take a few minutes, so scope it.
+      - "terraform/modules/regional-stack/crossplane.tf"
+      - "terraform/modules/regional-stack/charts/aegis-xrds-v2/**"
+      - "scripts/crossplane-kind-integration.sh"
+      - ".github/workflows/crossplane-kind-integration.yml"
+  workflow_dispatch: {}
+
+# No id-token / no AWS. Read-only checkout is all this gate needs.
+permissions:
+  contents: read
+
+jobs:
+  kind-integration:
+    name: kind-xbucket-v2-integration
+    runs-on: ubuntu-latest
+    # Hard overall ceiling so a stuck image-pull / wait can never hang a runner.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      # kind cluster on a pinned node image (k8s 1.32.x) + pinned digest. PSA is
+      # a GA admission plugin in this k8s line, enforced exactly as on EKS — the
+      # fidelity point that makes this test reproduce the prod failure mode.
+      - name: create kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: aegis-xbucket-v2
+          node_image: kindest/node:v1.32.11@sha256:5fc52d52a7b9574015299724bd68f183702956aa4a2116ae75a63cb574b35af8
+          wait: 120s
+
+      - name: install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: run the XBucket v2 kind integration test (zero AWS spend)
+        env:
+          KIND_CLUSTER: aegis-xbucket-v2
+        run: ./scripts/crossplane-kind-integration.sh

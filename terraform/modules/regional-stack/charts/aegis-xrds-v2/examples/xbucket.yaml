@@ -1,0 +1,18 @@
+# Example XBucket XR — the render/validate fixture (ADR-22 WS4 Axis A).
+#
+# This is a NEW test bucket claim, NOT the model bucket. Per ADR-22 §3 + the WS4
+# task constraints, the model bucket (model-store.tf) is DATA and stays in
+# Terraform; whether it is "rebuildable enough" to migrate to XBucket is a human
+# decision, not made here. This example demonstrates the XBucket shape with a
+# throwaway scratch bucket.
+#
+# In a real workload this lives in the deploy repo (e.g.
+# aegis-core-deploy/k8s/.../scratch-bucket.yaml), namespaced to the workload.
+apiVersion: platform.aegis.io/v1alpha1
+kind: XBucket
+metadata:
+  name: example-scratch
+  namespace: aegis-core
+spec:
+  name: scratch
+  access: readwrite

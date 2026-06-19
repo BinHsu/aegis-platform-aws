@@ -1,0 +1,134 @@
+# XBucket → S3 Bucket Composition (Crossplane v2, ADR-22 WS4 Axis A).
+#
+# Renders, from each namespaced XBucket XR, two NAMESPACED upjet managed
+# resources (the v2 `.m.` group, so the namespaced XR composes them with no
+# resourceRefs[].namespace schema error):
+#   1. s3.aws.m.upbound.io/Bucket            — the bucket itself
+#   2. s3.aws.m.upbound.io/BucketPublicAccessBlock — block ALL public access
+#      (mirrors model-store.tf's aws_s3_bucket_public_access_block: the platform
+#      baseline is private buckets).
+#
+# mode: Pipeline + function-patch-and-transform — v2 has no native
+# patch-and-transform, so the same DSL runs as a function input
+# (pt.fn.crossplane.io/v1beta1 / Resources).
+#
+# ───────────────────────────────────────────────────────────────────────────
+# THE IDENTITY SEAM (ADR-22 §2 — READ THIS):
+# This Composition does NOT compose any IAM Role, Policy, or PolicyAttachment.
+# Identity is EKS Pod Identity + Terraform now; Crossplane never composes
+# identity. The workload reaches the bucket it provisioned like this:
+#
+#   1. The workload's IAM role is Terraform-owned (pod-identity-engine.tf
+#      pattern: aws_iam_role + aws_eks_pod_identity_association, region-suffixed
+#      name, standard path `/`).
+#   2. The read/write policy granting that role access to THIS bucket is authored
+#      in TERRAFORM (a model-store.tf-style aws_iam_policy_document +
+#      aws_iam_policy + aws_iam_role_policy_attachment onto the workload role),
+#      scoped to the bucket ARN: arn:aws:s3:::<resolved-bucket-name> (+ /* for
+#      objects). `read` → s3:ListBucket + s3:GetObject; `readwrite` → those plus
+#      s3:PutObject + s3:DeleteObject.
+#   3. Because the AWS bucket NAME is DETERMINISTIC (derived below from
+#      spec.name, no random suffix — same reproducibility posture as
+#      model-store.tf's local.model_bucket_name), Terraform can author that
+#      policy against the known ARN WITHOUT reading Crossplane state. The XR's
+#      spec.name + spec.access is the contract; Terraform consumes the same two
+#      values to mint the policy. status.bucketName + status.access echo the
+#      resolved values so the operator can verify the wiring.
+#
+# This keeps the no-`plan` engine away from identity (where a silent delete is
+# catastrophic) while still letting the workload self-declare its bucket. The
+# bucket is rebuildable + small-blast (ADR-22 §3) → Crossplane; the IAM grant is
+# identity → Terraform.
+# ───────────────────────────────────────────────────────────────────────────
+#
+# Bucket-name derivation: "{{ .Values.bucketPrefix }}-<spec.name>-<account>-<region>".
+# bucketPrefix + account + region are Helm-rendered at install (cluster-scoped,
+# from crossplane.tf .Values); spec.name is Crossplane-patched per XR. This
+# mirrors model-store.tf's globally-unique name (workload + account + region, no
+# random suffix). Inputs are DNS-1123 / digits, so no S3-name-rule violation.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xbucket-aws-s3
+  annotations:
+    aegis.binhsu.org/adr: "ADR-22 (WS4 Axis A)"
+    aegis.binhsu.org/status: "implemented, E2E PENDING WS4 cluster bring-up"
+spec:
+  compositeTypeRef:
+    apiVersion: platform.aegis.io/v1alpha1
+    kind: XBucket
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          # --- 1. the bucket -------------------------------------------------
+          - name: bucket
+            base:
+              apiVersion: s3.aws.m.upbound.io/v1beta1
+              kind: Bucket
+              spec:
+                # Cluster-wide shared provider config, Pod Identity creds
+                # (clusterproviderconfig.yaml).
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  region: {{ .Values.region | quote }}
+                  # force_destroy: a workload bucket is rebuildable cache-class
+                  # (ADR-22 §3); same posture as model-store.tf force_destroy.
+                  forceDestroy: true
+                  tags:
+                    managed-by: crossplane
+                    aegis.platform/abstraction: XBucket
+            patches:
+              # Deterministic, globally-unique AWS bucket name (external-name).
+              # prefix + account + region from Helm .Values; spec.name per XR.
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.name
+                  strategy: string
+                  string:
+                    fmt: "{{ .Values.bucketPrefix }}-%s-{{ .Values.accountId }}-{{ .Values.region }}"
+                toFieldPath: metadata.annotations[crossplane.io/external-name]
+              # Echo the resolved bucket name to XR status so the operator can
+              # wire the matching Terraform IAM policy (the identity seam above).
+              - type: ToCompositeFieldPath
+                fromFieldPath: metadata.annotations[crossplane.io/external-name]
+                toFieldPath: status.bucketName
+          # --- 2. block ALL public access -----------------------------------
+          # Platform baseline: private buckets (mirrors model-store.tf's
+          # aws_s3_bucket_public_access_block, all four flags true). Bound to the
+          # bucket above by bucketSelector on the shared composition label.
+          - name: public-access-block
+            base:
+              apiVersion: s3.aws.m.upbound.io/v1beta1
+              kind: BucketPublicAccessBlock
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  region: {{ .Values.region | quote }}
+                  blockPublicAcls: true
+                  blockPublicPolicy: true
+                  ignorePublicAcls: true
+                  restrictPublicBuckets: true
+                  # Resolve the bucket name from the composed Bucket above via
+                  # its matchControllerRef selector — keeps the PAB pointed at
+                  # THIS XR's bucket, not another workload's.
+                  bucketSelector:
+                    matchControllerRef: true
+# status.bucketName is published by the ToCompositeFieldPath patch on the bucket
+# resource above (the resolved AWS bucket name the operator wires the TF policy
+# against). status.access is NOT echoed via a function patch: function-patch-and-
+# transform's ToCompositeFieldPath copies FROM a composed resource TO the
+# composite, so it cannot copy the composite's own spec.access to its status. The
+# operator reads spec.access verbatim (it is always present, enum-constrained) —
+# no derivation needed. (Adopt function-go-templating only if a real
+# composite-self-patch need appears; ADR-22 keeps that on the Crossplane side.)

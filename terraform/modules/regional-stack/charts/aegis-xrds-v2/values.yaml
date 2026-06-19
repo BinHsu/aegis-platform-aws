@@ -1,0 +1,20 @@
+# aegis-xrds-v2 install-time values (ADR-22 WS4 Axis A).
+#
+# Cluster-scoped values the Composition needs at install time, set by
+# crossplane.tf (helm_release.aegis_xrds_v2). Per-XR values (spec.name,
+# spec.access) are Crossplane-patched at reconcile, NOT here.
+
+# AWS region this cluster runs in (var.region). Used for the composed Bucket /
+# BucketPublicAccessBlock forProvider.region and the bucket-name suffix.
+region: ""
+
+# AWS account ID (data.aws_caller_identity.current.account_id). Part of the
+# globally-unique, DETERMINISTIC bucket name so Terraform can author the
+# workload's IAM policy against the known ARN without reading Crossplane state.
+accountId: ""
+
+# Short DNS-1123 prefix for workload bucket names. The Composition builds
+# "<bucketPrefix>-<spec.name>-<accountId>-<region>". The crossplane.tf provider
+# IAM policy is scoped to "<bucketPrefix>-*-<accountId>-<region>", so changing
+# this here REQUIRES updating that policy resource ARN in lockstep.
+bucketPrefix: "aegis-wl"
