@@ -54,32 +54,18 @@ spec:
                 seccompProfile:
                   type: RuntimeDefault
 ---
-# DRC named `family-aws-runtime` — bound to the upbound-provider-family-aws
-# Provider via its explicit runtimeConfigRef (see provider-family-aws.yaml).
-#
-# RENAMED from `default` on 2026-06-19 to eliminate a race. Previously this DRC
-# was named `default` and relied on Crossplane auto-binding it to the family
-# provider (which was itself an undeclared transitive dependency). But Crossplane
-# auto-creates an EMPTY `default` DRC the instant the family provider installs,
-# racing this one. On prod eu-west-1 (2026-06-18) Crossplane won: Helm adopted
-# the empty `default` but left spec={} -> family pod got NO securityContext ->
-# PodSecurity `restricted` rejected it -> family provider Healthy=False -> the
-# WorkloadIdentity Composition could not render the engine IAM Role.
-#
-# Fix: the family provider is now declared explicitly with a runtimeConfigRef to
-# THIS named DRC. No `default` DRC exists in the chart anymore, so Crossplane
-# never auto-creates one and there is nothing to race. The securityContext
-# content below is unchanged from the former `default` DRC.
-#
-# The family provider makes no IAM calls and holds no creds, so this DRC supplies
-# only the restricted-PSA securityContext crossplane-system enforces — without it
-# the family pod is rejected with "forbidden: violates PodSecurity
-# restricted:latest" and provider-aws-iam never reaches Healthy (its
-# ProviderConfig CRD depends on the family package).
+# DRC named `default` — Crossplane auto-applies this to any Provider that does
+# NOT set an explicit runtimeConfigRef. Under fix B (live-proven 2026-06-18)
+# that is the auto-installed dependency `upbound-provider-family-aws`, pulled in
+# when provider-aws-iam installs. The family provider makes no IAM calls and
+# holds no creds, so this DRC supplies only the restricted-PSA securityContext
+# crossplane-system enforces — without it the family pod is rejected with
+# "forbidden: violates PodSecurity restricted:latest" and provider-aws-iam never
+# reaches Healthy (its ProviderConfig CRD depends on the family package).
 apiVersion: pkg.crossplane.io/v1beta1
 kind: DeploymentRuntimeConfig
 metadata:
-  name: family-aws-runtime
+  name: default
 spec:
   deploymentTemplate:
     spec:
