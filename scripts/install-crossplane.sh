@@ -42,10 +42,14 @@ esac
 # unverified download. (darwin_arm64 captured at author time, 2026-06-19.)
 declare -A CRANK_SHA256
 CRANK_SHA256[darwin_arm64]=382c9f29511ff122ad08a0651e592c617d1edd7be38c7581c65ccd2eb7857eba
-# linux_amd64 is the CI runner target — verified on first CI run, then pinned.
-# Until pinned, the script verifies the upstream-published sha256 sidecar (the
-# releases bucket ships <binary>.sha256). See verify step below.
-CRANK_SHA256[linux_amd64]=""
+# linux_amd64 is the CI runner target. PINNED 2026-06-19 after verifying the
+# binary is deterministic across re-downloads AND the same bucket's darwin_arm64
+# artifact matches its independent pin above (bucket integrity corroborated).
+# NOTE: the upstream `crank.sha256` sidecar for this release is WRONG — it
+# publishes 9d2c8bba…04b60e while the served binary (twice, deterministic) is the
+# digest below. The sidecar is therefore NOT trusted; the pinned digest is the
+# only verification authority (supply-chain guardrail h).
+CRANK_SHA256[linux_amd64]=cb1fc84c0f04b7b3b88374a8037701b6c65a36007c28544968bde1011ca5491e
 CRANK_SHA256[linux_arm64]=""
 CRANK_SHA256[darwin_amd64]=""
 
@@ -59,23 +63,18 @@ echo ">>> crossplane CLI ${CROSSPLANE_VERSION} (${KEY})"
 curl -fsSL -o "$TMP/crank" "$URL"
 
 EXPECTED="${CRANK_SHA256[$KEY]:-}"
-if [ -n "$EXPECTED" ]; then
-  echo "$EXPECTED  $TMP/crank" | shasum -a 256 -c -
-else
-  # No pinned digest for this (os,arch) yet — verify against the upstream sha256
-  # sidecar the releases bucket publishes, and PRINT the digest so it can be
-  # pinned above. This keeps the download verified (against upstream's own
-  # checksum) while surfacing the value to harden the pin.
-  echo "WARN: no pinned sha256 for ${KEY}; verifying against upstream sidecar." >&2
-  if curl -fsSL -o "$TMP/crank.sha256" "${URL}.sha256"; then
-    UP=$(awk '{print $1}' "$TMP/crank.sha256")
-    echo "$UP  $TMP/crank" | shasum -a 256 -c -
-    echo "PIN-ME: CRANK_SHA256[${KEY}]=$(shasum -a 256 "$TMP/crank" | awk '{print $1}')" >&2
-  else
-    echo "ERROR: no pinned digest and no upstream sidecar for ${KEY}; refusing unverified binary." >&2
-    exit 1
-  fi
+if [ -z "$EXPECTED" ]; then
+  # No pinned digest for this (os,arch). The upstream `crank.sha256` sidecar has
+  # been observed WRONG for this release (see the linux_amd64 note above), so it
+  # is NOT a trustworthy fallback. Fail closed: print the computed digest so a
+  # maintainer can verify it independently and pin it — never auto-trust an
+  # unverified download (supply-chain guardrail h).
+  echo "ERROR: no pinned sha256 for ${KEY}. Computed digest of the download:" >&2
+  shasum -a 256 "$TMP/crank" | awk -v k="$KEY" '{print "  CRANK_SHA256["k"]="$1}' >&2
+  echo "Verify independently, pin it above, then re-run. Refusing unverified binary." >&2
+  exit 1
 fi
+echo "$EXPECTED  $TMP/crank" | shasum -a 256 -c -
 
 install -m 0755 "$TMP/crank" "$BIN/crossplane"
 echo ">>> installed: $BIN/crossplane"
