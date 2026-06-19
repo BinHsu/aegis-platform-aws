@@ -348,11 +348,12 @@ jobs:
           echo "Found zone: ${zone_id}"
           echo "zone_id=${zone_id}" >> "$GITHUB_OUTPUT"
 
-          # Retrieve the AWS nameservers for this zone.
+          # Retrieve the AWS nameservers for this zone as a compact (single-line)
+          # JSON array so it is safe to write to GITHUB_OUTPUT (no newlines).
           ns_records="$(aws route53 get-hosted-zone \
             --id "${zone_id}" \
             --query 'DelegationSet.NameServers' \
-            --output json)"
+            --output json | jq -c '.')"
           echo "AWS nameservers: ${ns_records}"
           echo "ns_records=${ns_records}" >> "$GITHUB_OUTPUT"
 
