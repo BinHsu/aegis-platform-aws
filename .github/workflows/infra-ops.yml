@@ -214,8 +214,8 @@ jobs:
           # SoT, regions.auto.tfvars.json.
           TF_VAR_platform_region="$(jq -r '.platform_region' regions.auto.tfvars.json)"
           export TF_VAR_platform_region
-          eval "$(jq -r --arg r "$r" '.regions[$r] | "TF_VAR_vpc_cidr=\(.cidr); TF_VAR_node_instance=\(.node_instance); TF_VAR_node_min=\(.node_min); TF_VAR_node_max=\(.node_max)"' regions.auto.tfvars.json)"
-          export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
+          eval "$(jq -r --arg r "$r" '.regions[$r] | "TF_VAR_node_instance=\(.node_instance); TF_VAR_node_min=\(.node_min); TF_VAR_node_max=\(.node_max)"' regions.auto.tfvars.json)"
+          export TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
           # Workload overlay selector for this account, from HEAD accounts.json
           # (accounts-dimension ADR) — mirrors the apply path's TF_VAR_environment.
           TF_VAR_environment="$(jq -r --arg id '${{ inputs.account_id }}' '[.accounts[] | select(.account_id == $id) | .environment] | first // "prod"' accounts.json)"

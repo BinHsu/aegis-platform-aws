@@ -13,7 +13,6 @@ module "stack" {
 
   region        = var.region
   environment   = var.environment
-  vpc_cidr      = var.vpc_cidr
   node_instance = var.node_instance
   node_min      = var.node_min
   node_max      = var.node_max

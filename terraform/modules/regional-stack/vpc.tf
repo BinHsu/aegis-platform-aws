@@ -3,7 +3,10 @@ module "vpc" {
   version = "~> 6.0"
 
   name = "aegis-platform-aws-${var.region}"
-  cidr = var.vpc_cidr
+  # CIDR comes from the landing-zone IPAM allocation (vpc-ipam.tf), not a
+  # hardcoded /16. Known-after-apply; the module treats it as an opaque string
+  # so the plan stays clean. Subnets are carved from it in locals.tf.
+  cidr = aws_vpc_ipam_pool_cidr_allocation.regional.cidr
 
   azs             = local.azs
   public_subnets  = local.public_subnet_cidrs

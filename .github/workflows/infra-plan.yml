@@ -222,7 +222,7 @@ jobs:
         id: scalars
         run: |
           r='${{ matrix.region }}'
-          jq -r --arg r "$r" '.regions[$r] | "cidr=\(.cidr)\nnode_instance=\(.node_instance)\nnode_min=\(.node_min)\nnode_max=\(.node_max)"' \
+          jq -r --arg r "$r" '.regions[$r] | "node_instance=\(.node_instance)\nnode_min=\(.node_min)\nnode_max=\(.node_max)"' \
             regions.auto.tfvars.json >> "$GITHUB_OUTPUT"
       - name: extract platform_region (single SoT)
         id: pr
@@ -231,7 +231,6 @@ jobs:
       - name: plan
         env:
           TF_VAR_region:          ${{ matrix.region }}
-          TF_VAR_vpc_cidr:        ${{ steps.scalars.outputs.cidr }}
           TF_VAR_node_instance:   ${{ steps.scalars.outputs.node_instance }}
           TF_VAR_node_min:        ${{ steps.scalars.outputs.node_min }}
           TF_VAR_node_max:        ${{ steps.scalars.outputs.node_max }}
