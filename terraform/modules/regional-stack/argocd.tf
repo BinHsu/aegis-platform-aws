@@ -123,26 +123,19 @@ locals {
       # The List generator now carries them so the ApplicationSet template can
       # set repoURL / targetRevision without the SCM generator (which 404s on a
       # personal GitHub account — see the file header comment).
-      url                  = "https://github.com/${var.github_owner}/${repo}"
-      branch               = "HEAD"
-      ecrAccountId         = cfg.ecr_account_id
-      ecrRegion            = cfg.ecr_region
+      url          = "https://github.com/${var.github_owner}/${repo}"
+      branch       = "HEAD"
+      ecrAccountId = cfg.ecr_account_id
+      ecrRegion    = cfg.ecr_region
+      # engineServiceAccount stays as the GATE for the per-engine ConfigMap
+      # injections below (model-store, gateway-oidc). The role-arn annotation and
+      # the WorkloadIdentity policyArns it used to also drive are GONE (ADR-21 §A):
+      # the engine's IAM is now an EKS Pod Identity association in
+      # pod-identity-engine.tf (Terraform-owned role, model-read attached there),
+      # not a Crossplane-composed IRSA role injected here. The SA is bare on the
+      # deploy side (aegis-core-deploy #22), so no role-arn annotation is patched.
       engineServiceAccount = try(cfg.engine_irsa.service_account, "")
-      engineRoleArn        = cfg.engine_irsa == null ? "" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${cfg.engine_irsa.role_name}"
-      # Managed-policy ARNs to attach to the engine's Crossplane-provisioned role
-      # (WS3, ADR-18/19), rendered inline as the WorkloadIdentity Claim's policyArns.
-      #
-      # ADR-05 dual-region: the per-region model-read policy (model-store.tf, this
-      # module) is APPENDED automatically for any engine workload. The bucket and
-      # its read policy are now region-local, so the policy ARN cannot ride a single
-      # platform output or the public deploy repo — the module owns it. A workload
-      # may still declare extra policy ARNs in engine_irsa.policy_arns; those merge
-      # ahead of the model-read policy. Empty for a non-engine workload (greeter
-      # has no engine SA) → no injection.
-      enginePolicyArns = try(cfg.engine_irsa.service_account, "") == "" ? "" : jsonencode(
-        concat(try(cfg.engine_irsa.policy_arns, []), [aws_iam_policy.model_read.arn])
-      )
-      ingressName = try(cfg.ingress_cert.ingress_name, "")
+      ingressName          = try(cfg.ingress_cert.ingress_name, "")
       # certArn (WS3-R): default to the per-region module cert when a workload
       # opts into ingress_cert but does not pin its own ARN. The module cert is
       # region-correct by construction (acm.tf, region = var.region), replacing
@@ -290,35 +283,24 @@ resource "helm_release" "argocd_apps" {
 
           # Conditional, account-bound injections (each keyed off an empty
           # string so a workload that declares neither — e.g. greeter — renders
-          # nothing): the engine SA's role-arn annotation (pointing at the
-          # ACK-provisioned role in this account) and the gateway Ingress's ACM
-          # cert-arn (⑥ account-ID hide). Region and the ECR repository are NOT
-          # here — both ride the commonAnnotations channel above and are
-          # workload-owned via the deploy repo's kustomize replacements.
+          # nothing): the gateway Ingress's ACM cert-arn (⑥ account-ID hide) and
+          # the per-engine ConfigMap values (model bucket, Cognito OIDC). Region
+          # and the ECR repository are NOT here — both ride the commonAnnotations
+          # channel above and are workload-owned via the deploy repo's kustomize
+          # replacements.
+          #
+          # The engine SA role-arn annotation and the WorkloadIdentity policyArns
+          # patch are GONE (ADR-21 §A): the engine's IAM is now an EKS Pod
+          # Identity association (pod-identity-engine.tf), not a Crossplane-
+          # composed IRSA role injected onto a bare SA here. The gate keys off
+          # engineServiceAccount (the ConfigMap injections still need it) and
+          # certArn.
           templatePatch = <<-EOT
-            {{- if or .engineRoleArn .certArn .enginePolicyArns }}
+            {{- if or .engineServiceAccount .certArn }}
             spec:
               source:
                 kustomize:
                   patches:
-                  {{- if .engineRoleArn }}
-                    - target:
-                        kind: ServiceAccount
-                        name: {{ .engineServiceAccount }}
-                      patch: |-
-                        - op: add
-                          path: /metadata/annotations/eks.amazonaws.com~1role-arn
-                          value: {{ .engineRoleArn }}
-                  {{- end }}
-                  {{- if .enginePolicyArns }}
-                    - target:
-                        kind: WorkloadIdentity
-                        name: {{ .engineServiceAccount }}
-                      patch: |-
-                        - op: add
-                          path: /spec/parameters/policyArns
-                          value: {{ .enginePolicyArns }}
-                  {{- end }}
                   {{- if .certArn }}
                     - target:
                         kind: Ingress
