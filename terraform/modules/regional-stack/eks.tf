@@ -101,3 +101,25 @@ module "eks" {
 
   tags = local.common_tags
 }
+
+# Bound the EKS access-entry -> API-server authorizer propagation lag (WS4).
+#
+# The access_entries above (gh-tf-apply-platform -> AmazonEKSClusterAdminPolicy,
+# the role this apply RUNS AS) are created in the same apply as the first
+# cluster-scoped resource. CreateAccessEntry returning success does NOT mean the
+# authorizer has the grant yet — there is a propagation lag. On run 27843245290
+# the access entry completed at 19:03:36 and kubernetes_namespace.argocd started
+# 1.3s later and failed "namespaces is forbidden" before the grant was effective.
+# Terraform's existing depends_on=[module.eks] only waits for entry CREATION, not
+# propagation, so it cannot close this race on its own.
+#
+# This is a bounded wait, not a band-aid: the access-entries design is correct
+# (the executing role IS in cluster_admin_principals and gets ClusterAdmin); the
+# only gap is timing. Every in-cluster resource that the apply role authors
+# (namespaces, helm releases) depends_on this sleep instead of module.eks, so the
+# first API call happens after the authorizer is consistent. 30s is the EKS
+# guidance for access-entry propagation and matches the observed lag with margin.
+resource "time_sleep" "eks_access_propagation" {
+  depends_on      = [module.eks]
+  create_duration = "30s"
+}

@@ -28,6 +28,13 @@
 # run against a live cluster (the prod proof used kubectl apply as a workaround).
 
 resource "kubernetes_namespace" "argocd" {
+  # Wait for the EKS access-entry -> authorizer propagation (eks.tf): this is the
+  # first cluster-scoped create and it hit "namespaces is forbidden" on the WS4
+  # dual-region burn (run 27843245290) when the apply role's ClusterAdmin grant
+  # had not yet propagated. Gating the namespace on the sleep gates the whole
+  # argocd subtree (secret + helm releases chain off it).
+  depends_on = [time_sleep.eks_access_propagation]
+
   metadata {
     name = "argocd"
     labels = {

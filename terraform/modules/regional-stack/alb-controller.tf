@@ -70,5 +70,7 @@ resource "helm_release" "alb_controller" {
     value = "false"
   }
 
-  depends_on = [module.eks]
+  # time_sleep (eks.tf) chains off module.eks AND adds the access-entry -> authorizer
+  # propagation wait that the WS4 dual-region burn proved necessary (run 27843245290).
+  depends_on = [time_sleep.eks_access_propagation]
 }
