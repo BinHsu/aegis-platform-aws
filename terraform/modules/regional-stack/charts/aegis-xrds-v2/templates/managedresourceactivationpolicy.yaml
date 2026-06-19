@@ -1,3 +1,4 @@
+{{- if or (eq .Values.installStage "all") (eq .Values.installStage "definitions") }}
 # ManagedResourceActivationPolicy (MRAP) — Crossplane v2's CRD-explosion valve
 # (ADR-22 §4: "an explicit MRAP allow-listing only the resource types we use").
 #
@@ -30,3 +31,4 @@ spec:
     # Namespaced S3 MRDs only (Bucket, BucketPublicAccessBlock, ...). Leading-`*`
     # glob is the only form v2 accepts.
     - "*.s3.aws.m.upbound.io"
+{{- end }}

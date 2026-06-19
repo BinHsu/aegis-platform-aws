@@ -1,3 +1,4 @@
+{{- if or (eq .Values.installStage "all") (eq .Values.installStage "definitions") }}
 # XBucket → S3 Bucket Composition (Crossplane v2, ADR-22 WS4 Axis A).
 #
 # Renders, from each namespaced XBucket XR, two NAMESPACED upjet managed
@@ -132,3 +133,4 @@ spec:
 # operator reads spec.access verbatim (it is always present, enum-constrained) —
 # no derivation needed. (Adopt function-go-templating only if a real
 # composite-self-patch need appears; ADR-22 keeps that on the Crossplane side.)
+{{- end }}

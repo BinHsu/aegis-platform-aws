@@ -84,12 +84,22 @@ resource "helm_release" "crossplane" {
     # No extra Helm flag needed for that — the MRAP object does the gating.
   })]
 
-  # Teardown safety — same posture as kyverno.tf / argo-rollouts.tf (A4): a helm
-  # uninstall of an operator with webhooks/finalizers can deadlock terraform
-  # destroy and strand a billing cluster. wait=false returns immediately; the
-  # ephemeral-cluster teardown (infra-ops.yml) state-rm's the releases and lets
-  # the cluster delete reap them. timeout bounds any residual wait.
-  wait    = false
+  # wait=true is LOAD-BEARING here (unlike kyverno.tf / argo-rollouts.tf, which
+  # wait=false): the downstream aegis-xrds-v2 releases apply CRs whose CRDs come
+  # from THIS chart — Provider/Function/DeploymentRuntimeConfig (pkg.crossplane.io),
+  # CompositeResourceDefinition/Composition/MRAP (apiextensions.crossplane.io).
+  # If core returns before those CRDs are established, the next helm apply fails
+  # with "resource mapping not found ... ensure CRDs are installed first" (run
+  # 27844622615, both regions). wait=true blocks until the core controller +
+  # RBAC-manager Deployments are Available and their CRDs registered — the exact
+  # `helm install --wait` step the kind-integration test does first
+  # (scripts/crossplane-kind-integration.sh step [2]). timeout bounds the wait.
+  #
+  # Teardown is still safe: the ephemeral-cluster teardown (infra-ops.yml)
+  # state-rm's every helm_release/kubernetes_ resource BEFORE `terraform destroy`,
+  # so the deadlock-prone helm uninstall is never attempted — wait=true only
+  # affects the apply path, which is where we need the CRD-establishment barrier.
+  wait    = true
   timeout = 300
 
   # time_sleep (eks.tf) chains off module.eks AND adds the access-entry -> authorizer
@@ -97,20 +107,48 @@ resource "helm_release" "crossplane" {
   depends_on = [time_sleep.eks_access_propagation]
 }
 
-# The platform XRD/Composition + provider + MRAP + DRC + ClusterProviderConfig
-# chart. Separate release from crossplane core so a vocabulary change has a
-# tighter blast radius than reinstalling the engine (same split as
-# kyverno.tf's aegis_policies vs kyverno).
+# ── aegis-xrds-v2 — STAGED install (ADR-22 install-ordering fix) ─────────────
+# The chart was one helm_release applying providers + function + DRCs + MRAP +
+# XRD + Composition + ClusterProviderConfig in a SINGLE wave. That races: the
+# ClusterProviderConfig is `aws.m.upbound.io/v1beta1`, a CRD the family provider
+# registers ONLY after its package installs and reaches Healthy. Applying it in
+# the same wave failed with "resource mapping not found ... ensure CRDs are
+# installed first" (run 27844622615, both regions).
 #
-# The chart's cluster-scoped install-time values (region, accountId,
-# bucketPrefix) are Helm-rendered into the Composition's bucket-name template +
-# the provider region. Per-XR values (spec.name, spec.access) are
-# Crossplane-patched at reconcile, not here.
-resource "helm_release" "aegis_xrds_v2" {
+# The kind-integration test (scripts/crossplane-kind-integration.sh) already
+# proved the correct sequence. We replicate it here as TWO helm_releases gated by
+# a provider-Healthy wait, driven by the chart's `installStage` value:
+#
+#   wave 1 (definitions)    — providers, function, DRCs, MRAP, XRD, Composition.
+#                             CRDs all come from crossplane core (established by
+#                             the wait=true release above). Mirrors the kind
+#                             test's "wave 1" (apply everything but the
+#                             ClusterProviderConfig).
+#   gate                    — time_sleep: let provider-family-aws reach Healthy so
+#                             the aws.m.upbound.io CRDs register. The kind test
+#                             does `kubectl wait --for=condition=Healthy
+#                             provider/... --timeout=300s`; helm/kubernetes
+#                             providers cannot wait on a CR condition and the apply
+#                             runner has no kubectl, so we use a bounded sleep
+#                             sized to that proven 300s envelope (image pull + pod
+#                             start). Over-waiting is cheap; under-waiting re-races.
+#   wave 2 (providerconfig) — ClusterProviderConfig ONLY, after the gate. Mirrors
+#                             the kind test's "wave 2".
+#
+# Splitting into a tighter blast radius also keeps a vocabulary change from
+# reinstalling the engine (the original kyverno.tf aegis_policies vs kyverno split
+# reasoning still holds).
+
+# wave 1 — definitions. depends on core's CRDs being established (wait=true above).
+resource "helm_release" "aegis_xrds_v2_definitions" {
   name      = "aegis-xrds-v2"
   namespace = kubernetes_namespace.crossplane_system.metadata[0].name
   chart     = "${path.module}/charts/aegis-xrds-v2"
 
+  set {
+    name  = "installStage"
+    value = "definitions"
+  }
   set {
     name  = "region"
     value = var.region
@@ -126,14 +164,46 @@ resource "helm_release" "aegis_xrds_v2" {
     value = "aegis-wl"
   }
 
-  # A4 teardown posture (same as kyverno aegis_policies).
+  # A4 teardown posture (same as kyverno aegis_policies): wait=false so a destroy
+  # never blocks on a helm uninstall. The CRD-establishment barrier we need is on
+  # CORE (the wait=true release above), not here — these CRs' CRDs already exist.
   wait    = false
   timeout = 300
 
-  # The XRDs/Compositions/providers need crossplane core's CRDs (Provider,
-  # Function, DeploymentRuntimeConfig, CompositeResourceDefinition,
-  # ManagedResourceActivationPolicy) to exist first.
+  # crossplane core's CRDs (Provider, Function, DeploymentRuntimeConfig, XRD,
+  # Composition, MRAP) must exist first — guaranteed by core's wait=true.
   depends_on = [helm_release.crossplane]
+}
+
+# gate — wait for provider-family-aws to reach Healthy so its CRDs (notably
+# clusterproviderconfigs.aws.m.upbound.io) register before wave 2. Sized to the
+# kind test's proven 300s provider-Healthy envelope. See the block comment above
+# for why a fixed sleep (not a kubectl condition-wait) is the mechanism here.
+resource "time_sleep" "crossplane_providers_healthy" {
+  depends_on      = [helm_release.aegis_xrds_v2_definitions]
+  create_duration = "300s"
+}
+
+# wave 2 — ClusterProviderConfig ONLY, after the family provider is Healthy and
+# the aws.m.upbound.io CRD is established (the gate above). This is the resource
+# the single-wave install raced on (run 27844622615).
+resource "helm_release" "aegis_xrds_v2_providerconfig" {
+  name      = "aegis-xrds-v2-providerconfig"
+  namespace = kubernetes_namespace.crossplane_system.metadata[0].name
+  chart     = "${path.module}/charts/aegis-xrds-v2"
+
+  set {
+    name  = "installStage"
+    value = "providerconfig"
+  }
+  # region/accountId/bucketPrefix are unused by the ClusterProviderConfig render
+  # but the chart's values still declare them; leave them at defaults.
+
+  # A4 teardown posture.
+  wait    = false
+  timeout = 300
+
+  depends_on = [time_sleep.crossplane_providers_healthy]
 }
 
 # ── Crossplane S3 provider IAM via EKS Pod Identity ─────────────────────────

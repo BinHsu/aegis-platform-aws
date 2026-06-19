@@ -18,3 +18,25 @@ accountId: ""
 # IAM policy is scoped to "<bucketPrefix>-*-<accountId>-<region>", so changing
 # this here REQUIRES updating that policy resource ARN in lockstep.
 bucketPrefix: "aegis-wl"
+
+# Install stage — which slice of the chart this render emits. This exists to fix
+# the Crossplane v2 install-ordering race (ADR-22 §Open validation): the
+# `aws.m.upbound.io` CRDs (ClusterProviderConfig) register ONLY after the
+# provider-family-aws package installs and reaches Healthy, so applying the
+# ClusterProviderConfig in the SAME wave as the providers fails with
+# "resource mapping not found ... ensure CRDs are installed first". crossplane.tf
+# therefore installs the chart in TWO helm_releases, each rendering one stage:
+#
+#   definitions    — providers, function, DRCs, MRAP, XRD, Composition. These CRs
+#                    depend ONLY on crossplane-core CRDs (pkg.crossplane.io,
+#                    apiextensions.crossplane.io), established by the core release.
+#   providerconfig — ClusterProviderConfig ONLY. Depends on the family provider's
+#                    aws.m.upbound.io CRD, so its release waits for the family
+#                    provider to be Healthy (crossplane.tf time_sleep gate).
+#   all            — everything in one render (the DEFAULT). Used by the
+#                    kind-integration test (scripts/crossplane-kind-integration.sh),
+#                    which does its own two-wave split with `awk` + `kubectl wait`.
+#
+# This mirrors the kind test's wave split EXACTLY: wave 1 = definitions, wave 2 =
+# ClusterProviderConfig after provider-Healthy. (string, one of: all | definitions | providerconfig)
+installStage: "all"
