@@ -95,6 +95,7 @@ jobs:
           export TF_VAR_vpc_cidr TF_VAR_node_instance TF_VAR_node_min TF_VAR_node_max
           printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
           gate=true # fail-safe default
+          plan_ok=false
           cd terraform/envs/regional
           if terraform init -reconfigure \
                -backend-config="bucket=${BKT}" \
@@ -103,6 +104,7 @@ jobs:
                -backend-config="encrypt=true" \
              && terraform plan -lock=false -out=tfplan -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
              && terraform show -json tfplan > /tmp/plan.json; then
+            plan_ok=true
             status=$(jq -r '[.checks[]? | select(.address.name=="eks_version_in_standard_support") | .status] | (.[0] // "unknown")' /tmp/plan.json)
             echo "terraform check status: ${status}"
             [ "${status}" = "pass" ] && gate=false
@@ -112,10 +114,21 @@ jobs:
           echo "gate=${gate}" >> "$GITHUB_OUTPUT"
           if [ "${gate}" = "true" ]; then
             if [ "${{ inputs.gate_blocks }}" = "true" ]; then
-              echo "::error::EKS version aged out (or gate plan failed) — HARD-FAIL before any apply (prod). Bump var.cluster_version, re-verify on staging, then re-promote."
+              # Distinguish plan failure (infra/lock/provider issue) from a genuine
+              # version age-out so the operator targets the right fix immediately.
+              # Gating semantics are unchanged: HARD-FAIL in both cases (fail-safe).
+              if [ "${plan_ok}" = "false" ]; then
+                echo "::error::version-gate PLAN failed (not a version issue) — investigate the plan error above. HARD-FAIL (prod)."
+              else
+                echo "::error::EKS version aged out — bump var.cluster_version, re-verify on staging, then re-promote. HARD-FAIL (prod)."
+              fi
               exit 1
             else
-              echo "::warning::EKS version aged out on staging — warn-only, apply proceeds. Bump var.cluster_version."
+              if [ "${plan_ok}" = "false" ]; then
+                echo "::warning::version-gate plan failed on staging — defaulting gate=true (fail-safe). Investigate the plan error above; apply proceeds (staging warn-only)."
+              else
+                echo "::warning::EKS version aged out on staging — warn-only, apply proceeds. Bump var.cluster_version."
+              fi
             fi
           fi
 

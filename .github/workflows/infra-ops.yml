@@ -338,19 +338,48 @@ jobs:
       - name: destroy-platform
         if: ${{ inputs.operation == 'destroy-platform' }}
         env:
+          # ── Topology vars: derived from accounts.json in the run block below.
+          # TF_VAR_environment, TF_VAR_deployment_account_id, and
+          # TF_VAR_cluster_pull_account_ids are exported there (same jq pattern
+          # as the apply-platform step in infra-apply-account.yml). They cannot
+          # sit in the env block because infra-ops has no caller that passes them
+          # as workflow inputs — they must be read from accounts.json at run time.
+          #
+          # ── Secret-backed vars: mirrored from the apply-platform step surface.
           TF_VAR_grafana_cloud_api_token:             ${{ secrets.GRAFANA_CLOUD_API_TOKEN }}
           TF_VAR_grafana_auth_token:                  ${{ secrets.GRAFANA_AUTH_TOKEN }}
-          TF_VAR_grafana_cloud_mimir_username:     ${{ secrets.GRAFANA_CLOUD_MIMIR_USERNAME }}
-          TF_VAR_grafana_cloud_loki_username:      ${{ secrets.GRAFANA_CLOUD_LOKI_USERNAME }}
-          TF_VAR_grafana_cloud_tempo_username:     ${{ secrets.GRAFANA_CLOUD_TEMPO_USERNAME }}
-          TF_VAR_grafana_cloud_pyroscope_username: ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_USERNAME }}
+          TF_VAR_grafana_cloud_mimir_username:        ${{ secrets.GRAFANA_CLOUD_MIMIR_USERNAME }}
+          TF_VAR_grafana_cloud_loki_username:         ${{ secrets.GRAFANA_CLOUD_LOKI_USERNAME }}
+          TF_VAR_grafana_cloud_tempo_username:        ${{ secrets.GRAFANA_CLOUD_TEMPO_USERNAME }}
+          TF_VAR_grafana_cloud_pyroscope_username:    ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_USERNAME }}
           TF_VAR_grafana_cloud_mimir_url:             ${{ secrets.GRAFANA_CLOUD_MIMIR_URL }}
           TF_VAR_grafana_cloud_loki_url:              ${{ secrets.GRAFANA_CLOUD_LOKI_URL }}
           TF_VAR_grafana_cloud_tempo_url:             ${{ secrets.GRAFANA_CLOUD_TEMPO_URL }}
           TF_VAR_grafana_cloud_pyroscope_url:         ${{ secrets.GRAFANA_CLOUD_PYROSCOPE_URL }}
           TF_VAR_budget_alert_email:                  ${{ secrets.BUDGET_ALERT_EMAIL }}
           TF_VAR_github_token:                        ${{ secrets.GH_DEPLOY_KEY_PAT }}
+          TF_VAR_enable_cloudwatch_datasource:        ${{ vars.ENABLE_CLOUDWATCH_DATASOURCE || 'false' }}
+          TF_VAR_grafana_cloud_aws_account_id:        ${{ secrets.GRAFANA_CLOUD_AWS_ACCOUNT_ID }}
+          TF_VAR_grafana_cloud_external_id:           ${{ secrets.GRAFANA_CLOUD_EXTERNAL_ID }}
         run: |
+          # ── Derive topology vars from accounts.json (same source as infra-prod
+          # / infra-staging callers). Keys are logical names; find the entry whose
+          # .account_id matches the input, fall back to safe defaults.
+          TF_VAR_environment="$(jq -r --arg id '${{ inputs.account_id }}' \
+            '[.accounts[] | select(.account_id == $id) | .environment] | first // "prod"' \
+            accounts.json)"
+          if [ -z "$TF_VAR_environment" ] || ! { [ "$TF_VAR_environment" = "staging" ] || [ "$TF_VAR_environment" = "prod" ]; }; then
+            echo "::error::no valid environment for account ${{ inputs.account_id }} in accounts.json (got '${TF_VAR_environment}')"
+            exit 1
+          fi
+          TF_VAR_deployment_account_id="$(jq -r --arg id '${{ inputs.account_id }}' \
+            '[.accounts[] | select(.account_id == $id) | .deployment_account_id // ""] | first // ""' \
+            accounts.json)"
+          # cluster_pull_account_ids: all cluster account ids (same formula the
+          # infra-prod / infra-staging callers use: jq -c '[.accounts[].account_id]').
+          TF_VAR_cluster_pull_account_ids="$(jq -c '[.accounts[].account_id]' accounts.json)"
+          export TF_VAR_environment TF_VAR_deployment_account_id TF_VAR_cluster_pull_account_ids
+
           cd terraform/envs/platform
           terraform init -reconfigure \
             -backend-config="bucket=aegis-platform-aws-tfstate-${{ inputs.account_id }}" \
