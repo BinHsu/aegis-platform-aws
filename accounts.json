@@ -7,7 +7,8 @@
       "environment": "staging",
       "pin": "main",
       "enabled_regions": [
-        "eu-central-1"
+        "eu-central-1",
+        "eu-west-1"
       ],
       "overrides": {
         "node_min": 3,
