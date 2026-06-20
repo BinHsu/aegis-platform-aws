@@ -340,11 +340,11 @@ jobs:
           # an actionable message rather than reporting a clean teardown while the
           # account still bills (a stuck VPC keeps NAT/EIP/ENI charges live).
           if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
-            REMAIN_LB="$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null || echo '')"
+            if ! REMAIN_LB="$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: ELBv2 query error"; REMAIN_LB=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
           else
             REMAIN_LB=''
           fi
-          REMAIN_SG="$(aws ec2 describe-security-groups --region "$r" --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || echo '')"
+          if ! REMAIN_SG="$(aws ec2 describe-security-groups --region "$r" --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" --query 'SecurityGroups[].GroupId' --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: SG query error"; REMAIN_SG=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
           if [ -n "$REMAIN_LB" ] || [ -n "$REMAIN_SG" ]; then
             echo "::error::teardown left orphan AWS objects — VPC ${VPC} may be stuck (still billing). ALB(s): [${REMAIN_LB:-none}] · controller SG(s): [${REMAIN_SG:-none}]. Delete them (aws elbv2 delete-load-balancer / aws ec2 delete-security-group --group-id <id>) then re-dispatch infra-ops destroy-region for account ${{ inputs.account_id }} ${r}."
             [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1
