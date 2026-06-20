@@ -93,6 +93,16 @@ if not form_action:
 action = html.unescape(form_action.group(1))
 if action.startswith("/"):
     action = DOMAIN + action
+# Cognito's /login form action embeds the scope with literal spaces. Python 3.14+
+# rejects spaces in URL paths. Re-parse and re-encode the query string so the
+# request can be sent. This is purely cosmetic on the wire — the server receives
+# the same key=value pairs regardless of whether spaces are %20 or literals.
+_ap = urllib.parse.urlparse(action)
+_qs_fixed = urllib.parse.urlencode(
+    {k: v for k, v in urllib.parse.parse_qsl(_ap.query, keep_blank_values=True)},
+    quote_via=urllib.parse.quote,
+)
+action = urllib.parse.urlunparse(_ap._replace(query=_qs_fixed))
 
 hidden = dict(re.findall(r'<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"', login_html, re.I))
 hidden.update(dict(re.findall(r'<input[^>]+name="([^"]+)"[^>]+type="hidden"[^>]+value="([^"]*)"', login_html, re.I)))

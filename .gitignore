@@ -73,3 +73,10 @@ credentials
 # Layer-2 cloud-mutation hook transient state (incident 2026-06-06)
 .claude/.cloud-mutation-open
 .claude/.abandon-ok
+
+# Agent worktrees (scratch checkouts; the branches persist in .git regardless)
+.claude/worktrees/
+
+# Verify harness: downloaded tools and Python bytecode (not source)
+scripts/verify/bin/
+__pycache__/
