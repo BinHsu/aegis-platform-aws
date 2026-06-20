@@ -64,7 +64,7 @@ intent.
 | Run / understand the DR drill | [`docs/dr-plan.md`](docs/dr-plan.md) + [DR drill](#dr-drill) below |
 | Know what it costs to run | [`docs/finops.md`](docs/finops.md) — cost model + the ephemeral-destroy strategy |
 | See what was deliberately deferred | [`docs/tradeoffs.md`](docs/tradeoffs.md) |
-| Read the lessons from the last live run | [`docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md`](docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md) — staging E2E retrospective |
+| Read the lessons from the last live run | [`docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md`](docs/postmortems/RETRO-ws3-staging-e2e-2026-06-18.md) — WS3 staging E2E retrospective · WS4 dual-region staging (eu-central-1 + eu-west-1) validated end-to-end 2026-06-19, torn down to $0 (ephemeral by cost design) |
 
 ## Architecture
 
@@ -119,9 +119,13 @@ flowchart TB
 - **Workload IAM is self-owned** (ADR-07/09) — a deploy repo declares its identity
   intent as a Crossplane `WorkloadIdentity` claim; the platform's Composition
   renders the IAM role. As of ADR-21/22, **EKS Pod Identity now owns the engine's
-  identity** (Terraform-managed) so it tears down cleanly; Crossplane returns in
-  WS4 (v2) for workload-scoped cloud only. The platform tier owns no per-workload
-  IAM by hand.
+  identity** (Terraform-managed) so it tears down cleanly. **WS4 (2026-06-19)
+  validated this end-to-end on dual-region staging** (eu-central-1 + eu-west-1):
+  EKS Pod Identity drove engine S3 model-fetch with no IAM orphan at teardown;
+  Crossplane v2 + XBucket XRD reconciled a real S3 bucket and deleted cleanly. All
+  functional E2E passed both regions (gateway /healthz, engine model-fetch, OIDC
+  BVA, PKCE, audio→text transcription). Staging was torn down to $0 — ephemeral by
+  cost design. The platform tier owns no per-workload IAM by hand.
 - **ArgoCD per cluster** — each EKS cluster runs its own ArgoCD, eliminating a
   GitOps-layer single point of failure. Deploy repos are public, so ArgoCD clones
   them anonymously over HTTPS — no per-workload deploy keys.
