@@ -32,11 +32,12 @@ locals {
 # the populator needs and no more:
 #   - s3:ListBucket  — list the bucket to drive idempotency (does the CAS key
 #                      already exist before uploading?).
-#   - s3:HeadObject  — the per-object existence probe (`aws s3api head-object`)
+#   - s3:GetObject   — required for S3 HeadObject auth (idempotency check);
+#                      the per-object existence probe (`aws s3api head-object`)
 #                      the Job uses to skip an already-present model.
 #   - s3:PutObject   — upload the model artifact to the CAS key.
-# No GetObject, no DeleteObject, no bucket-policy/ACL verbs. This is the write
-# half of the read/write split; the engine keeps GetObject+ListBucket only.
+# No DeleteObject, no bucket-policy/ACL verbs. This is the write half of the
+# read/write split; the engine keeps GetObject+ListBucket only.
 data "aws_iam_policy_document" "model_write" {
   statement {
     sid       = "ListModelBucket"
