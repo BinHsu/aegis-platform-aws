@@ -17,6 +17,13 @@ This project uses [Semantic Versioning](https://semver.org/).
 - RETRO moved to `docs/postmortems/` — maintains permalink.
 - C4-L3 component diagram for `terraform/modules/regional-stack` in README Architecture section.
 
+### Changed
+- CI: renamed the apply self-reap flag `ALLOW_PARTIAL_APPLY` →
+  `REAP_ON_APPLY_FAILURE` with intuitive, safe-by-default semantics. `true` now
+  means "reap on failure"; unset/false KEEPS the partial stack (previously unset
+  silently ENABLED the destroy). Opt-in: unattended runs set the var `true`
+  (`fix(ci): intuitive reap-on-failure flag (was inverted ALLOW_PARTIAL_APPLY)`).
+
 ---
 
 ## [v0.2.3] — 2026-06-18
