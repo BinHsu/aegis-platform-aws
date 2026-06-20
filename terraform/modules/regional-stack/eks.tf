@@ -50,7 +50,13 @@ module "eks" {
   # take-home + stateless workload (greeter has no in-flight session state).
   eks_managed_node_groups = {
     default = {
-      ami_type       = "AL2023_x86_64_STANDARD"
+      # Graviton (arm64) node group. aegis-core engine/gateway publish arm64
+      # images to GHCR (release-onprem-image.yml); the platform addon stack is
+      # arm64-clean (verified: all helm charts + EKS addons multi-arch; the 3
+      # digest/tag-pinned helpers — alpine/k8s, public.ecr.aws/aws-cli,
+      # curlimages/curl — and the 3 Crossplane packages all resolve to
+      # manifest-list images carrying linux/arm64). t4g is ~20% cheaper than t3.
+      ami_type       = "AL2023_ARM_64_STANDARD"
       instance_types = [var.node_instance]
       capacity_type  = "SPOT"
 

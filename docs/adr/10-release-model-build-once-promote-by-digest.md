@@ -3,6 +3,11 @@
 ## Status
 
 Accepted (2026-06-05). Refines [ADR-03](03-delivery-cicd-gitops.md) (Delivery — CI/CD & GitOps).
+**Superseded for aegis-core by [ADR-23](23-image-distribution-public-ghcr-graviton.md)**
+(2026-06-20): aegis-core images distribute via public GHCR, not the shared AWS
+Deployment-account ECR. The build-once / promote-by-digest invariant is
+preserved by ADR-23; the registry topology is what changed. Greeter still follows
+this ADR (per-account ECR).
 
 ## Context
 
