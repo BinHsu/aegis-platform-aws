@@ -1,6 +1,11 @@
 provider "aws" {
   region = var.platform_region
 
+  # Adaptive retry absorbs S3 (and other) read-after-write eventual-consistency races on
+  # freshly-created resources — e.g. the fresh model bucket tag read that flaked eu-west-1 (issue #4).
+  retry_mode  = "adaptive"
+  max_retries = 30
+
   default_tags {
     tags = {
       Project    = var.project_tag
@@ -17,6 +22,9 @@ provider "aws" {
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
+
+  retry_mode  = "adaptive"
+  max_retries = 30
 
   default_tags {
     tags = {
