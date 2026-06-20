@@ -301,10 +301,14 @@ else
               --record-type A \
               --query 'RecordData' --output text 2>&1)" || dns_answer="ERROR"
             log "re-enabling health check $hc_id..."
+            reenable_rc=0
             aws_ route53 update-health-check \
-              --health-check-id "$hc_id" --no-disabled >/dev/null 2>&1 || true
+              --health-check-id "$hc_id" --no-disabled >/dev/null 2>&1 || reenable_rc=$?
             if [[ "$dns_answer" == ERROR* ]]; then
               record "route53-failover-sim" FAIL "test-dns-answer failed: $dns_answer"
+            elif [ "$reenable_rc" -ne 0 ]; then
+              record "route53-failover-sim" FAIL \
+                "CRITICAL: failed to re-enable health check $hc_id (rc=$reenable_rc) — manual intervention required"
             else
               record "route53-failover-sim" PASS \
                 "failover sim: disabled HC $hc_id, DNS answered: $dns_answer, HC re-enabled"
