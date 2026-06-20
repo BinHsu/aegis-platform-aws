@@ -8,7 +8,7 @@
 # (gh-tf-apply-platform, gh-tf-destroy-platform, the read-only plan role, the
 # greeter ECR push role). When they lived in envs/platform they were destroyed
 # by `destroy-platform` — and that produced four live consequences on
-# 2026-06-12 (run record: docs/runbooks/2026-06-12-joint-strike.md §G):
+# 2026-06-12 (decision: ADR-13, docs/adr/13-ci-iam-roles-survive-teardown.md):
 #   1. Self-delete hazard: destroy-platform runs AS gh-tf-destroy-platform, so
 #      terraform deleting that role mid-run invalidates the live STS session.
 #      Worked around by a pre-destroy `state rm` (PR #64) — which then ...

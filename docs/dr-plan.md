@@ -68,7 +68,7 @@ checklist to arm dual-region at launch.
 5. **Populate the new region's model bucket** — the model store is per-region.
    Upload the model artifacts to `aegis-core-models-<acct>-eu-west-1`; an empty
    bucket fails the engine's model-fetch init loud.
-6. **Verify** — follow `docs/runbooks/ws3-prod-dual-region-verification.md`:
+6. **Verify** — follow [`docs/runbooks/2026-06-20-dual-region-full-verification.md`](runbooks/2026-06-20-dual-region-full-verification.md):
    confirm two latency records under `aegis-api.prod.aws.binhsu.org` (distinct
    `set-identifier`s), then run the failover drill (kill one region, confirm the
    other serves).

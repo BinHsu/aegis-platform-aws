@@ -124,7 +124,7 @@ run, the exact gaps a unified onboarding declaration removes:
   GitHub variables set post-apply by hand.
 - **frontend edge IaC** — only landed during WS3 (`9ae8961`), discovered as a missing piece.
 
-The **first prod dual-region cold start** (2026-06-18 go-live, `docs/runbooks/ws3-prod-go-live-execution.md`)
+The **first prod dual-region cold start** (2026-06-18 go-live, [`docs/runbooks/2026-06-20-dual-region-full-verification.md`](runbooks/2026-06-20-dual-region-full-verification.md))
 added a second class — not workload-sync gaps but **platform bring-up ordering** gaps, each
 discovered mid-run on a fresh account:
 

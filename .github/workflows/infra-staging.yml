@@ -4,7 +4,7 @@ name: infra-staging
 # staging account at its pin (`main` = HEAD). Ephemeral by cost design: staging
 # clusters carry no `keep` tag, so the A11 ttl-reaper auto-destroys them after
 # TTL_HOURS (REAPER_AUTODESTROY=true). version-gate is warn-only here (gate_blocks=false).
-# See docs/runbooks/2026-06-12-joint-strike.md §W3.
+# See ADR-11 (docs/adr/11-account-dimension-single-source-of-truth.md).
 
 on:
   push:

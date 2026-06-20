@@ -31,9 +31,7 @@ Until this ADR, all four CI IAM roles lived in `terraform/envs/platform`
 
 `destroy-platform` (infra-ops.yml) runs `terraform destroy` against the platform
 state **as `gh-tf-destroy-platform`**, and that state contained the roles
-themselves. The 2026-06-12 joint-strike window
-([runbook §G](../runbooks/2026-06-12-joint-strike.md)) drove this to four live
-failures:
+themselves. The 2026-06-12 joint-strike window drove this to four live failures:
 
 1. **Self-delete hazard.** `terraform destroy` would delete `gh-tf-destroy-platform`
    (the role it is running as) mid-run, invalidating the live STS session →
