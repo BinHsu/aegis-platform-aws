@@ -238,14 +238,13 @@ clean-bin:
 clean-backend:
 	rm -f $(BACKEND_HCL)
 
-# Materialize backend.hcl from bootstrap state if missing. With workspaces the
-# state lives under terraform.tfstate.d/<ENV>/ (issue #90), so require ENV and
-# check the per-workspace state file. The legacy default-workspace state file
-# (terraform.tfstate) is also accepted for backward compat with a pre-workspace
-# bootstrap that has not been re-applied yet.
+# Materialize backend.hcl from bootstrap state if missing. Requires ENV and the
+# per-workspace state file (terraform.tfstate.d/<ENV>/terraform.tfstate). The
+# legacy default-workspace state file is no longer accepted — it causes an empty
+# workspace selection and an opaque `terraform output` failure (issue #90).
 $(BACKEND_HCL):
 	@test -n "$(ENV)" || (echo "ERROR: ENV=<staging|prod> required to materialize $(BACKEND_HCL) from bootstrap state (issue #90)"; exit 1)
-	@if [ ! -f $(TF_BOOTSTRAP)/terraform.tfstate.d/$(ENV)/terraform.tfstate ] && [ ! -f $(TF_BOOTSTRAP)/terraform.tfstate ]; then \
+	@if [ ! -f $(TF_BOOTSTRAP)/terraform.tfstate.d/$(ENV)/terraform.tfstate ]; then \
 	  echo "ERROR: bootstrap state for ENV=$(ENV) missing — run 'make bootstrap ENV=$(ENV)' first."; \
 	  exit 1; \
 	fi
