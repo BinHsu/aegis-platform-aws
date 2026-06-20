@@ -291,17 +291,19 @@ jobs:
         # Only after a FAILED apply that actually started (a failed apply can leave
         # billable resources).
         #
-        # READ THE FLAG CAREFULLY — the semantics are INVERTED from intuition:
-        #   ALLOW_PARTIAL_APPLY = 'true'  -> reap is OFF: KEEP the partial stack
-        #                                    (for debugging / a live in-place fix).
-        #   ALLOW_PARTIAL_APPLY != 'true' (false / unset) -> reap is ON: this step
-        #                                    runs and DESTROYS the partial stack.
-        # So "false" does NOT mean "do not reap" — false is the value that ENABLES
-        # the destroy. To keep a failed stack alive for a live fix, set it TRUE
-        # BEFORE the run. (2026-06-18 prod dual-region: the run was on false, a
-        # failed apply-regional auto-reaped, and only a fast `gh run cancel` saved
-        # the two live EKS clusters.)
-        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY != 'true' }}
+        # FLAG: REAP_ON_APPLY_FAILURE — intuitive, opt-IN, safe-by-default:
+        #   REAP_ON_APPLY_FAILURE = 'true'        -> reap is ON: this step runs and
+        #                                            DESTROYS the partial stack.
+        #   REAP_ON_APPLY_FAILURE != 'true' (false / unset) -> reap is OFF: KEEP the
+        #                                            partial stack (the SAFE default).
+        # The name now matches the behaviour: "true" means "reap on failure", and an
+        # unset/false flag KEEPS the stack. Unattended runs that must not leave a
+        # billable partial stack opt IN by setting REAP_ON_APPLY_FAILURE=true.
+        # (Replaces the inverted ALLOW_PARTIAL_APPLY, whose default — unset — silently
+        # ENABLED the destroy: 2026-06-18 prod dual-region ran on that default, a
+        # failed apply-regional auto-reaped, and only a fast `gh run cancel` saved the
+        # two live EKS clusters. Default is now keep-on-failure.)
+        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.REAP_ON_APPLY_FAILURE == 'true' }}
         working-directory: terraform/envs/regional
         # Surface workflow expressions through env, not direct ${{ }} interpolation
         # into the shell, so an unexpected value can never break out of the string
@@ -312,7 +314,7 @@ jobs:
           REGION:     ${{ matrix.region }}
         run: |
           echo "::error::apply failed for ${REGION} (account ${ACCOUNT_ID})"
-          echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
+          echo "::warning::REAP_ON_APPLY_FAILURE=true — self-reaping the partial stack (unset/false keeps it)"
           # Ephemeral-cluster teardown — the SAME root-fix as infra-ops
           # destroy-region (2026-06-11): a plain `terraform destroy` here deadlocks
           # on kyverno's fail-closed webhooks/finalizers, leaving the cluster
@@ -378,11 +380,11 @@ jobs:
             echo "::error::self-reap destroy ALSO failed — resources may STILL BE BILLING. Dispatch infra-ops destroy-region (account ${ACCOUNT_ID}, ${REGION}) NOW; ttl-reaper + budget are only the backstops."
             exit 1
           fi
-      - name: partial stack kept (ALLOW_PARTIAL_APPLY)
-        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.ALLOW_PARTIAL_APPLY == 'true' }}
+      - name: partial stack kept (REAP_ON_APPLY_FAILURE unset/false — safe default)
+        if: ${{ failure() && steps.apply.outputs.apply_started == 'true' && vars.REAP_ON_APPLY_FAILURE != 'true' }}
         env:
           ACCOUNT_ID: ${{ inputs.account_id }}
           REGION:     ${{ matrix.region }}
         run: |
           echo "::error::apply failed for ${REGION} (account ${ACCOUNT_ID})"
-          echo "::warning::ALLOW_PARTIAL_APPLY=true — leaving the partial stack (it may be billing)."
+          echo "::warning::REAP_ON_APPLY_FAILURE is unset/false (safe default) — leaving the partial stack (it may be billing). Set REAP_ON_APPLY_FAILURE=true to auto-reap on failure, or dispatch infra-ops destroy-region."

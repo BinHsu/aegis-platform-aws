@@ -226,20 +226,23 @@ jobs:
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
             -backend-config="key=regional/${{ matrix.region }}/terraform.tfstate" \
             -backend-config="encrypt=true"
-          # A6: self-reap on failed apply. A failed apply can leave billable
+          # A6: opt-IN self-reap on failed apply. A failed apply can leave billable
           # resources (the incident: EKS created, apply then failed on kyverno).
-          # Destroy the partial stack unless ALLOW_PARTIAL_APPLY=true (keep it for
-          # debugging). Re-raise the failure either way. The kyverno teardown
-          # deadlock that this would have hit is fixed by A4 (wait=false +
-          # pre-destroy webhook cleanup).
+          # REAP_ON_APPLY_FAILURE is intuitive, opt-in, safe-by-default:
+          #   'true'              -> reap is ON: destroy the partial stack.
+          #   != 'true' (unset/false) -> reap is OFF: KEEP it (the SAFE default).
+          # Unattended runs that must not leave a billable partial stack set
+          # REAP_ON_APPLY_FAILURE=true. Re-raise the failure either way. The kyverno
+          # teardown deadlock that the reap path would have hit is fixed by A4
+          # (wait=false + pre-destroy webhook cleanup).
           if ! terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"; then
             echo "::error::apply failed for ${{ matrix.region }}"
-            if [ "${{ vars.ALLOW_PARTIAL_APPLY }}" = "true" ]; then
-              echo "::warning::ALLOW_PARTIAL_APPLY=true — leaving the partial stack for debugging (it may be billing)."
-            else
-              echo "::warning::self-reaping the partial stack (set ALLOW_PARTIAL_APPLY=true to keep it)"
+            if [ "${{ vars.REAP_ON_APPLY_FAILURE }}" = "true" ]; then
+              echo "::warning::REAP_ON_APPLY_FAILURE=true — self-reaping the partial stack (unset/false keeps it)"
               terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
                 || echo "::error::self-reap destroy ALSO failed — resources may still be billing; ttl-reaper + budget are the backstops."
+            else
+              echo "::warning::REAP_ON_APPLY_FAILURE is unset/false (safe default) — leaving the partial stack (it may be billing). Set REAP_ON_APPLY_FAILURE=true to auto-reap, or dispatch infra-ops destroy-region."
             fi
             exit 1
           fi
