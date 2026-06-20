@@ -285,20 +285,27 @@ After PR #104 merges, `infra-staging` fires. Watch it green:
 gh run watch --repo BinHsu/aegis-platform-aws
 ```
 
-Poll at ~1-minute cadence (the run creates two EKS nodes and an ALB). If the
-apply fails, it self-reaps (unless `ALLOW_PARTIAL_APPLY=true` — that var was set
-`true` during the 2026-06-18 session; **confirm it is back to `false`** before
-this run):
+Poll at ~1-minute cadence (the run creates two EKS nodes and an ALB). On a failed
+apply the partial stack is **kept by default** (safe default); self-reap is
+opt-in via `REAP_ON_APPLY_FAILURE=true`. For an *unattended* prod run you want the
+reap ON so a failed apply does not bill indefinitely — **confirm the var is
+`true`** before this run:
 
 ```bash
-gh variable get ALLOW_PARTIAL_APPLY --repo BinHsu/aegis-platform-aws
+gh variable get REAP_ON_APPLY_FAILURE --repo BinHsu/aegis-platform-aws
 ```
 
-If it is still `true`, set it to `false` first:
+If it is unset or `false`, enable the reap first (unattended prod):
 
 ```bash
-gh variable set ALLOW_PARTIAL_APPLY --repo BinHsu/aegis-platform-aws --body "false"
+gh variable set REAP_ON_APPLY_FAILURE --repo BinHsu/aegis-platform-aws --body "true"
 ```
+
+> NOTE (flag rename): `REAP_ON_APPLY_FAILURE` replaces the old inverted
+> `ALLOW_PARTIAL_APPLY`. Semantics flipped to be intuitive: `true` now means
+> "reap on failure" (old flag's `false`), and the unset/false default now KEEPS
+> the stack (safe). For attended iteration leave it unset/false so a transient
+> blip does not auto-destroy a healthy cluster.
 
 Once the staging apply is green, immediately tear down staging (do not leave it
 running — it bills):
@@ -447,7 +454,7 @@ gh run view <run-id>   # shows the environment approval gate
 - `apply-platform` is green (Cognito pool, model bucket policy, Route 53 PROD zone, ECR + replication configured).
 - The Cloudflare NS delegation for `prod.aws.binhsu.org` resolves (§7).
 - `REGISTRIES_JSON` has been updated (§2, empty `policy_arns`).
-- `ALLOW_PARTIAL_APPLY` is `false` — self-reap is live.
+- `REAP_ON_APPLY_FAILURE` is `true` — self-reap is live (unattended prod run).
 
 **[YOU] APPROVE** the `prod-apply-gated` gate for each region:
 
@@ -471,7 +478,7 @@ false`), so the total wall time is the slower region's time, not 2x.
 
 **If a region apply fails:**
 
-- With `ALLOW_PARTIAL_APPLY=false`: the self-reap destroys the partial stack.
+- With `REAP_ON_APPLY_FAILURE=true`: the self-reap destroys the partial stack.
   Poll the destroy leg of the same run to confirm it completes.
 - If self-reap also fails: dispatch `infra-ops` `destroy-region` for that
   account + region immediately. Do not leave a half-applied stack running.

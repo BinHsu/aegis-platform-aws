@@ -378,8 +378,8 @@ real one.
 Greeter first (the light case: no identity/edge/cloud — lowest blast radius), prove the
 end-to-end onboard from a single `XService`, then migrate `aegis-core` (identity + edge + model
 bucket). Retire the per-workload pieces of `REGISTRIES_JSON` only after both run green on
-staging. Re-enable platform self-reap (disabled during attended WS3 iteration,
-`ALLOW_PARTIAL_APPLY=true`) only once unattended onboarding is proven.
+staging. Enable platform self-reap (`REAP_ON_APPLY_FAILURE=true`; opt-in, off by
+default during attended iteration) only once unattended onboarding is proven.
 
 ---
 
