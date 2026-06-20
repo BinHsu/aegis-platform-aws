@@ -11,6 +11,11 @@ terraform {
   # Migrating bootstrap's own state into that same bucket would create a
   # chicken-and-egg cycle.
   #
+  # Per-account isolation is via Terraform WORKSPACES (issue #90): the Makefile
+  # runs `terraform workspace select -or-create <ENV>` so each account's local
+  # state lives under terraform.tfstate.d/<ENV>/ — no manual -state=<file>
+  # juggling when cold-starting a second account.
+  #
   # No DynamoDB lock table needed — TF 1.11+ supports native S3 locking
   # via PutObject conditional writes (use_lockfile=true in each downstream
   # backend block). DynamoDB-based locking is deprecated upstream.

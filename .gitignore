@@ -27,6 +27,10 @@ vendor/
 **/.terraform/
 *.tfstate
 *.tfstate.*
+# Terraform workspace local-state dir (bootstrap per-account workspaces, issue #90).
+# The per-workspace state files match *.tfstate above; ignore the dir explicitly.
+terraform.tfstate.d/
+**/terraform.tfstate.d/
 # Lambda zip built by data.archive_file at plan time (cognito-lambda.tf) — a
 # derived artifact, not source. The source lives in lambda/pretoken/.
 terraform/envs/platform/lambda/pretoken.zip

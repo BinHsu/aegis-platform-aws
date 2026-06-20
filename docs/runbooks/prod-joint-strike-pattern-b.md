@@ -153,7 +153,7 @@ wait_green "$LZ" terraform-apply-baseline.yml
 aws iam list-open-id-connect-providers --profile aegis-prod-admin   # read-only verify
 
 # 2. Platform bootstrap — recommend LOCAL (ephemeral-runner loses LOCAL state on failure)
-stop "run 'make bootstrap' + 'make regenerate-backend' locally in aegis-platform-aws; capture bucket_name + region"
+stop "run 'make bootstrap ENV=prod' + 'make regenerate-backend ENV=prod' locally in aegis-platform-aws (ENV selects the per-account workspace, issue #90); capture bucket_name + region"
 
 # 3. SEAM — NEVER automate (output->secret wiring + the BOOTSTRAP_COMPLETE gate)
 stop "gh secret set TFSTATE_BUCKET/TFSTATE_REGION/AWS_INFRA_APPLY_ROLE_ARN/OPERATOR_PRINCIPAL_ARN/GH_DEPLOY_KEY_PAT + GRAFANA_* ; gh variable set BOOTSTRAP_COMPLETE=true (aegis-platform-aws)"

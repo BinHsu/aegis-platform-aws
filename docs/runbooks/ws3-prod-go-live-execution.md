@@ -97,8 +97,8 @@ export AWS_SECRET_ACCESS_KEY=$(echo "$creds" | jq -r .SecretAccessKey)
 export AWS_SESSION_TOKEN=$(echo "$creds" | jq -r .SessionToken)
 aws sts get-caller-identity --query Arn --output text   # confirm 506221082337
 cd /Users/bin.hsu/Documents/aegis-platform-aws
-make bootstrap    # uses local terraform.tfstate (already wired to prod from 2026-06-17)
-make regenerate-backend
+make bootstrap ENV=prod    # per-account workspace (issue #90): state under terraform.tfstate.d/prod/
+make regenerate-backend ENV=prod
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 ```
 

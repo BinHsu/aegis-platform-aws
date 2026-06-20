@@ -18,6 +18,11 @@ This project uses [Semantic Versioning](https://semver.org/).
 - C4-L3 component diagram for `terraform/modules/regional-stack` in README Architecture section.
 
 ### Changed
+- Bootstrap env now uses a Terraform **workspace per account** keyed by `ENV`
+  (`make bootstrap ENV=staging|prod`), so each account's local state is isolated
+  under `terraform.tfstate.d/<ENV>/` — removes the manual `-state=<file>`
+  juggling on multi-account cold-start (#90). Regional + platform are already
+  per-account S3 backends and are unchanged.
 - CI: renamed the apply self-reap flag `ALLOW_PARTIAL_APPLY` →
   `REAP_ON_APPLY_FAILURE` with intuitive, safe-by-default semantics. `true` now
   means "reap on failure"; unset/false KEEPS the partial stack (previously unset

@@ -37,6 +37,25 @@ TF_BOOTSTRAP := terraform/envs/bootstrap
 TF_PLATFORM  := terraform/envs/platform
 TF_REGIONAL  := terraform/envs/regional
 
+# ENV selects the bootstrap Terraform WORKSPACE (issue #90). The bootstrap env
+# stays on LOCAL state by design (chicken-and-egg: it creates the bucket the
+# remote backends use). With a single default workspace, a second account's
+# cold-start clobbered the first account's local state, forcing manual
+# `-state=<file>` juggling. A workspace per env gives each account an isolated
+# local state file under `terraform.tfstate.d/<ENV>/` — no juggling.
+#   make bootstrap ENV=staging   -> workspace "staging"
+#   make bootstrap ENV=prod      -> workspace "prod"
+# Required (no default) so an operator can never silently bootstrap the wrong
+# account into the wrong workspace.
+ENV ?=
+# Select (creating on first use) the bootstrap workspace named by ENV. Run AFTER
+# `terraform init` and BEFORE any apply/output so state reads/writes hit the
+# right per-account file. Fails fast if ENV is unset.
+define BOOTSTRAP_WS
+	@test -n "$(ENV)" || (echo "ERROR: ENV=<staging|prod> required (selects the bootstrap workspace per account — issue #90)"; exit 1)
+	cd $(TF_BOOTSTRAP) && terraform workspace select -or-create "$(ENV)"
+endef
+
 # Enabled region list (jq selects .value.enabled = true). Evaluated lazily
 # inside recipes — chicken-and-egg: file may not exist on a fresh clone
 # until regions.auto.tfvars.json is created.
@@ -55,8 +74,8 @@ help:
 	@echo "  lint                   tflint --recursive --chdir=terraform/"
 	@echo "  sec                    trivy config terraform/ (MEDIUM+)"
 	@echo "  crossplane-validate    offline XBucket composition gate (crossplane render + resource validate; WS4 Axis A)"
-	@echo "  bootstrap              Apply bootstrap (one-time; LOCAL state; creates remote backend)"
-	@echo "  regenerate-backend     Re-emit ./backend.hcl from bootstrap outputs (run after bootstrap)"
+	@echo "  bootstrap ENV=X        Apply bootstrap for account X (one-time; LOCAL state, per-env workspace; creates remote backend)"
+	@echo "  regenerate-backend ENV=X  Re-emit ./backend.hcl from bootstrap outputs for env X (run after bootstrap)"
 	@echo "  platform               Apply platform env (slow lifecycle; survives DR drill)"
 	@echo "  regional               Apply regional env for ALL enabled regions (loops)"
 	@echo "  regional-one REGION=X  Apply regional env for ONE region X"
@@ -113,12 +132,16 @@ crossplane-validate:
 # ----------------------------------------------------------------------------
 
 bootstrap:
-	cd $(TF_BOOTSTRAP) && terraform init && terraform apply -var-file=$(TFVARS_JSON)
-	@$(MAKE) regenerate-backend
+	@test -n "$(ENV)" || (echo "ERROR: ENV=<staging|prod> required (selects the bootstrap workspace per account — issue #90)"; exit 1)
+	cd $(TF_BOOTSTRAP) && terraform init
+	$(BOOTSTRAP_WS)
+	cd $(TF_BOOTSTRAP) && terraform apply -var-file=$(TFVARS_JSON)
+	@$(MAKE) regenerate-backend ENV=$(ENV)
 
 regenerate-backend:
+	$(BOOTSTRAP_WS)
 	@cd $(TF_BOOTSTRAP) && terraform output -raw backend_hcl > $(BACKEND_HCL)
-	@echo ">>> $(BACKEND_HCL) regenerated:"
+	@echo ">>> $(BACKEND_HCL) regenerated (workspace $(ENV)):"
 	@cat $(BACKEND_HCL)
 
 platform: $(BACKEND_HCL)
@@ -215,10 +238,14 @@ clean-bin:
 clean-backend:
 	rm -f $(BACKEND_HCL)
 
-# Materialize backend.hcl from bootstrap state if missing.
+# Materialize backend.hcl from bootstrap state if missing. Requires ENV and the
+# per-workspace state file (terraform.tfstate.d/<ENV>/terraform.tfstate). The
+# legacy default-workspace state file is no longer accepted — it causes an empty
+# workspace selection and an opaque `terraform output` failure (issue #90).
 $(BACKEND_HCL):
-	@if [ ! -f $(TF_BOOTSTRAP)/terraform.tfstate ]; then \
-	  echo "ERROR: bootstrap state missing — run 'make bootstrap' first."; \
+	@test -n "$(ENV)" || (echo "ERROR: ENV=<staging|prod> required to materialize $(BACKEND_HCL) from bootstrap state (issue #90)"; exit 1)
+	@if [ ! -f $(TF_BOOTSTRAP)/terraform.tfstate.d/$(ENV)/terraform.tfstate ]; then \
+	  echo "ERROR: bootstrap state for ENV=$(ENV) missing — run 'make bootstrap ENV=$(ENV)' first."; \
 	  exit 1; \
 	fi
-	@$(MAKE) regenerate-backend
+	@$(MAKE) regenerate-backend ENV=$(ENV)

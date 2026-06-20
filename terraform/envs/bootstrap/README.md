@@ -4,7 +4,16 @@ Creates the S3 bucket that the `platform/` and `regional/` envs use as their rem
 
 ## The seed layer — local state, break-glass-applied, cold-start-from-zero
 
-This env's own state is **local** (gitignored `terraform.tfstate`) by design: migrating bootstrap state into the very bucket it provisions would create a chicken-and-egg cycle.
+This env's own state is **local** by design: migrating bootstrap state into the very bucket it provisions would create a chicken-and-egg cycle.
+
+**Per-account isolation via Terraform workspaces (issue #90).** Bootstrap is run once per account (staging, prod, …). A single default-workspace local state would let a second account's `make bootstrap` clobber the first account's state, forcing manual `-state=<file>` juggling (hit during the 2026-06-17 WS3 bring-up). Instead, each account gets its own **workspace** keyed by env, so its local state lives at `terraform.tfstate.d/<ENV>/terraform.tfstate` — isolated, no juggling. Always pass `ENV`:
+
+```bash
+make bootstrap ENV=staging   # workspace "staging" → terraform.tfstate.d/staging/
+make bootstrap ENV=prod      # workspace "prod"    → terraform.tfstate.d/prod/
+```
+
+The Makefile runs `terraform workspace select -or-create <ENV>` after `terraform init` and before any apply/output, so every state read/write hits the correct per-account file. `make regenerate-backend ENV=<env>` selects the same workspace before emitting `backend.hcl`.
 
 Only the **state bucket** carries `lifecycle { prevent_destroy = true }` — losing it loses every downstream env's state (irreversible). The four CI roles (`iam-seed.tf`, ADR-13) carry **no** such guard: they are cheaply, idempotently recreatable, so a full teardown may delete them and a later seed apply restores them from zero.
 
@@ -43,16 +52,18 @@ Values marked **deterministic** can be derived from your account ID without a cl
 
 ### Cold-start order
 
-1. **Operator (break-glass / admin principal), local laptop** — run `make bootstrap`. This creates the state bucket and all four CI roles in one apply (`iam-seed.tf`). Precondition: the GitHub OIDC provider row above is satisfied.
-2. **Operator, local** — run `make regenerate-backend` to emit `./backend.hcl` from bootstrap outputs. Downstream envs (`platform`/`regional`) use this file on `terraform init`.
+1. **Operator (break-glass / admin principal), local laptop** — run `make bootstrap ENV=<staging|prod>`. This selects the per-account workspace (issue #90), then creates the state bucket and all four CI roles in one apply (`iam-seed.tf`). Precondition: the GitHub OIDC provider row above is satisfied. Run once per account, each with its own `ENV`.
+2. **Operator, local** — run `make regenerate-backend ENV=<staging|prod>` to emit `./backend.hcl` from that workspace's bootstrap outputs. Downstream envs (`platform`/`regional`) use this file on `terraform init`.
 3. **Operator** — set all the GitHub secrets/variables above in your fork's Actions settings. Then set `BOOTSTRAP_COMPLETE = true` (the variable) to hand the account to CI.
 4. **CI (no operator action)** — push to main; `infra-plan` assumes `aegis-platform-aws-ci` and runs a read-only plan. Green plan confirms the OIDC trust is wired correctly end-to-end.
 
 ## Usage
 
 ```bash
-make bootstrap   # local-state apply (reads regions.auto.tfvars.json for platform_region)
+make bootstrap ENV=staging   # per-workspace local-state apply (reads regions.auto.tfvars.json for platform_region)
 ```
+
+`ENV` is **required** — it names the Terraform workspace (one per account, issue #90). Omitting it errors out rather than risk bootstrapping into the wrong account's state.
 
 After apply, the Makefile reads the `backend_hcl` output and writes a `backend.hcl` file at repo root (gitignored). Downstream envs then run `terraform init -backend-config=$(ROOT)/backend.hcl`.
 
