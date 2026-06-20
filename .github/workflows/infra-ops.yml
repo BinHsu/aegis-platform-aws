@@ -433,6 +433,40 @@ jobs:
           # — no state-rm needed, no orphan, no chicken-egg. The state-rm lines
           # were removed deliberately; do not re-add them.
 
+          # ── #148 pre-destroy: sweep external-dns orphan records from the zone.
+          # external-dns (modules/regional-stack/external-dns.tf) runs in the
+          # regional clusters, which destroy-region has already deleted — so it
+          # never reconciled its records away (policy=sync cleans on a live
+          # Ingress delete, not on an abrupt cluster teardown). The aegis-api
+          # A/AAAA latency records and their `edns-` TXT registry entries are left
+          # behind, and `aws_route53_zone.main` cannot delete a non-empty zone
+          # (HostedZoneNotEmpty) — the sole cause of destroy-platform failures
+          # this cycle (was manually cleaned by hand each teardown). These orphans
+          # are unambiguously external-dns's: they carry a SetIdentifier (latency
+          # routing — NO terraform-managed record in this zone uses one; the only
+          # TF records here are frontend_alias + frontend_cert_validation, both
+          # plain) OR the `edns-` txtPrefix (external-dns.tf). Sweep exactly those
+          # and leave terraform to delete its own records normally.
+          ZID="$(terraform output -raw zone_id 2>/dev/null || true)"
+          if [ -n "$ZID" ]; then
+            aws route53 list-resource-record-sets --hosted-zone-id "$ZID" \
+              --query "ResourceRecordSets[?SetIdentifier != null || starts_with(Name, 'edns-')]" \
+              --output json > /tmp/edns-orphans.json
+            ORPHANS="$(jq 'length' /tmp/edns-orphans.json)"
+            if [ "${ORPHANS:-0}" -gt 0 ]; then
+              jq '{Changes: [.[] | {Action: "DELETE", ResourceRecordSet: .}]}' \
+                /tmp/edns-orphans.json > /tmp/edns-delete-batch.json
+              echo "::notice::#148 pre-destroy: deleting ${ORPHANS} external-dns orphan record(s) from zone ${ZID}"
+              aws route53 change-resource-record-sets --hosted-zone-id "$ZID" \
+                --change-batch file:///tmp/edns-delete-batch.json \
+                || echo "::warning::#148 pre-destroy sweep failed — terraform destroy may hit HostedZoneNotEmpty; delete the records manually (aws route53 change-resource-record-sets) and re-dispatch destroy-platform"
+            else
+              echo "::notice::#148 pre-destroy: no external-dns orphan records in zone ${ZID} — nothing to sweep"
+            fi
+          else
+            echo "::notice::#148 pre-destroy: no zone_id in state (zone already gone or not yet applied) — skipping orphan sweep"
+          fi
+
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/regions.auto.tfvars.json"
 
       # Reset BOOTSTRAP_COMPLETE after a successful destroy-platform.
