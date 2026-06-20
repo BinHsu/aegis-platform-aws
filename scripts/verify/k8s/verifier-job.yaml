@@ -25,7 +25,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: aegis-verify-${JOB_SUFFIX:-$(date +%s)}
+  name: aegis-verify-${JOB_SUFFIX}
   namespace: aegis-core
   labels:
     app.kubernetes.io/name: aegis-verify
@@ -86,6 +86,10 @@ spec:
             - name: fixture
               mountPath: /opt/fixture
               readOnly: true
+            # in-cluster-verify.py uses tempfile.TemporaryDirectory(); the root
+            # filesystem is read-only, so /tmp must be a writable emptyDir.
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: "100m"
@@ -99,12 +103,14 @@ spec:
             capabilities:
               drop: ["ALL"]
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: proto
           configMap:
-            name: "${PROTO_CONFIGMAP:-aegis-proto}"
+            name: "${PROTO_CONFIGMAP}"
         - name: fixture
           configMap:
-            name: "${PCM_CONFIGMAP:-aegis-pcm-fixture}"
+            name: "${PCM_CONFIGMAP}"
             items:
               - key: fixture.pcm
                 path: fixture.pcm

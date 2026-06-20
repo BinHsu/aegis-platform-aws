@@ -65,20 +65,32 @@ GRPCURL = os.environ.get("GRPCURL", "grpcurl")
 results: list[tuple[str, str, str]] = []  # (face, PASS|FAIL, detail)
 
 
+# Result statuses. SKIP is non-failing (an optional check whose preconditions
+# are absent); only FAIL fails the overall run.
+PASS = "PASS"
+FAIL = "FAIL"
+SKIP = "SKIP"
+
+
 def record(face: str, status: str, detail: str) -> None:
     results.append((face, status, detail))
-    indicator = "PASS" if status == "PASS" else "FAIL"
-    print(f"  [{indicator}] {face}: {detail}", flush=True)
+    print(f"  [{status}] {face}: {detail}", flush=True)
 
 
 def bva_probe(case: str, token: str | None) -> str | None:
-    """Return grpc-status string or None on socket error."""
+    """Return the grpc-status string, or None on transport failure.
+
+    A transport error (connection refused, timeout, reset) is NOT an auth
+    result — it must never be mistaken for "auth succeeded". We return None so
+    callers reject it explicitly. Non-transport exceptions propagate (a bug in
+    the probe should surface, not be silently swallowed into a pass).
+    """
     try:
         body = frame(b"")
         _, hdrs, trailers, _ = gw_run(GATEWAY_HOST, GATEWAY_PORT, body, token)
         return trailers.get("grpc-status") or hdrs.get("grpc-status")
-    except Exception as exc:
-        return f"ERROR:{exc}"
+    except (OSError, TimeoutError):
+        return None
 
 
 def get_id_token(username: str, password: str, work_dir: str) -> str | None:
@@ -234,10 +246,12 @@ if POOL and CLIENT_ID and COGNITO_DOMAIN:
     if _valid_token:
         # valid face
         gs = bva_probe("valid", f"Bearer {_valid_token}")
-        if gs is not None and gs != "16":
-            record("F3-bva-valid", "PASS", f"grpc-status={gs} (passed auth)")
+        if gs is None or (isinstance(gs, str) and gs.startswith("ERROR")):
+            record("F3-bva-valid", FAIL, f"transport error / no grpc-status (gs={gs!r})")
+        elif gs != "16":
+            record("F3-bva-valid", PASS, f"grpc-status={gs} (passed auth)")
         else:
-            record("F3-bva-valid", "FAIL", f"grpc-status={gs}")
+            record("F3-bva-valid", FAIL, f"grpc-status={gs}")
         # tampered face
         try:
             tampered_tok = tamper(_valid_token)
@@ -259,12 +273,14 @@ else:
 print("\n── F6: RAG-reachable (ListCorpora) ──")
 if _valid_token:
     gs = bva_probe("valid", f"Bearer {_valid_token}")
-    if gs is not None and gs != "16":
-        record("F6-rag-reachable", "PASS", f"grpc-status={gs} (gateway reached handler)")
+    if gs is None or (isinstance(gs, str) and gs.startswith("ERROR")):
+        record("F6-rag-reachable", FAIL, f"transport error / no grpc-status (gs={gs!r})")
+    elif gs != "16":
+        record("F6-rag-reachable", PASS, f"grpc-status={gs} (gateway reached handler)")
     else:
-        record("F6-rag-reachable", "FAIL", f"grpc-status={gs}")
+        record("F6-rag-reachable", FAIL, f"grpc-status={gs}")
 else:
-    record("F6-rag-reachable", "FAIL", "no valid token available (see F3)")
+    record("F6-rag-reachable", FAIL, "no valid token available (see F3)")
 
 # ── F7: Populator-complete (model bucket non-empty) ────────────────────────────
 print("\n── F7: Populator-complete (S3 model bucket) ──")
@@ -284,7 +300,7 @@ if MODEL_BUCKET and AWS_REGION:
         record("F7-populator-done", "FAIL",
                f"bucket={MODEL_BUCKET} count={count_str!r} rc={rc} err={err[:120]!r}")
 else:
-    record("F7-populator-done", "FAIL", "MODEL_BUCKET or AWS_REGION not set — skipped")
+    record("F7-populator-done", SKIP, "MODEL_BUCKET or AWS_REGION not set — skipped")
 
 # ── F8: Tenant isolation ───────────────────────────────────────────────────────
 print("\n── F8: Tenant isolation ──")
@@ -313,27 +329,32 @@ if POOL and CLIENT_ID and COGNITO_DOMAIN:
     for _label, _tok in [("tenant-a", _token_a), ("tenant-b", _token_b)]:
         if _tok:
             _gs = bva_probe("valid", f"Bearer {_tok}")
-            if _gs is not None and _gs != "16":
-                record(f"F8-isolation-{_label}-auth", "PASS",
+            if _gs is None or (isinstance(_gs, str) and _gs.startswith("ERROR")):
+                record(f"F8-isolation-{_label}-auth", FAIL,
+                       f"transport error / no grpc-status (gs={_gs!r})")
+            elif _gs != "16":
+                record(f"F8-isolation-{_label}-auth", PASS,
                        f"grpc-status={_gs} (independent auth ok)")
             else:
-                record(f"F8-isolation-{_label}-auth", "FAIL",
+                record(f"F8-isolation-{_label}-auth", FAIL,
                        f"grpc-status={_gs}")
         else:
-            record(f"F8-isolation-{_label}-auth", "FAIL",
+            record(f"F8-isolation-{_label}-auth", FAIL,
                    f"could not obtain id_token for {_label}")
 else:
-    record("F8-isolation", "FAIL", "POOL/CLIENT_ID/COGNITO_DOMAIN not set — skipped")
+    record("F8-isolation", SKIP, "POOL/CLIENT_ID/COGNITO_DOMAIN not set — skipped")
 
 # ── Summary table ──────────────────────────────────────────────────────────────
 print()
 print(f"{'FACE':<38} {'RESULT':<6} DETAIL")
 print(f"{'----':<38} {'------':<6} ------")
-all_pass = True
 for face, status, detail in results:
     print(f"{face:<38} {status:<6} {detail}")
-    if status != "PASS":
-        all_pass = False
+
+# Pass if no check FAILed. SKIP is non-failing (optional check, preconditions
+# absent); a run of all-SKIP still passes (nothing was actually verified, but
+# nothing failed either — the driver decides whether that is acceptable).
+all_pass = all(status in (PASS, SKIP) for _, status, _ in results)
 
 print()
 print("OVERALL:", "PASS" if all_pass else "FAIL")
