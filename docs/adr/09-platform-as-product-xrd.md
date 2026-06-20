@@ -2,7 +2,14 @@
 
 ## Status
 
-Proposed (2026-05-28).
+**Accepted** — with a partial supersede (2026-05-28).
+
+> The platform-as-product XRD principle is **live** (the WorkloadIdentity XRD is
+> implemented in the regional-stack charts). **Partial supersede:** the
+> *identity-specific* WorkloadIdentity→IAM composition described below is **superseded by
+> ADR-21** (EKS Pod Identity now owns workload identity). ADR-09's default-ownership rule
+> continues to govern **non-identity** workload cloud resources under **ADR-22**
+> (Crossplane v2).
 
 ## Context
 
