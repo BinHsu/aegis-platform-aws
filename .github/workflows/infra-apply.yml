@@ -215,6 +215,8 @@ jobs:
           TF_VAR_tfstate_region:  ${{ secrets.TFSTATE_REGION }}
           TF_VAR_github_token:    ${{ secrets.GH_DEPLOY_KEY_PAT }}
           TF_VAR_operator_principal_arn: ${{ secrets.OPERATOR_PRINCIPAL_ARN }}
+          MATRIX_REGION: ${{ matrix.region }}
+          REAP_ON_APPLY_FAILURE: ${{ vars.REAP_ON_APPLY_FAILURE }}
         run: |
           # registries.auto.tfvars.json is gitignored (per-workload ECR account
           # IDs) so it is not in the checkout — materialise it from the
@@ -224,7 +226,7 @@ jobs:
           terraform init -reconfigure \
             -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
             -backend-config="region=${{ secrets.TFSTATE_REGION }}" \
-            -backend-config="key=regional/${{ matrix.region }}/terraform.tfstate" \
+            -backend-config="key=regional/${MATRIX_REGION}/terraform.tfstate" \
             -backend-config="encrypt=true"
           # A6: opt-IN self-reap on failed apply. A failed apply can leave billable
           # resources (the incident: EKS created, apply then failed on kyverno).
@@ -236,8 +238,8 @@ jobs:
           # teardown deadlock that the reap path would have hit is fixed by A4
           # (wait=false + pre-destroy webhook cleanup).
           if ! terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json"; then
-            echo "::error::apply failed for ${{ matrix.region }}"
-            if [ "${{ vars.REAP_ON_APPLY_FAILURE }}" = "true" ]; then
+            echo "::error::apply failed for ${MATRIX_REGION}"
+            if [ "${REAP_ON_APPLY_FAILURE}" = "true" ]; then
               echo "::warning::REAP_ON_APPLY_FAILURE=true — self-reaping the partial stack (unset/false keeps it)"
               terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" \
                 || echo "::error::self-reap destroy ALSO failed — resources may still be billing; ttl-reaper + budget are the backstops."
