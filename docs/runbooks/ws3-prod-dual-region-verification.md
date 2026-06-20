@@ -145,8 +145,10 @@ PROD is **promotion-driven**, not dispatch-driven. The sequence:
 
 > **Cost-incurring run discipline:** once approved, poll the run at ~1-minute
 > cadence (`gh run watch`). A failed `apply-regional` self-reaps its partial stack
-> unless `ALLOW_PARTIAL_APPLY=true` (`infra-apply-account.yml` self-reap step). A
-> failed *teardown* still bills until it finishes — watch it too.
+> only when `REAP_ON_APPLY_FAILURE=true` (opt-in; `infra-apply-account.yml`
+> self-reap step). The unset/false default KEEPS the partial stack — for an
+> unattended run set the var `true`, or dispatch `infra-ops destroy-region` on
+> failure. A failed *teardown* still bills until it finishes — watch it too.
 
 ---
 
