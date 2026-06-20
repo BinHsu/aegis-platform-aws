@@ -364,7 +364,7 @@ scripts/install-tools.sh    Pinned project-local toolchain → ./bin/
 The CI pipeline cannot create the very infrastructure it authenticates against,
 so the foundation is bootstrapped once from an operator's machine; CI takes over
 after that. For a narrated, step-by-step walkthrough of a real bring-up, see
-[`docs/runbooks/ws3-bring-up.md`](docs/runbooks/ws3-bring-up.md).
+[`docs/runbooks/2026-06-20-dual-region-full-verification.md`](docs/runbooks/2026-06-20-dual-region-full-verification.md).
 
 ```bash
 # 1. Project-local toolchain → ./bin/ + wire the pre-commit hook.
@@ -439,7 +439,7 @@ kubectl get pods -n monitoring       # Alloy + node-exporter + kube-state-metric
 
 From here, every push to `main` runs `infra-plan` (PR) / `infra-apply`
 (merge); see [CI/CD](#cicd) below. For dual-region and prod-specific verification,
-see [`docs/runbooks/ws3-prod-dual-region-verification.md`](docs/runbooks/ws3-prod-dual-region-verification.md).
+see [`docs/runbooks/2026-06-20-dual-region-full-verification.md`](docs/runbooks/2026-06-20-dual-region-full-verification.md).
 
 ## Day-to-day operations
 

@@ -410,5 +410,4 @@ build.
 [ADR-16](16-provider-neutral-injection-contract.md) ·
 [ADR-17](17-core-release-parity-and-neutral-base.md) ·
 [ADR-19](19-aws-public-edge-domain-acm-cognito.md) ·
-`docs/runbooks/ws3-prod-go-live-execution.md` ·
-`docs/runbooks/ws3-prod-dual-region-verification.md`
+[`docs/runbooks/2026-06-20-dual-region-full-verification.md`](../runbooks/2026-06-20-dual-region-full-verification.md)

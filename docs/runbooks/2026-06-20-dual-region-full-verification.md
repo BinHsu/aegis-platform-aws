@@ -89,8 +89,7 @@ Confirm #144 ECR push role path: `release-staging-image.yml:165`
 
 ### 4.3 Merge prerequisite PRs (dependency order, CI green between each)
 1. **ldz #274** (`terraform/environments/deployment/bootstrap/oidc-github-apply-deployment-role.tf`,
-   new) + **platform #136** (`docs/runbooks/ws3-bring-up.md`,
-   `terraform/envs/platform/deployment-ecr.tf:58`) — cross-account destroy trust:
+   new) + **platform #136** (`terraform/envs/platform/deployment-ecr.tf:58`) — cross-account destroy trust:
    `gh-tf-apply-deployment` now trusts BOTH `gh-tf-apply-platform` and
    `gh-tf-destroy-platform` (was apply-only → destroy got AssumeRole AccessDenied).
    ⚠️ This role is a break-glass survivor → first apply likely `EntityAlreadyExists`

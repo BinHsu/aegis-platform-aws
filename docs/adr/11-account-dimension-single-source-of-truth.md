@@ -116,5 +116,4 @@ account ID.**
 [ADR-01](01-architecture-and-topology.md) ·
 [ADR-03](03-delivery-cicd-gitops.md) ·
 [ADR-10](10-release-model-build-once-promote-by-digest.md) ·
-`docs/runbooks/2026-06-12-joint-strike.md` (W3 section) ·
 `docs/postmortems/2026-06-06-eks-extended-support-cost-incident.md` (L3 model)

@@ -5,7 +5,7 @@
 # gh-tf-destroy-platform, the read-only plan role, the greeter ECR push role)
 # USED to be `resource` blocks in this file. They were destroyed by
 # `destroy-platform`, which on 2026-06-12 produced four live failures (run
-# record: docs/runbooks/2026-06-12-joint-strike.md §G): a self-delete hazard, an
+# decision: ADR-13 (docs/adr/13-ci-iam-roles-survive-teardown.md): a self-delete hazard, an
 # orphaned admin destroy role in both accounts, a cold-start chicken-egg (no
 # OIDC path left after teardown), and an infra-plan red light.
 #

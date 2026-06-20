@@ -8,7 +8,7 @@ name: infra-apply-account
 # regions_json / overrides_json here; THIS workflow `checkout`s `ref` (main for staging,
 # a release tag for prod) and applies that tree. role + state bucket are DERIVED from
 # account_id (no per-account secret), inlined at each use — reusable top-level `env`
-# cannot reliably read `inputs`. See docs/runbooks/2026-06-12-joint-strike.md §W3.
+# cannot reliably read `inputs`. See ADR-11 (docs/adr/11-account-dimension-single-source-of-truth.md).
 
 on:
   workflow_call:

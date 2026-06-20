@@ -6,7 +6,7 @@ name: infra-prod
 # environment; an aged-out EKS version hard-fails the run before any apply
 # (gate_blocks=true). A change to anything else (or a no-op pin) does not deploy prod.
 # The A13 `workflow_dispatch` infra-apply.yml remains as break-glass only.
-# See docs/runbooks/2026-06-12-joint-strike.md §W3.
+# See ADR-11 (docs/adr/11-account-dimension-single-source-of-truth.md).
 
 on:
   push:
