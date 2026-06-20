@@ -4,14 +4,24 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/BinHsu/aegis-platform-aws/badge)](https://securityscorecards.dev/viewer/?uri=github.com/BinHsu/aegis-platform-aws)
 
-The platform tier for a fleet of Kubernetes workloads on AWS — Terraform for the
-cloud substrate, per-cluster ArgoCD for in-cluster GitOps, Crossplane for
-workload-scoped cloud identity, Grafana Cloud for observability, and a DR drill
-that rebuilds a region from git.
+A shared platform tier for a multi-tenant AI workload fleet — Terraform for the
+cloud substrate, per-cluster ArgoCD for GitOps, Crossplane v2 for workload IAM,
+Kyverno for policy, and Grafana Cloud for observability. The goal: platform
+engineering as a product, where application developers never touch infrastructure.
 
-`aegis-platform-aws` is shared infrastructure. It provisions the EKS clusters and
-runs the ArgoCD that reconciles **workload deploy repos** onto them. It owns no
-application code and no Kubernetes manifests — those live in their own repos.
+`aegis-platform-aws` provisions EKS clusters and runs the ArgoCD that reconciles
+**workload deploy repos** onto them. It owns no application code and no Kubernetes
+manifests — those live in their own repos:
+
+- **Application repos** (e.g. `aegis-core`, `aegis-greeter`) — service code,
+  Dockerfile, and the CI that builds and publishes the container image.
+- **Deploy repos** (e.g. `aegis-core-deploy`, `aegis-greeter_deploy`) — the
+  Kubernetes manifests for one workload. ArgoCD watches these.
+
+To onboard a workload: add an entry to `registries.auto.tfvars.json`. The
+`ApplicationSet` uses a List generator driven by `var.workload_registries` — not
+GitHub topic discovery (which 404s on personal accounts). The `aegis-workload`
+GitHub topic is a documentation convention, not an enforcement gate.
 
 ## The Aegis portfolio (4 repos)
 
@@ -70,68 +80,84 @@ intent.
 
 ```mermaid
 flowchart TB
-    subgraph app_repo["application repo · e.g. aegis-core"]
+    subgraph app_repo["application repo · e.g. aegis-core / aegis-greeter"]
         app["service code · Dockerfile · publish CI"]
     end
-    subgraph deploy_repo["deploy repo · e.g. aegis-core-deploy"]
-        kust["k8s/overlays/prod/kustomization.yaml"]
+    subgraph deploy_repo["deploy repo · e.g. aegis-core-deploy / aegis-greeter_deploy"]
+        kust["k8s/overlays/prod/kustomization.yaml\nWorkloadIdentity XR · ConfigMap injection"]
     end
     subgraph this_repo["aegis-platform-aws — this repo"]
         tf["terraform/ · bootstrap / platform / regional"]
-        argocd["ArgoCD ApplicationSet · per cluster"]
-        ack["ACK IAM · Crossplane XRDs · Kyverno guardrails"]
+        argocd["ArgoCD ApplicationSet\nList generator ← registries.auto.tfvars.json"]
+        xp["Crossplane · upjet provider-aws-iam\nWorkloadIdentity XRD → IAM Role"]
+        kyverno["Kyverno · ClusterPolicies\ntrust-subject · default-deny NetworkPolicy\nrequire-image-digest"]
     end
     subgraph aws["AWS · per region"]
-        eks["EKS — workload Deployments + Grafana Alloy DaemonSet"]
+        eks["EKS — workload Rollouts + Grafana Alloy DaemonSet"]
         ecr[("ECR")]
+        cognito["Cognito · OIDC IdP\ncustom:tenant_id via pre-token Lambda"]
         cw["CloudWatch · audit side-effect"]
     end
+    accounts["accounts.json\nSSoT: staging / prod / deployment\naccount IDs + enabled regions"]
     gc["Grafana Cloud · Mimir / Loki / Tempo / Pyroscope"]
 
     app -->|build + push image| ecr
-    app -->|commit image-tag bump| kust
+    app -->|commit image digest bump| kust
+    accounts -.account IDs.-> tf
     tf -->|provisions| eks
-    argocd -->|reconciles registries-driven workloads| deploy_repo
+    tf -->|configures| cognito
+    argocd -->|List generator reads registries| deploy_repo
     kust --> argocd
     argocd -->|syncs| eks
-    ecr -.image.-> eks
+    xp -->|renders WorkloadIdentity → IAM Role| eks
+    ecr -.cross-account image pull.-> eks
+    cognito -.OIDC JWT.-> eks
     eks -->|OTLP · logs · profiles · scrape| gc
     eks -.control plane + ALB logs.-> cw
 ```
 
-- **Terraform**, three lifecycle-separated environments: `bootstrap` (state
-  backend + CI roles), `platform` (slow lifecycle — Route 53, ECR, OIDC, budgets,
-  Grafana dashboards), `regional` (fast lifecycle — VPC + EKS + ArgoCD + Alloy,
-  applied once per region).
-- **Multi-region topology as data** — the region set is data
-  (`regions.auto.tfvars.json`), not code. Adding a region is a one-line data
-  change; an external loop (Makefile / GitHub Actions matrix) applies `regional`
-  once per region with per-region state isolation.
-- **Workloads enrol via the registries map** (ADR-07) — there is no catalog.
-  ArgoCD's `ApplicationSet` is driven by a List generator whose elements come from
-  `var.workload_registries`; a workload enrols by getting a registries entry. (The
-  SCM-provider generator was dropped: `GET /orgs/<owner>/repos` 404s on a personal
-  GitHub account — caught live on the 2026-06-12 prod proof cluster.) The safety
-  floor that makes self-service safe is the enforcement four-pack: AppProject
-  destination-allowlist + ApplicationSet namespace-derivation, Kyverno
-  (trust-subject↔namespace, default-deny NetworkPolicy baseline), and the
-  org-level `deny-iam-privilege-escalation` SCP.
-- **Workload IAM is self-owned** (ADR-07/09) — a deploy repo declares its identity
-  intent as a Crossplane `WorkloadIdentity` claim; the platform's Composition
-  renders the IAM role. As of ADR-21/22, **EKS Pod Identity now owns the engine's
-  identity** (Terraform-managed) so it tears down cleanly. **WS4 (2026-06-19)
-  validated this end-to-end on dual-region staging** (eu-central-1 + eu-west-1):
-  EKS Pod Identity drove engine S3 model-fetch with no IAM orphan at teardown;
-  Crossplane v2 + XBucket XRD reconciled a real S3 bucket and deleted cleanly. All
-  functional E2E passed both regions (gateway /healthz, engine model-fetch, OIDC
-  BVA, PKCE, audio→text transcription). Staging was torn down to $0 — ephemeral by
-  cost design. The platform tier owns no per-workload IAM by hand.
+- **Terraform — three lifecycle-separated environments**: `bootstrap` (S3 state
+  bucket + CI IAM roles, local state, operator-seeded once, ADR-13); `platform`
+  (slow lifecycle — Route 53, ECR, Cognito, pre-token Lambda, CloudFront/S3,
+  OIDC, budgets, Grafana dashboards, SSM); `regional` (fast lifecycle — VPC + EKS
+  + ArgoCD + Crossplane + Kyverno + Alloy, applied once per region).
+- **Multi-region topology as data** — the region set lives in
+  `regions.auto.tfvars.json`, not code. Adding a region is a one-line data change;
+  a GitHub Actions matrix applies `regional` once per region with per-region state
+  isolation (ADR-01).
+- **Account model as data** — `accounts.json` is the single source of truth for
+  account IDs (staging, prod, deployment), per-account `bootstrap_complete` gates,
+  `enabled_regions`, and the prod release pin (ADR-11).
+- **Workload catalog is `registries.auto.tfvars.json`** — every entry becomes one
+  ArgoCD `Application` (via a List generator, not SCM topic discovery) and one set
+  of Crossplane/IAM bindings. Add an entry to onboard a workload; the
+  `aegis-workload` GitHub topic is a human-readable convention only.
+- **Workload IAM is declared in deploy repos** (ADR-07, ADR-09) — each deploy repo
+  declares a `WorkloadIdentity` custom resource. Crossplane v1.20.8 + upjet
+  `provider-aws-iam` renders it into a scoped IAM Role in the `/aegis-workload/`
+  path. The platform owns the XRD + Composition; workload teams own the claim.
+- **Identity and auth** — the gateway validates Cognito `id_token` (OIDC JWT,
+  provider-neutral). The pre-token Lambda injects `custom:tenant_id` for tenant
+  isolation. Real domain `*.aws.binhsu.org` + ACM TLS + Cognito (ADR-19/ADR-20).
+- **Provider-neutral substrate** (ADR-16) — the same aegis-core service runs
+  on-prem (Talos + MinIO + SPIRE-STS) and on AWS (EKS + S3 + Cognito), swapped at
+  an injection/composition seam. Multi-cloud complexity is confined to this repo;
+  backend developers see a stable interface.
+- **Policy floor** — Kyverno 3.2.6 enforces: trust-subject ↔ namespace alignment
+  on WorkloadIdentity claims, default-deny NetworkPolicy baseline for every
+  `aegis-*` namespace, and require-image-digest (floating tags rejected in prod).
+  AppProject destination-allowlist + ApplicationSet namespace derivation close the
+  remaining squatting surface (enforcement four-pack, ADR-07).
 - **ArgoCD per cluster** — each EKS cluster runs its own ArgoCD, eliminating a
-  GitOps-layer single point of failure. Deploy repos are public, so ArgoCD clones
-  them anonymously over HTTPS — no per-workload deploy keys.
+  GitOps-layer single point of failure. Deploy repos are public; ArgoCD clones
+  them anonymously over HTTPS.
+- **Canary deployments** — `aegis-core` workloads use Argo Rollout objects. Argo
+  Rollouts is installed per cluster and must be present before the ApplicationSet
+  syncs aegis-core — `argo-rollouts.tf` enforces this dependency order.
 - **Observability** — workloads emit OpenTelemetry + Pyroscope to a node-local
-  Grafana Alloy DaemonSet, which forwards to Grafana Cloud. CloudWatch is kept
-  only for EKS control-plane logs + ALB access logs (audit side-effect).
+  Grafana Alloy DaemonSet (chart 0.10.1), which forwards to Grafana Cloud.
+  CloudWatch is kept only for EKS control-plane logs and ALB access logs (audit
+  side-effect, not the metrics backend).
 
 See [`docs/adr/`](docs/adr/README.md) for the reasoning behind each decision and
 [`docs/tradeoffs.md`](docs/tradeoffs.md) for what was deliberately deferred.
@@ -333,21 +359,22 @@ flowchart LR
 ## Repository layout
 
 ```
-regions.auto.tfvars.json    Region topology — platform_region + regions{}
-registries.auto.tfvars.json Per-workload ECR/IRSA params (gitignored; account IDs). The workload roster — the List generator enumerates from here. See *.example
+accounts.json                 Account SSoT — staging/prod/deployment IDs, enabled_regions, bootstrap gates, prod pin
+regions.auto.tfvars.json      Region topology — platform_region + regions{}
+registries.auto.tfvars.json   Workload catalog — per-workload ECR/IRSA params (gitignored; holds account IDs). See *.example
 terraform/
-  envs/bootstrap/           S3 state bucket + CI roles (local state, one-shot)
-  envs/platform/            Route 53, ECR, OIDC, budget, SSM, Grafana, branch protection
-  envs/regional/            VPC + EKS + ArgoCD + Alloy — applied once per region
-  modules/regional-stack/   The per-region stack, invoked by envs/regional/
-    charts/aegis-xrds/       Crossplane XRD + Composition (WorkloadIdentity → IAM)
-grafana/dashboards/         Dashboard JSON, applied by the grafana/grafana TF provider
-.github/workflows/          infra-plan, infra-apply, infra-ops
-docs/adr/                   Architecture Decision Records
-docs/runbooks/              Bring-up, dual-region verification, prod go-live execution
-docs/tradeoffs.md           Deferred work + production-hardening path
-Makefile                    Local dev + emergency apply (CI is the canonical path)
-scripts/install-tools.sh    Pinned project-local toolchain → ./bin/
+  envs/bootstrap/             S3 state bucket + 6 CI IAM roles (local state, operator-seeded once; ADR-13)
+  envs/platform/              Route 53, ECR, Cognito, pre-token Lambda, CloudFront/S3, OIDC, budgets, SSM, Grafana
+  envs/regional/              Invokes modules/regional-stack once per region (one apply per region)
+  modules/regional-stack/     VPC + EKS + ArgoCD + Crossplane + Kyverno + Alloy + Argo Rollouts
+  modules/regional-stack/charts/  Helm charts: aegis-xrds, aegis-policies, aegis-aws-providerconfig
+grafana/dashboards/           Dashboard JSON, applied by the grafana/grafana TF provider
+.github/workflows/            infra-plan, infra-apply, infra-staging, infra-prod, infra-ops, ttl-reaper
+docs/adr/                     Architecture Decision Records
+docs/runbooks/                Operational runbooks (bring-up, dual-region verification)
+docs/tradeoffs.md             Deferred work + production-hardening path
+Makefile                      Local dev + emergency apply (CI is the canonical path)
+scripts/install-tools.sh      Pinned project-local toolchain → ./bin/
 ```
 
 ## Prerequisites
@@ -384,9 +411,9 @@ cp terraform/envs/regional/secrets.auto.tfvars.example terraform/envs/regional/s
 #        and eu-west-1 both ship `enabled: true`; flip a region's `enabled`
 #        flag to add or drop one.
 
-# 4. Register workloads — there is no catalog. Add one entry per workload to
-#    registries.auto.tfvars.json (copy from the *.example; gitignored, since it
-#    holds account IDs). The List generator enumerates from this file.
+# 4. Register workloads — add an entry to registries.auto.tfvars.json for each
+#    workload's ECR account + optional engine IRSA / cert params. This file
+#    drives the ApplicationSet List generator (gitignored; holds account IDs).
 cp registries.auto.tfvars.json.example registries.auto.tfvars.json  # then edit
 
 # 5. Create the remote state backend + CI roles (local state, one-shot).
@@ -421,17 +448,17 @@ gh variable set BOOTSTRAP_COMPLETE -b "true" --repo BinHsu/aegis-platform-aws
 
 ### Publish the first workload image — cross-repo step
 
-`make regional` brings up the cluster and ArgoCD, but a workload's Deployment
-references an image that does not exist yet — its pods sit in `ImagePullBackOff`
-until the workload's **application repo** publishes one. That repo's CI builds
-the image, pushes it to the ECR repository provisioned here, and commits the
-image-tag bump to its **deploy repo's** `k8s/overlays/prod/kustomization.yaml`.
-ArgoCD then reconciles the new tag and the pods reach `Running`.
+`make regional` brings up the cluster and ArgoCD, but a workload's pods sit in
+`ImagePullBackOff` until the workload's **application repo** publishes an image.
+That repo's CI builds the image, pushes it to ECR, and commits the digest bump to
+its **deploy repo's** `k8s/overlays/prod/kustomization.yaml`. ArgoCD then
+reconciles the pinned digest and the pods reach `Running` (or the Rollout reaches
+`Healthy` for aegis-core, which uses Argo Rollout objects).
 
 ### Verify
 
 ```bash
-aws eks update-kubeconfig --name aegis-platform-aws-eu-central-1 --region eu-central-1
+aws eks update-kubeconfig --name aegis-platform-eu-central-1 --region eu-central-1
 kubectl get applications -n argocd   # one Application per workload, Synced + Healthy
 kubectl get pods -n argocd           # ArgoCD healthy
 kubectl get pods -n monitoring       # Alloy + node-exporter + kube-state-metrics
@@ -479,9 +506,9 @@ the three knobs a forker must flip to switch back to amd64.
 
 | Scope | Rate | Note |
 |---|---|---|
-| Per region | ~$0.20/hr | EKS control plane + Spot nodes + ALB + NAT gateway |
-| Platform env | ~$0/mo | Route 53 zone + ECR storage — safe to leave running |
-| Per DR drill | ~$1–2 | ~6 h: stand up → drill → destroy |
+| Per region | ~$0.21/hr | EKS control plane + Spot nodes + ALB + NAT gateway |
+| Platform env | ~$0–1/mo | Route 53 zone + ECR storage — safe to leave running |
+| Per DR drill (~6 hr) | ~$1.30 | Stand up → drill → destroy |
 
 Regional infrastructure is **ephemeral** — stood up for a demo or DR drill, torn
 down when idle (`make destroy-region`). The `bootstrap`/`platform`/`regional`
@@ -499,10 +526,8 @@ the source of truth, ArgoCD converges the cluster from zero. The failure-mode
 matrix, RTO/RPO targets, and the full procedure are in
 [`docs/dr-plan.md`](docs/dr-plan.md).
 
-Run it with the helper script — it sequences the phases, times each, captures
-CLI evidence, and writes a timestamped report under
-[`docs/evidence/`](docs/evidence/README.md) (no drill artifacts are committed yet;
-that README explains how to reproduce them):
+Run it with the helper script — it sequences the phases, times each, and captures
+a timestamped evidence report:
 
 ```bash
 scripts/dr/dr-drill.sh eu-central-1
@@ -556,18 +581,22 @@ sum by (pod) (count_over_time(
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `infra-plan` | PR / push to `main` | fmt, validate, tflint, trivy, gitleaks, `terraform plan` per env; posts the plan diff as a PR comment |
-| `infra-apply` | push to `main` | `terraform apply` per env (platform + regional matrix) |
-| `infra-ops` | `workflow_dispatch` | `bootstrap` / `destroy-region` / `destroy-platform` (the DR drill) |
+| `infra-plan` | PR against `main` | fmt, validate, tflint, trivy, gitleaks, `terraform plan` per env; posts the plan diff as a PR comment |
+| `infra-apply` | push to `main` (legacy path) | `terraform apply` per env (platform + regional matrix) |
+| `infra-staging` | push to `main` — detects `accounts.staging` changes | Staging-account apply: version-gate → `apply-platform` → `apply-regional` matrix, ungated `staging` environment |
+| `infra-prod` | push to `main` — detects prod `pin` change | Prod-account apply: version-gate (hard-fail on EKS extended support) → `apply-platform` → `apply-regional` in `prod-apply-gated` (requires approval) |
+| `infra-ops` | `workflow_dispatch` | `bootstrap` / `destroy-region` / `destroy-platform` / `force-unlock` (audit-logged, approval-gated) |
+| `ttl-reaper` | scheduled | Auto-destroys clusters tagged with a TTL that has expired |
 
 `main` branch protection (required status checks + linear history + no
 force-push) is provisioned by `github_branch_protection`, gated on
 `var.enable_branch_protection` — GitHub requires Pro for branch protection on a
 private repo, so it is off by default until the repo is public or on Pro (see
 `docs/tradeoffs.md`). Two OIDC roles split trust — a read-only role for PR
-plans, an apply role whose trust is pinned to `refs/heads/main`. Until the
-`BOOTSTRAP_COMPLETE` repo variable is set, the plan/apply jobs skip cleanly (the
-AWS foundation does not exist yet) and the pipeline stays green.
+plans, an apply role whose trust is pinned to `refs/heads/main`. The staging and
+prod apply paths gate on `accounts.json` (`bootstrap_complete` per account)
+rather than the legacy `BOOTSTRAP_COMPLETE` repo variable; the plan job still
+uses the repo variable for the legacy `infra-plan.yml` path.
 
 ## License
 
