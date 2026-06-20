@@ -1,0 +1,118 @@
+# verifier-job.yaml — in-cluster verification Job (Tier 2).
+#
+# Runs the aegis-verify image inside the aegis-core namespace, reaching services
+# over cluster DNS — no kubectl port-forward, no laptop networking.
+#
+# The driver script (scripts/verify/run-incluster-verify.sh) applies this Job,
+# waits for completion, fetches logs, and deletes the Job. You should not apply
+# this file directly unless iterating on the Job spec.
+#
+# Template variables (replaced by run-incluster-verify.sh via envsubst):
+#   VERIFY_IMAGE          — full image reference, e.g. 123456789012.dkr.ecr.eu-central-1.amazonaws.com/aegis-verify:latest
+#   PROTO_CONFIGMAP       — ConfigMap name holding aegis.proto (key: aegis.proto)
+#   PCM_CONFIGMAP         — ConfigMap name holding the PCM fixture (key: fixture.pcm)
+#   COGNITO_DOMAIN        — https://<pool-prefix>.auth.<region>.amazoncognito.com
+#   CLIENT_ID             — Cognito SPA app-client id
+#   POOL                  — Cognito user pool id
+#   COGNITO_REGION        — AWS region where Cognito lives
+#   MODEL_BUCKET          — aegis-core-models-<account>-<region>
+#   AWS_REGION            — region for s3api calls
+#
+# The Job runs as a non-root user (10001) and mounts the proto + fixture as
+# read-only. No cloud credentials are baked in — the Job's ServiceAccount
+# (aegis-verify-sa) is bound to a Pod Identity association in Terraform
+# (or inherits the node's IMDS for F7 if no association is added).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aegis-verify-${JOB_SUFFIX}
+  namespace: aegis-core
+  labels:
+    app.kubernetes.io/name: aegis-verify
+    app.kubernetes.io/managed-by: scripts/verify/run-incluster-verify.sh
+spec:
+  # Single attempt; the driver retries at the harness level, not the Job level.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegis-verify
+    spec:
+      serviceAccountName: aegis-core-engine  # Reuse engine SA for F7 s3 read access
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: verifier
+          image: "${VERIFY_IMAGE}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ENGINE_HOST
+              value: "aegis-core-engine.aegis-core.svc.cluster.local"
+            - name: ENGINE_PORT
+              value: "50051"
+            - name: GATEWAY_HOST
+              value: "aegis-core-gateway.aegis-core.svc.cluster.local"
+            - name: GATEWAY_PORT
+              value: "8080"
+            - name: PROTO
+              value: "/opt/proto/aegis.proto"
+            - name: PROTO_IMPORT
+              value: "/opt/proto"
+            - name: PCM_FIXTURE
+              value: "/opt/fixture/fixture.pcm"
+            - name: EXPECT_TEXT
+              value: "the quick brown fox jumps over the lazy dog"
+            - name: COGNITO_DOMAIN
+              value: "${COGNITO_DOMAIN}"
+            - name: CLIENT_ID
+              value: "${CLIENT_ID}"
+            - name: POOL
+              value: "${POOL}"
+            - name: COGNITO_REGION
+              value: "${COGNITO_REGION}"
+            - name: MODEL_BUCKET
+              value: "${MODEL_BUCKET}"
+            - name: AWS_REGION
+              value: "${AWS_REGION}"
+          volumeMounts:
+            - name: proto
+              mountPath: /opt/proto
+              readOnly: true
+            - name: fixture
+              mountPath: /opt/fixture
+              readOnly: true
+            # in-cluster-verify.py uses tempfile.TemporaryDirectory(); the root
+            # filesystem is read-only, so /tmp must be a writable emptyDir.
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: proto
+          configMap:
+            name: "${PROTO_CONFIGMAP}"
+        - name: fixture
+          configMap:
+            name: "${PCM_CONFIGMAP}"
+            items:
+              - key: fixture.pcm
+                path: fixture.pcm
+      # Tolerate any node (verifier is lightweight; no GPU required).
+      tolerations: []
