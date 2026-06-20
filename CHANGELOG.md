@@ -17,6 +17,13 @@ This project uses [Semantic Versioning](https://semver.org/).
 - RETRO moved to `docs/postmortems/` — maintains permalink.
 - C4-L3 component diagram for `terraform/modules/regional-stack` in README Architecture section.
 
+### Changed
+- Bootstrap env now uses a Terraform **workspace per account** keyed by `ENV`
+  (`make bootstrap ENV=staging|prod`), so each account's local state is isolated
+  under `terraform.tfstate.d/<ENV>/` — removes the manual `-state=<file>`
+  juggling on multi-account cold-start (#90). Regional + platform are already
+  per-account S3 backends and are unchanged.
+
 ---
 
 ## [v0.2.3] — 2026-06-18

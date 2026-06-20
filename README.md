@@ -390,8 +390,10 @@ cp terraform/envs/regional/secrets.auto.tfvars.example terraform/envs/regional/s
 cp registries.auto.tfvars.json.example registries.auto.tfvars.json  # then edit
 
 # 5. Create the remote state backend + CI roles (local state, one-shot).
+#    ENV selects the per-account Terraform workspace (issue #90) so a second
+#    account's bootstrap never clobbers the first account's local state.
 export AWS_PROFILE=<your-profile>
-make bootstrap
+make bootstrap ENV=staging
 
 # 6. Apply the slow-lifecycle platform env.
 make platform

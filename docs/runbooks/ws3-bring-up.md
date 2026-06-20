@@ -66,13 +66,15 @@ export AWS_SECRET_ACCESS_KEY=$(echo "$creds" | jq -r .SecretAccessKey)
 export AWS_SESSION_TOKEN=$(echo "$creds" | jq -r .SessionToken)
 aws sts get-caller-identity --query Arn --output text
 cd /path/to/aegis-platform-aws
-make bootstrap
-make regenerate-backend
+make bootstrap ENV=staging          # ENV selects the per-account workspace (issue #90)
+make regenerate-backend ENV=staging
 terraform -chdir=terraform/envs/bootstrap output
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 ```
-(Prod bootstrap, Phase 7: same with `506221082337`. AWSControlTowerExecution is
-assumed from `--profile aegis-management-admin` in both cases.)
+(Prod bootstrap, Phase 7: same with `506221082337` and `ENV=prod` — each account
+gets its own workspace, so staging and prod local state no longer collide.
+AWSControlTowerExecution is assumed from `--profile aegis-management-admin` in
+both cases.)
 
 This creates in staging: `gh-tf-apply-platform`, `gh-tf-destroy-platform`,
 `aegis-platform-aws-ci`, `aegis-greeter-ci`, `github-actions-aegis-core-ecr`,
