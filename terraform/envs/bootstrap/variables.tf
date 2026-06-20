@@ -21,6 +21,13 @@ variable "cost_center_tag" {
   default     = "platform-take-home"
 }
 
+# ---- One-time IAM survivor adoption (prod cold-start) ----------------------
+variable "adopt_seeded_iam_roles" {
+  description = "ONE-TIME prod cold-start toggle. The prod account (506221082337) had its bootstrap state cleared, but the 5 CI IAM roles seeded by iam-seed.tf still exist as live AWS resources. Set true ONLY for the prod cold-start apply so iam-seed-import.tf ADOPTs the survivors into state instead of failing EntityAlreadyExists. Default false: a fresh account has no survivors, so the import targets must not be generated. Remove the variable + iam-seed-import.tf in a later cleanup PR once prod state is reconciled."
+  type        = bool
+  default     = false
+}
+
 # ---- CI IAM seed (ADR-13) --------------------------------------------------
 variable "github_owner" {
   description = "GitHub org/user that owns aegis-greeter + aegis-platform-aws. Used in the OIDC trust subjects for the CI roles seeded here (iam-seed.tf). Must be set explicitly — no default — so a fork targeting a different org does not silently trust the original owner's repos."

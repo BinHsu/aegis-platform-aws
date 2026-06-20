@@ -6,6 +6,11 @@ Accepted (2026-06-10). Refines [ADR-10](10-release-model-build-once-promote-by-d
 (promote-by-digest) and the ADR-07 injection mechanics. Supersedes the
 ApplicationSet's `kustomize.images` registry injection (the post-#24 D4
 mechanism).
+**Superseded for aegis-core by [ADR-23](23-image-distribution-public-ghcr-graviton.md)**
+(2026-06-20): aegis-core's GHCR refs are static (no account id / region), so the
+platform no longer injects a registry for it — the overlay carries the full ref.
+Greeter still consumes the `aegis.binhsu.org/ecr-repository` annotation per this
+ADR.
 
 ## Context
 
