@@ -20,11 +20,16 @@
 #   account display NAME is `aegis-deployments`, plural — cosmetic only, every
 #   key stays `deployment` singular per landing-zone ADR-018). Remaining gates:
 #     1. The `gh-tf-apply-deployment` role + the GitHub Actions OIDC provider
-#        must be seeded in that account (chicken-and-egg: the role's own
-#        iam:CreateRole is SCP-gated for a human, so it is seeded via
-#        break-glass — same bootstrap pattern as gh-tf-apply-platform, oidc.tf;
-#        the OIDC provider itself lands via the landing zone's
-#        deployment/bootstrap layer).
+#        must exist in that account. BOTH are now Terraform-managed in the
+#        landing zone's `deployment/bootstrap` layer (the OIDC provider in
+#        oidc-github.tf; the role + its trust + admin attachment in
+#        oidc-github-apply-deployment-role.tf). That role's trust permits BOTH
+#        platform CI roles — `gh-tf-apply-platform` (this APPLY assumes it via
+#        the `aws.deployment` provider) and `gh-tf-destroy-platform` (the
+#        `infra-ops.yml` destroy-platform run assumes it). Trusting the destroy
+#        role is what lets a teardown configure this provider and delete these
+#        ECR resources symmetrically with apply. Apply the landing-zone layer
+#        (via `gh-tf-apply-baseline`) before enabling this gate.
 #     2. W3 ownership: envs/platform is now applied ONCE PER CLUSTER ACCOUNT
 #        (infra-apply-account.yml — per-account gh-tf-apply-platform role and
 #        per-account state). Enabling this file in BOTH applies would manage

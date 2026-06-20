@@ -80,7 +80,7 @@ This creates in staging: `gh-tf-apply-platform`, `gh-tf-destroy-platform`,
 
 ---
 
-## Phase 1b — fix the deployment-account trust (ADR-10, after staging bootstrap)
+## Phase 1b — deployment-account trust is now Terraform-managed (ADR-10)
 
 Verified read-only on `aegis-deployments` (162975888022): GitHub OIDC,
 `AWSControlTowerExecution`, `gh-tf-apply-deployment` (AdministratorAccess),
@@ -88,28 +88,31 @@ Verified read-only on `aegis-deployments` (162975888022): GitHub OIDC,
 survivors). The `aegis-core` ECR + `aegis-core-ci-push` are created by the
 platform apply's `deployment-ecr.tf` (`shared_core`) — no manual seed.
 
-**The one fix:** `gh-tf-apply-deployment`'s trust references the OLD (6/12,
-deleted) `gh-tf-apply-platform` role IDs (dangling `AROA…`). The re-bootstrapped
-`gh-tf-apply-platform` has a NEW id → the assume would fail. Re-point the trust
-to the stable ARN (do this AFTER Phase 1 so the role exists). Break-glass (SCP
-blocks SSO from IAM writes):
+**The manual break-glass trust patch is RETIRED.** `gh-tf-apply-deployment` — the
+role + its trust + its AdministratorAccess attachment — is now Terraform-managed
+in the landing-zone `deployment/bootstrap` layer
+(`terraform/environments/deployment/bootstrap/oidc-github-apply-deployment-role.tf`).
+Apply that layer (via `gh-tf-apply-baseline`, the landing-zone CI apply role) and
+the trust is reproducible — it no longer dangles on a deleted role id, and it now
+trusts BOTH platform CI roles:
 
-```bash
-cat > /tmp/deploy-trust.json <<'EOF'
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Principal":{"AWS":"arn:aws:iam::251774439261:role/gh-tf-apply-platform"}}]}
-EOF
-creds=$(aws sts assume-role --role-arn arn:aws:iam::162975888022:role/AWSControlTowerExecution --role-session-name fix-deploy-trust --profile aegis-management-admin --query Credentials --output json)
-export AWS_ACCESS_KEY_ID=$(echo "$creds" | jq -r .AccessKeyId)
-export AWS_SECRET_ACCESS_KEY=$(echo "$creds" | jq -r .SecretAccessKey)
-export AWS_SESSION_TOKEN=$(echo "$creds" | jq -r .SessionToken)
-aws iam update-assume-role-policy --role-name gh-tf-apply-deployment --policy-document file:///tmp/deploy-trust.json
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-```
-(Only staging's `gh-tf-apply-platform` is trusted — staging owns
-`deployment_account_id` in accounts.json, so it is the only apply context that
-assumes this role. Add prod's ARN only if ownership moves.) Hardening
-follow-up: make `gh-tf-apply-deployment` Terraform-managed (landing zone) so the
-trust is reproducible and never dangles again.
+- `gh-tf-apply-platform` — used by the platform APPLY (`infra-apply-account.yml`).
+- `gh-tf-destroy-platform` — used by the platform DESTROY (`infra-ops.yml`
+  destroy-platform). The earlier hand-patched trust permitted only the apply role,
+  so `destroy-platform` got `AssumeRole` AccessDenied configuring the
+  `aws.deployment` provider and aborted before deleting the shared-registry
+  resources. Trusting the destroy role too closes that cross-account teardown gap.
+
+Only **staging**'s roles are trusted today — staging owns `deployment_account_id`
+in `accounts.json`, so it is the only apply/destroy context that assumes this role.
+To move registry ownership to prod, add prod's account id to
+`deployment_owning_platform_account_ids` in that landing-zone file IN LOCK-STEP
+with moving the `deployment_account_id` field in `accounts.json`.
+
+> Historical: before this was Terraform-managed, the trust was re-pointed by hand
+> via `aws iam update-assume-role-policy` through `AWSControlTowerExecution`
+> break-glass (SCP blocks SSO from IAM writes). That manual step is obsolete — do
+> not run it; apply the landing-zone layer instead.
 
 ---
 
