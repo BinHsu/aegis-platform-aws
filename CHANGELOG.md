@@ -23,6 +23,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   under `terraform.tfstate.d/<ENV>/` — removes the manual `-state=<file>`
   juggling on multi-account cold-start (#90). Regional + platform are already
   per-account S3 backends and are unchanged.
+- CI: renamed the apply self-reap flag `ALLOW_PARTIAL_APPLY` →
+  `REAP_ON_APPLY_FAILURE` with intuitive, safe-by-default semantics. `true` now
+  means "reap on failure"; unset/false KEEPS the partial stack (previously unset
+  silently ENABLED the destroy). Opt-in: unattended runs set the var `true`
+  (`fix(ci): intuitive reap-on-failure flag (was inverted ALLOW_PARTIAL_APPLY)`).
 
 ---
 

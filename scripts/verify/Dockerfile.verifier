@@ -1,0 +1,52 @@
+# Dockerfile.verifier — build the aegis in-cluster verification image.
+#
+# Bundles: grpcurl, python3, grpcweb.py, cognito_pkce.py, and the PCM fixture
+# placeholder path. The resulting image runs as the verifier-job.yaml Job; it
+# reaches aegis-core-engine and aegis-core-gateway over in-cluster DNS —
+# NO kubectl port-forward required.
+#
+# Build:
+#   docker build -f scripts/verify/Dockerfile.verifier \
+#     -t <registry>/aegis-verify:latest scripts/verify/
+#
+# The image is intentionally small (debian-slim base + grpcurl static binary +
+# python3). It carries no model weights, no cloud credentials, and no secrets.
+# Credentials (Cognito POOL, CLIENT_ID, COGNITO_DOMAIN) are injected via env
+# from the Job manifest.
+#
+# grpcurl version — keep in sync with scripts/install-tools.sh if present.
+ARG GRPCURL_VERSION=1.9.1
+
+FROM debian:bookworm-slim AS grpcurl-dl
+ARG GRPCURL_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "$ARCH" in \
+      amd64) GR_ARCH="linux_amd64" ;; \
+      arm64) GR_ARCH="linux_arm64" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL \
+      "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_${GR_ARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin grpcurl && \
+    chmod +x /usr/local/bin/grpcurl
+
+FROM debian:bookworm-slim
+# python3 (stdlib only — no pip deps; grpcweb.py uses socket+struct) and jq.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 jq ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=grpcurl-dl /usr/local/bin/grpcurl /usr/local/bin/grpcurl
+
+# Copy the verify helpers. The Job mounts or bakes the proto + PCM fixture.
+COPY grpcweb.py     /opt/aegis-verify/grpcweb.py
+COPY cognito_pkce.py /opt/aegis-verify/cognito_pkce.py
+COPY in-cluster-verify.py /opt/aegis-verify/in-cluster-verify.py
+
+# Non-root runtime: verifier has no reason to write to the host.
+RUN useradd -u 10001 -r -s /usr/sbin/nologin verify
+USER verify
+WORKDIR /opt/aegis-verify
+
+ENTRYPOINT ["python3", "/opt/aegis-verify/in-cluster-verify.py"]

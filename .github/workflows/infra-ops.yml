@@ -333,6 +333,25 @@ jobs:
           DESTROY_RC=0
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" || DESTROY_RC=$?
           kill "$REAPER_PID" 2>/dev/null || true; wait "$REAPER_PID" 2>/dev/null || true
+          # (b)+(c) Verified teardown. A green destroy can still be wrong if the VPC
+          # delete actually failed on a lingering ALB SG and terraform was about to
+          # spin (or did spin and gave up). After destroy returns, assert that NO
+          # orphan ALB and NO controller-owned SG remain — if any do, fail LOUD with
+          # an actionable message rather than reporting a clean teardown while the
+          # account still bills (a stuck VPC keeps NAT/EIP/ENI charges live).
+          if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
+            if ! REMAIN_LB="$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: ELBv2 query error"; REMAIN_LB=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
+          else
+            REMAIN_LB=''
+          fi
+          if ! REMAIN_SG="$(aws ec2 describe-security-groups --region "$r" --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" --query 'SecurityGroups[].GroupId' --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: SG query error"; REMAIN_SG=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
+          if [ -n "$REMAIN_LB" ] || [ -n "$REMAIN_SG" ]; then
+            echo "::error::teardown left orphan AWS objects — VPC ${VPC} may be stuck (still billing). ALB(s): [${REMAIN_LB:-none}] · controller SG(s): [${REMAIN_SG:-none}]. Delete them (aws elbv2 delete-load-balancer / aws ec2 delete-security-group --group-id <id>) then re-dispatch infra-ops destroy-region for account ${{ inputs.account_id }} ${r}."
+            [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1
+          fi
+          if [ "$DESTROY_RC" -ne 0 ]; then
+            echo "::error::destroy-region did NOT complete cleanly (rc=${DESTROY_RC}) — resources may STILL BE BILLING. Re-dispatch infra-ops destroy-region (account ${{ inputs.account_id }}, ${r}); ttl-reaper + budget are only backstops."
+          fi
           exit "$DESTROY_RC"
 
       - name: destroy-platform
