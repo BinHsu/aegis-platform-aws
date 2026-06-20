@@ -471,6 +471,10 @@ Architecture Decision Record. The index — with a reading order per audience
 [`docs/adr/README.md`](docs/adr/README.md). What was deliberately deferred, and the
 path to production hardening, is in [`docs/tradeoffs.md`](docs/tradeoffs.md).
 
+Notable recent decision: [ADR-23](docs/adr/23-image-distribution-public-ghcr-graviton.md)
+records the pivot to public GHCR + Graviton (arm64/t4g) for aegis-core, including
+the three knobs a forker must flip to switch back to amd64.
+
 ## Cost
 
 | Scope | Rate | Note |
