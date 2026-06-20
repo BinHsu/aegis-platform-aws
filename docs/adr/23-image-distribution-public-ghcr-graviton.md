@@ -115,6 +115,32 @@ pin — not tag immutability — carries the provenance guarantee, so the securi
 loss is bounded to "the registry host is outside the org" rather than "an
 artifact can be silently swapped under a pin".
 
+## Forker note: switching to amd64
+
+The repo ships arm64 by default (Graviton t4g nodes, `linux/arm64` GHCR images).
+A forker targeting x86 must flip three knobs — **all three must move together** or
+the cluster starts with a node/image arch mismatch:
+
+| # | File | Field | arm64 value (default) | amd64 value |
+|---|------|--------|-----------------------|-------------|
+| 1 | `terraform/modules/regional-stack/eks.tf` | `ami_type` | `AL2023_ARM_64_STANDARD` | `AL2023_x86_64_STANDARD` |
+| 2 | `regions.auto.tfvars.json` | `regions.<region>.node_instance` | `t4g.large` | `t3.large` (or any x86 family) |
+| 3 | `aegis-core-deploy` — `k8s/overlays/<env>/kustomization.yaml` | image digest pins | `ghcr.io/binhsu/aegis-core-{engine,gateway}@sha256:…` (arm64) | amd64 image digest — requires an amd64 build |
+
+**Knob 3 caveat.** The image digest pins live in `aegis-core-deploy`, not this
+repo. The published `ghcr.io/binhsu/aegis-core-{engine,gateway}` images are
+`linux/arm64` only — an amd64 forker must build and publish their own amd64
+images (or a multi-arch manifest list) and update the overlay digest pins in
+`aegis-core-deploy` accordingly.
+
+**Clean long-term fix — multi-arch image index (Slice-3).** Publish a manifest
+list (`docker buildx build --platform linux/amd64,linux/arm64`) so both
+architectures share one digest-pinnable image ref. A forker then changes only
+knobs 1 and 2 (compute) and the correct image variant is pulled automatically —
+no overlay surgery, no separate build path. This is the recommended future
+direction; single-arch arm64 was shipped first because there was no x86 consumer
+at the time (ADR-23 Decision section).
+
 ## Related
 
 [ADR-10](10-release-model-build-once-promote-by-digest.md) (superseded — release
