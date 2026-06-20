@@ -2,14 +2,19 @@
 # Pre-destroy — remove the in-cluster resources that own AWS objects
 # Terraform does not track, so `terraform destroy` of the VPC does not stall.
 #
-# The AWS Load Balancer Controller creates an ALB (with ENIs + public IPs) in
-# response to the greeter Ingress. That ALB is not in Terraform state; if it
-# outlives the controller, its ENIs hold the subnets and its public IPs hold
-# the internet gateway, and `terraform destroy` fails with DependencyViolation.
+# The AWS Load Balancer Controller creates an ALB/NLB (with ENIs + public IPs)
+# in response to an Ingress OR a type=LoadBalancer Service. Those LBs are not in
+# Terraform state; if one outlives the controller, its ENIs hold the subnets and
+# its public IPs hold the internet gateway, and `terraform destroy` fails with
+# DependencyViolation (VPC-stuck).
 #
-# Fix: while the controller is still running, drop the ArgoCD Application (so
-# it stops re-syncing the Ingress) and delete the Ingress; the controller then
-# deletes the ALB. Wait for that, then return so `terraform destroy` can run.
+# Fix (ordered): while the controller is still running,
+#   1. delete ALL ArgoCD Applications so nothing re-syncs an Ingress/Service;
+#   2. delete ALL Ingresses and ALL type=LoadBalancer Services cluster-wide —
+#      the controller then deletes their ALBs/NLBs;
+#   3. wait until no ELBv2 remains in the cluster's VPC, then return so
+#      `terraform destroy` can run.
+# Scoped by VPC so it is name-agnostic across workloads (greeter, aegis-core, …).
 #
 #   Usage:  scripts/dr/pre-destroy.sh <region> [cluster-name]
 #
@@ -36,11 +41,31 @@ fi
 
 aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION" >/dev/null
 
-echo "pre-destroy: removing the ArgoCD Application so it stops re-syncing greeter..."
+# Stop ArgoCD re-syncing first — otherwise it recreates any Ingress/Service we
+# delete below before the controller can reap the AWS object. Delete ALL
+# Applications, not just greeter: any workload (aegis-core, future onboards) may
+# own an Ingress or a Service that fronts an ALB/NLB.
+echo "pre-destroy: removing ALL ArgoCD Applications so nothing re-syncs an Ingress/Service..."
+kubectl delete applications --all -n argocd --ignore-not-found --timeout=120s 2>/dev/null || true
+# Belt-and-braces for the known greeter app name in case the bulk delete is denied
+# by a finalizer/RBAC edge — idempotent.
 kubectl delete application aegis-greeter -n argocd --ignore-not-found --timeout=60s 2>/dev/null || true
 
-echo "pre-destroy: deleting the greeter Ingress — the ALB controller then deletes its ALB..."
-kubectl delete ingress --all -n greeter --ignore-not-found --timeout=120s 2>/dev/null || true
+echo "pre-destroy: deleting all Ingresses — the ALB controller then deletes their ALBs..."
+kubectl delete ingress --all --all-namespaces --ignore-not-found --timeout=120s 2>/dev/null || true
+
+# (a) LoadBalancer-type Services own an ALB/NLB + ENIs the same way an Ingress
+# does, and they are NOT covered by the Ingress delete above. Delete every
+# Service of type LoadBalancer cluster-wide so the controller reaps the backing
+# LB before terraform deletes the VPC (orphan LB ENIs → DependencyViolation).
+echo "pre-destroy: deleting all type=LoadBalancer Services so their LBs are reaped..."
+kubectl get svc --all-namespaces \
+  -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+  2>/dev/null | while read -r ns name; do
+    [ -z "$ns" ] && continue
+    echo "  pre-destroy: deleting LoadBalancer Service ${ns}/${name}"
+    kubectl delete svc "$name" -n "$ns" --ignore-not-found --timeout=120s 2>/dev/null || true
+  done
 
 # Resolve the cluster's VPC so the ALB-wait poll is name-agnostic.
 # The ALB is named k8s-<namespace-hash>-* (e.g. k8s-aegisgre-* for namespace
@@ -48,7 +73,7 @@ kubectl delete ingress --all -n greeter --ignore-not-found --timeout=120s 2>/dev
 VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$REGION" \
         --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
 
-echo "pre-destroy: waiting (up to 5 min) for the ALB controller to delete the greeter ALB..."
+echo "pre-destroy: waiting (up to 5 min) for the controller to delete every ELBv2 in the VPC..."
 deadline=$(( $(date +%s) + 300 ))
 while true; do
   if [ -z "$VPC" ] || [ "$VPC" = "None" ]; then
