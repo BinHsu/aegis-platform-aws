@@ -117,8 +117,10 @@ sec:
 	# --tf-exclude-downloaded-modules: scan our code, not third-party module
 	# internals (terraform-aws-modules/*) whose deliberate choices (EKS public
 	# endpoint, VPC flow logs) are noted in docs/tradeoffs.md. --skip-dirs drops
-	# the example k8s manifests bundled inside those modules. Gate on MEDIUM+.
-	$(BIN)/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
+	# the example k8s manifests bundled inside those modules AND the
+	# aegis-policies kyverno-test fixtures (deliberately non-compliant Pods — the
+	# deny-test inputs, not deployed workloads). Gate on MEDIUM+.
+	$(BIN)/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --skip-dirs '**/charts/aegis-policies/tests/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
 
 # WS4 Axis A (ADR-22): offline composition gate for the XBucket XRD/Composition.
 # Helm-renders the chart, then crossplane resource validate (XRD + provider

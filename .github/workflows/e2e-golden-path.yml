@@ -1,0 +1,100 @@
+name: e2e-golden-path
+
+# NON-BILLABLE kind-in-CI E2E golden-path gate (epic #167 B1 / ADR-26). Mirrors
+# crossplane-kind-integration.yml: stands up a real Kubernetes API server (kind)
+# and runs the SAME ArgoCD + Kyverno + aegis-policies stack the platform installs
+# on EKS — with ZERO AWS creds, ZERO AWS calls, ZERO billable resources.
+#
+# What it proves, for $0, before any A-stage (ownership inversion) touches real
+# infrastructure:
+#   1. ArgoCD + Kyverno + the aegis-policies ClusterPolicies stand up (golden path).
+#   2. require-image-digest in Enforce mode REJECTS a tag-only Pod in an aegis-*
+#      namespace (the Enforce flip is a HARNESS-LOCAL overlay — platform default
+#      stays Audit; see golden-path.sh header + epic #167 open-decision 8).
+#   3. The generated default-deny NetworkPolicy ACTUALLY blocks cross-namespace
+#      traffic (needs a policy-enforcing CNI — kindnet does not enforce, so this
+#      workflow installs Calico; k3s enforces natively — see scripts/e2e/kind/).
+#   4. `kyverno test` (BVA unit tests) is green against the aegis-policies chart.
+#
+# No AWS: this workflow declares NO id-token permission and assumes NO AWS role.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # Scope to the harness + the policies it exercises — the kind spin-up +
+      # Calico + image pulls take several minutes.
+      - "scripts/e2e/**"
+      - "terraform/modules/regional-stack/charts/aegis-policies/**"
+      - ".github/workflows/e2e-golden-path.yml"
+  workflow_dispatch: {}
+
+# No id-token / no AWS. Read-only checkout is all this gate needs.
+permissions:
+  contents: read
+
+jobs:
+  golden-path:
+    name: kind-golden-path-e2e
+    runs-on: ubuntu-latest
+    # Hard ceiling so a stuck image-pull / wait can never hang a runner.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # kind on a pinned node image + digest (same pin as
+      # crossplane-kind-integration.yml). Default CNI is DISABLED via the config
+      # so Calico can own NetworkPolicy enforcement (kindnet does not enforce it).
+      - name: create kind cluster (default CNI off, Calico owns it)
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: aegis-e2e
+          node_image: kindest/node:v1.32.11@sha256:5fc52d52a7b9574015299724bd68f183702956aa4a2116ae75a63cb574b35af8
+          config: scripts/e2e/kind/kind-calico.yaml
+          # wait=0: do NOT wait for node Ready at create time. With the default
+          # CNI disabled the node stays NotReady until Calico is installed in the
+          # next step, so a create-time readiness wait would always time out. The
+          # readiness gate lives in the Calico step instead.
+          wait: "0s"
+
+      # Calico — the NetworkPolicy-enforcing CNI the default-deny negative test
+      # needs. Pinned manifest. Wait until the datapath is actually up (calico-node
+      # Ready → nodes Ready → coredns Ready) before running anything.
+      - name: install Calico (NetworkPolicy-enforcing CNI)
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/calico.yaml
+          kubectl -n kube-system rollout status daemonset/calico-node --timeout=300s
+          kubectl wait --for=condition=Ready nodes --all --timeout=180s
+          kubectl -n kube-system rollout status deployment/coredns --timeout=180s
+
+      - name: install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # Kyverno CLI for `kyverno test` (Check 4). Version tracks the kyverno chart
+      # kyverno.tf pins (3.2.x → Kyverno 1.12.x) so the test schema matches.
+      - name: install kyverno CLI
+        run: |
+          ver=v1.12.6
+          curl -sSL "https://github.com/kyverno/kyverno/releases/download/${ver}/kyverno-cli_${ver}_linux_x86_64.tar.gz" \
+            | tar -xz -C /tmp kyverno
+          sudo install -m 0755 /tmp/kyverno /usr/local/bin/kyverno
+          kyverno version
+
+      # Stage 1: bring up the golden path (ArgoCD + Kyverno + policies, Enforce
+      # overlay). Substrate-agnostic driver — kind's kubeconfig is the default.
+      - name: golden path — ArgoCD + Kyverno + aegis-policies
+        run: ./scripts/e2e/golden-path.sh
+
+      # Stage 2 negatives.
+      - name: negative — require-digest denies a tag-only pod
+        run: ./scripts/e2e/negative/assert-require-digest.sh
+
+      - name: negative — default-deny NetworkPolicy blocks cross-ns traffic
+        run: ./scripts/e2e/negative/assert-default-deny.sh
+
+      # Offline BVA unit tests (also wired into scripts/verify/static-checks.sh
+      # Check 4, which now stops skipping because tests/ exists).
+      - name: kyverno test — aegis-policies BVA unit tests
+        run: kyverno test terraform/modules/regional-stack/charts/aegis-policies/tests

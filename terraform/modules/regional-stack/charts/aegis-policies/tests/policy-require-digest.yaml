@@ -1,0 +1,52 @@
+# RENDERED SNAPSHOT of templates/clusterpolicy-require-digest.yaml — do NOT
+# hand-edit the spec. `kyverno test` cannot render Helm templates, so this file
+# is the chart's require-image-digest ClusterPolicy as Helm renders it.
+#
+# REGENERATE after any change to the chart template:
+#   helm template aegis-policies \
+#     terraform/modules/regional-stack/charts/aegis-policies \
+#     --set workloadNamespaceGlob='aegis-*' --set requireDigestAction=Enforce \
+#   | yq 'select(.metadata.name == "require-image-digest")'
+#
+# validationFailureAction is Enforce here only to mirror the harness posture; the
+# kyverno-test result (pass/fail/skip) is independent of Audit vs Enforce.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    aegis.binhsu.org/enforcement: "adr-10-promote-by-digest"
+    aegis.binhsu.org/status: "implemented, default Audit, E2E PENDING platform bootstrap"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-digest-pinned-image
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - "aegis-*"
+      validate:
+        message: >-
+          Container images must be pinned by sha256 digest (image: name@sha256:…),
+          not by a mutable tag. ADR-10 promote-by-digest — the bits staging
+          verified are the bits prod runs. Re-pin the deploy-repo overlay to the
+          built image's digest.
+        foreach:
+          - list: "request.object.spec.containers[]"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ regex_match('^.+@sha256:[a-fA-F0-9]{64}$', '{{element.image}}') }}"
+                    operator: Equals
+                    value: false
+          - list: "request.object.spec.initContainers[] || []"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ regex_match('^.+@sha256:[a-fA-F0-9]{64}$', '{{element.image}}') }}"
+                    operator: Equals
+                    value: false

@@ -1,0 +1,88 @@
+# kyverno-test resources for require-image-digest (issue #170).
+#
+# BVA (boundary value analysis) on the policy regex ^.+@sha256:[a-fA-F0-9]{64}$:
+#   • PRESENCE boundary (the axis the issue named): a valid @sha256:<64hex> digest
+#     is PRESENT (pass) vs ABSENT (fail). Covered both directions below.
+#   • foreach coverage : initContainers validated identically to containers.
+#   • SCOPE boundary   : aegis-* namespace (evaluated) vs system ns (skip).
+#
+#   • LENGTH sub-boundary (B-1=63 hex / B=64 / B+1=65) is NOT unit-testable here:
+#     a wrong-length sha256 is not a valid image reference, so the kyverno CLI's
+#     image parser rejects it BEFORE policy evaluation ("invalid checksum digest
+#     length"). Named explicitly per BVA discipline rule (k). The `{64}` length
+#     guard is still exercised end-to-end at admission in the kind gate
+#     (scripts/e2e/negative/assert-require-digest.sh), where the same rejection
+#     path applies — it is only the CLI *unit* layer that cannot express it.
+#
+# All aegis-* pods live in `aegis-e2e` so match.namespaces (aegis-*) selects them.
+---
+# ALLOWED — tag + valid 64-hex digest (the common promote-by-digest form). pass
+apiVersion: v1
+kind: Pod
+metadata:
+  name: allow-tag-digest
+  namespace: aegis-e2e
+spec:
+  containers:
+    - name: app
+      image: "busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+---
+# ALLOWED — digest only, no tag. pass
+apiVersion: v1
+kind: Pod
+metadata:
+  name: allow-digest-only
+  namespace: aegis-e2e
+spec:
+  containers:
+    - name: app
+      image: "busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+---
+# DENIED — floating tag, digest ABSENT (presence boundary, absent). fail
+apiVersion: v1
+kind: Pod
+metadata:
+  name: deny-tag-only
+  namespace: aegis-e2e
+spec:
+  containers:
+    - name: app
+      image: "busybox:1.37"
+---
+# DENIED — bare name, neither tag nor digest. fail
+apiVersion: v1
+kind: Pod
+metadata:
+  name: deny-bare-name
+  namespace: aegis-e2e
+spec:
+  containers:
+    - name: app
+      image: "busybox"
+---
+# DENIED — app container digest-pinned, but an initContainer is tag-only.
+# Proves the initContainers foreach is enforced, not just containers. fail
+apiVersion: v1
+kind: Pod
+metadata:
+  name: deny-init-tag-only
+  namespace: aegis-e2e
+spec:
+  initContainers:
+    - name: init
+      image: "busybox:1.37"
+  containers:
+    - name: app
+      image: "busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+---
+# SKIPPED — tag-only, but in a SYSTEM namespace outside the aegis-* glob, so the
+# policy does not apply (matches the chart's system-namespace exemption). skip
+apiVersion: v1
+kind: Pod
+metadata:
+  name: skip-system-tag-only
+  namespace: kube-system
+spec:
+  containers:
+    - name: app
+      image: "busybox:1.37"

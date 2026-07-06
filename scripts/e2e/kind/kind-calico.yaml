@@ -1,0 +1,16 @@
+# kind cluster config for the E2E golden-path gate (issue #170).
+#
+# WHY disableDefaultCNI: kind's default CNI (kindnet) does NOT enforce
+# NetworkPolicy. The default-deny negative test asserts traffic is ACTUALLY
+# blocked, which requires a policy-enforcing CNI — the workflow installs Calico,
+# so the built-in CNI must be turned off. podSubnet matches Calico's default
+# IP pool (192.168.0.0/16) so no IP-pool reconfiguration is needed.
+#
+# This is a CLUSTER-PROVISIONING concern, deliberately kept OUT of the
+# substrate-agnostic golden-path.sh: on k3s the built-in controller enforces
+# NetworkPolicy natively, so this file is kind-only.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"
