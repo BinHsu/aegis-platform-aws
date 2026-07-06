@@ -80,9 +80,12 @@ jobs:
         # trivy (successor to the EOL tfsec, which cannot parse TF 1.5 `check`
         # blocks). --tf-exclude-downloaded-modules drops findings in registry
         # modules; --skip-dirs drops the example k8s manifests bundled inside
-        # them. Gate on MEDIUM+ (our code is clean at that bar; 2 pre-existing
-        # LOW S3-logging findings are informational).
-        run: ./bin/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
+        # them AND the aegis-policies kyverno-test fixtures, which are
+        # DELIBERATELY non-compliant Pods (tag-only images, no securityContext) —
+        # they are the deny-test inputs, not deployed workloads, so scanning them
+        # as real config is a false positive. Gate on MEDIUM+ (our code is clean
+        # at that bar; 2 pre-existing LOW S3-logging findings are informational).
+        run: ./bin/trivy config terraform/ --tf-exclude-downloaded-modules --skip-dirs '**/.terraform/**' --skip-dirs '**/charts/aegis-policies/tests/**' --severity MEDIUM,HIGH,CRITICAL --exit-code 1
 
   terraform-test:
     # Cold-start gate (ADR-21 §D.2 layer 1). Runs the mock-only
