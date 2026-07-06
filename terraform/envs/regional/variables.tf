@@ -54,12 +54,6 @@ variable "tfstate_region" {
 }
 
 # ---- secrets (gitignored secrets.auto.tfvars locally; GH Actions secrets in CI) ----
-variable "github_token" {
-  description = "GitHub org-read PAT the ArgoCD SCM-provider generator uses to enumerate aegis-workload-tagged deploy repos. Scope: read:org + repo metadata (NOT admin:public_key — the per-workload deploy keys are gone; public repos clone anonymously)."
-  type        = string
-  sensitive   = true
-}
-
 variable "operator_principal_arn" {
   description = "ARN of the human operator's IAM principal — gets an explicit EKS ClusterAdmin access entry. Supply via gitignored secrets.auto.tfvars locally; GH Actions secret OPERATOR_PRINCIPAL_ARN in CI. Must be the SAME value in both."
   type        = string

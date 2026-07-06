@@ -19,10 +19,11 @@
 #
 # Repo authentication (ADR-07 / decision D2): the deploy repos are PUBLIC, so
 # ArgoCD clones them anonymously over HTTPS — the per-workload ED25519 deploy
-# keys this file used to mint are GONE. The org-read token (kubernetes_secret
-# .scm_token) is left in place as an ArgoCD repo-credential but is NO LONGER
-# CONSUMED by the ApplicationSet generator. It can be removed in a follow-up
-# cleanup once the token rotation policy is confirmed.
+# keys this file used to mint are GONE. The org-read token this module used to
+# thread into an ArgoCD repo-credential Secret (kubernetes_secret.scm_token,
+# backing the now-removed SCM-provider generator) has itself been REMOVED
+# (2026-07-06 cleanup) — nothing consumed it. var.scm_token / var.github_token
+# are no longer wired through this env.
 #
 # ⚠️ E2E PENDING platform bootstrap — the registries-driven flow has not yet
 # run against a live cluster (the prod proof used kubectl apply as a workaround).
@@ -43,26 +44,6 @@ resource "kubernetes_namespace" "argocd" {
       "pod-security.kubernetes.io/warn"    = "restricted"
     }
   }
-}
-
-# The org-read token originally used by the SCM-provider generator. The SCM
-# generator has been REPLACED by the registries-driven List generator (see the
-# header comment above) — this secret is no longer consumed by the
-# ApplicationSet. It is left in place as an ArgoCD repo-credential; follow-up
-# cleanup: confirm token rotation policy, then remove if not needed.
-resource "kubernetes_secret" "scm_token" {
-  metadata {
-    name      = "github-scm-token"
-    namespace = kubernetes_namespace.argocd.metadata[0].name
-    labels = {
-      # ArgoCD picks up SCM credentials from labelled secrets.
-      "argocd.argoproj.io/secret-type" = "repo-creds"
-    }
-  }
-  data = {
-    token = var.scm_token
-  }
-  type = "Opaque"
 }
 
 resource "helm_release" "argocd" {
@@ -97,8 +78,6 @@ resource "helm_release" "argocd" {
       }
     })
   ]
-
-  depends_on = [kubernetes_secret.scm_token]
 }
 
 # Per-workload params the SCM generator cannot know — all ACCOUNT-bound or

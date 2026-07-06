@@ -79,6 +79,6 @@ provider "helm" {
 }
 
 # The github provider is gone — the module no longer mints per-workload deploy
-# keys (ADR-07 / D2). var.github_token is now passed through to the module as a
-# value (the SCM-generator's org-read token in a k8s Secret), not used to
-# configure a provider here.
+# keys (ADR-07 / D2). var.github_token, which used to pass the SCM-generator's
+# org-read token through to the module as a k8s Secret value, is gone too
+# (2026-07-06 cleanup) — that secret had no consumer.
