@@ -127,12 +127,6 @@ variable "cognito_jwks_url" {
   default     = ""
 }
 
-variable "scm_token" {
-  description = "GitHub org-read token the ArgoCD SCM-provider generator uses to enumerate aegis-workload-tagged repos. Replaces the per-workload deploy keys (deploy repos are public → anonymous clone). Needs read:org + repo metadata, NOT admin:public_key."
-  type        = string
-  sensitive   = true
-}
-
 # Single source of truth for cluster access: every key becomes an EKS
 # access entry with ClusterAdmin (eks.tf iterates this map). Expected keys
 # (the regional env wires them; keys are stable — they name the access-entry

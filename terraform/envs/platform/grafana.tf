@@ -30,8 +30,11 @@ resource "grafana_dashboard" "greeter_overview" {
 }
 
 # Public-share link for the reviewer (no GC account required to view).
+# Gated on enable_public_dashboard (default false, demo/reviewer convenience
+# only — the link is unauthenticated): see variables.tf. Requires
+# enable_observability too, since the dashboard it shares only exists then.
 resource "grafana_dashboard_public" "greeter_overview" {
-  count         = var.enable_observability ? 1 : 0
+  count         = var.enable_observability && var.enable_public_dashboard ? 1 : 0
   dashboard_uid = grafana_dashboard.greeter_overview[0].uid
   is_enabled    = true
   share         = "public"
