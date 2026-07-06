@@ -86,21 +86,26 @@ dump_on_failure() {
 }
 trap dump_on_failure EXIT
 
-# helper: wait until an Application reports a given health+sync, polling ArgoCD.
+# helper: wait until an Application reports a given HEALTH, polling ArgoCD.
+# HEALTH — not sync — is the readiness signal we gate on. Kyverno self-mutates
+# (it injects its own webhook caBundle, and ships cleanup CronJobs + generated
+# resources), so ArgoCD's SYNC status for it legitimately flaps
+# Synced<->Unknown/OutOfSync forever; blocking on Synced would never settle. We
+# block on health=Healthy (all resources healthy) and just LOG the sync status;
+# the caller's kubectl rollout/wait is the concrete object-level gate.
 wait_app() {
-  local app="$1" want_health="${2:-Healthy}" want_sync="${3:-Synced}" timeout="${4:-300}"
-  echo "    waiting for Application/$app -> $want_sync/$want_health (<= ${timeout}s)"
-  local t=0
+  local app="$1" want_health="${2:-Healthy}" timeout="${3:-300}"
+  echo "    waiting for Application/$app -> health=$want_health (<= ${timeout}s)"
+  local t=0 h s
   while [ "$t" -lt "$timeout" ]; do
-    local h s
     h="$(kubectl get application "$app" -n "$ARGOCD_NS" -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
     s="$(kubectl get application "$app" -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-    if [ "$h" = "$want_health" ] && [ "$s" = "$want_sync" ]; then
-      echo "    Application/$app is $s/$h"; return 0
+    if [ "$h" = "$want_health" ]; then
+      echo "    Application/$app is health=$h (sync=$s — flap-tolerant for self-mutating operators)"; return 0
     fi
     sleep 5; t=$((t + 5))
   done
-  echo "    FAIL: Application/$app never reached $want_sync/$want_health (last: ${s:-?}/${h:-?})"; return 1
+  echo "    FAIL: Application/$app never reached health=$want_health (last: sync=${s:-?}/health=${h:-?})"; return 1
 }
 
 # ── 0. preflight ─────────────────────────────────────────────────────────────
@@ -137,7 +142,7 @@ YAML
 
 # ── 3. Wave 0 — Kyverno controller comes up via ArgoCD ───────────────────────
 echo "==> [3] Wave 0: ArgoCD syncing Kyverno controller"
-wait_app kyverno Healthy Synced 420
+wait_app kyverno Healthy 600
 kubectl rollout status deploy/kyverno-admission-controller  -n kyverno --timeout=180s
 kubectl rollout status deploy/kyverno-background-controller -n kyverno --timeout=180s
 echo "    Kyverno admission + background controllers up (delivered by ArgoCD)."
@@ -159,14 +164,26 @@ fi
 
 # ── 5. Wave 1 — aegis-policies ClusterPolicies synced by ArgoCD ──────────────
 echo "==> [5] Wave 1: ArgoCD syncing aegis-policies ClusterPolicies"
-wait_app aegis-policies Healthy Synced 300
+wait_app aegis-policies Healthy 300
 kubectl wait --for=condition=Ready clusterpolicy/require-image-digest                --timeout=120s
 kubectl wait --for=condition=Ready clusterpolicy/default-deny-networkpolicy-baseline --timeout=120s
-DIGEST_ACTION="$(kubectl get clusterpolicy require-image-digest -o jsonpath='{.spec.validationFailureAction}' 2>/dev/null || true)"
-echo "    ClusterPolicies Ready via ArgoCD (require-image-digest action=$DIGEST_ACTION)."
-if [ "$REQUIRE_DIGEST_ACTION" = "Enforce" ] && [ "$DIGEST_ACTION" != "Enforce" ]; then
-  echo "    FAIL: require-image-digest is '$DIGEST_ACTION', harness expected Enforce."; exit 1
+# The step-4 Enforce patch triggers an ArgoCD RE-render; the policy object may
+# still carry the pre-patch Audit action for a few seconds. Poll the live
+# ClusterPolicy until it actually reflects Enforce (don't race the re-sync).
+if [ "$REQUIRE_DIGEST_ACTION" = "Enforce" ]; then
+  echo "    waiting for require-image-digest validationFailureAction=Enforce (post-patch re-sync)"
+  ok=0
+  for _ in $(seq 1 36); do
+    DIGEST_ACTION="$(kubectl get clusterpolicy require-image-digest -o jsonpath='{.spec.validationFailureAction}' 2>/dev/null || true)"
+    [ "$DIGEST_ACTION" = "Enforce" ] && { ok=1; break; }
+    kubectl -n "$ARGOCD_NS" annotate application aegis-policies argocd.argoproj.io/refresh=normal --overwrite >/dev/null 2>&1 || true
+    sleep 5
+  done
+  [ "$ok" = 1 ] || { echo "    FAIL: require-image-digest never became Enforce (last: '$DIGEST_ACTION')."; exit 1; }
+else
+  DIGEST_ACTION="$(kubectl get clusterpolicy require-image-digest -o jsonpath='{.spec.validationFailureAction}' 2>/dev/null || true)"
 fi
+echo "    ClusterPolicies Ready via ArgoCD (require-image-digest action=$DIGEST_ACTION)."
 
 # ── 6. workload namespace + barriers (identical to B1 golden-path.sh) ────────
 echo "==> [6] Creating labelled workload namespace $E2E_NS"
