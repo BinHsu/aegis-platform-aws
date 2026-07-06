@@ -17,8 +17,6 @@ module "stack" {
   node_min      = var.node_min
   node_max      = var.node_max
 
-  scm_token = var.github_token
-
   # WS4: override ecr_region to the PLATFORM region so every region's workload
   # pulls the image from the single deployment-account ECR, which lives only in
   # platform_region (deployment-ecr.tf is single-region). A non-primary region

@@ -255,14 +255,28 @@ Tracing earns its keep once the app gains downstream dependencies.
 
 ## Delivery pipeline
 
-CI-driven apply is already in place (ADR-03): `infra-apply` runs
-`terraform apply` on push to `main`, gated by PR + branch protection. What a
-larger setup would add:
+CI-driven apply is in place ([ADR-03](adr/03-delivery-cicd-gitops.md),
+[ADR-11](adr/11-account-dimension-single-source-of-truth.md)), and it already
+carries a required-reviewer approval gate in front of every real prod apply —
+stronger than a plain push-to-main pipeline:
 
-- **Plan/apply approval environments** — a GitHub Environment with required
-  reviewers in front of `infra-apply`, so apply needs an explicit human gate
-  beyond PR review. Deliberately omitted: PR review of the plan diff *is* the
-  gate, and a second button is Atlantis-era ceremony.
+- **`infra-prod.yml`** is the promotion path: it triggers only on a push to
+  `main` that changes the `accounts.prod.pin` in `accounts.json` (i.e. an
+  explicit promotion PR to a release tag), checks out that pinned ref, and
+  calls the reusable `infra-apply-account.yml` with `gate_blocks: true`. Its
+  `apply-regional` job always runs inside the GitHub Environment
+  `prod-apply-gated`, which carries required reviewers — a human must approve
+  before *any* prod region applies, independent of the EKS-version cost gate.
+- **`infra-apply.yml`** is `workflow_dispatch`-only break-glass (marker A13,
+  incident 2026-06-06): it no longer runs on push to `main` — an operator must
+  manually dispatch it and type `apply` to confirm. Its `apply-regional` job
+  routes through `prod-apply-gated` when the EKS-version cost gate has
+  tripped, or the ungated `prod-apply` environment when the version check is
+  clean.
+- Plan-time validation still runs via `infra-plan` on every PR.
+
+What a larger setup would still add:
+
 - **Drift detection** — a scheduled `terraform plan` that alerts on out-of-band
   changes. Effort: ~0.5 day.
 - **Policy-as-code** — OPA / Conftest gating the plan output against
