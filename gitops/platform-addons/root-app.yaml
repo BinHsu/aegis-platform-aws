@@ -1,0 +1,56 @@
+# gitops/platform-addons/root-app.yaml
+#
+# App-of-apps ROOT Application (epic #167 ADR-25 ownership inversion).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠️  MINIMAL A2 SCAFFOLD — created by A2 (#174) because A1 (#173) is not yet
+#     implemented. A2 needs an app-of-apps root to deliver the Kyverno +
+#     aegis-policies child Applications, so it lays down the SMALLEST root that
+#     works. A1 OWNS this file's final form (facts bridge + per-cluster
+#     parameterization + the Alloy child) and MUST reconcile this stub:
+#       - A1 replaces the hardcoded repoURL/targetRevision below with values
+#         threaded from the Terraform-written cluster-facts Secret (epic
+#         decision #3), so one manifest serves every cluster/branch.
+#       - A1 adds addons/alloy/ as the first migrated add-on; A3–A6 add
+#         crossplane/, argo-rollouts/, alb-controller/, external-dns/ the same way.
+#     Until then this root points at `main` and enumerates only what exists.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# HOW IT WORKS: this single Application watches the addons/ directory in-repo and
+# applies every child Application manifest it finds (directory.recurse). Each
+# child then points at its OWN chart source (a public Helm repo or an in-repo
+# chart path) and carries an `argocd.argoproj.io/sync-wave` annotation. ArgoCD
+# honors sync-waves ACROSS the child Application resources this root creates, so
+# wave 0 (kyverno controller + CRDs) reaches Healthy before wave 1
+# (aegis-policies ClusterPolicies) is synced — the declarative replacement for
+# the `depends_on = [helm_release.kyverno]` that ordered the old Terraform
+# helm_releases.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-addons
+  namespace: argocd
+  # NO resources-finalizer here on purpose (teardown safety — see the kyverno
+  # child for the full rationale). Deleting this root must not trigger a
+  # foreground cascade that blocks on Kyverno's admission webhook; ephemeral
+  # teardown deletes the whole cluster and reaps the add-ons with it.
+spec:
+  project: default
+  source:
+    # TODO(A1 #173): parameterize repoURL + targetRevision from the TF cluster-
+    # facts Secret (epic decision #3). Hardcoded to the public repo + main here.
+    # The repo is PUBLIC → ArgoCD clones anonymously, no credential (decision #2).
+    # On a pre-merge feature branch, point targetRevision at that branch.
+    repoURL: https://github.com/BinHsu/aegis-platform-aws
+    targetRevision: main
+    path: gitops/platform-addons/addons
+    directory:
+      recurse: true
+  destination:
+    # Applications are namespaced objects; ArgoCD watches them in its own ns.
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

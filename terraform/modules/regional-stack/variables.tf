@@ -244,13 +244,10 @@ variable "cluster_version" {
 }
 
 # ---- ADR-10: require-digest admission policy ------------------------------
-variable "require_digest_action" {
-  description = "Kyverno validationFailureAction for the ADR-10 require-image-digest ClusterPolicy. \"Audit\" (default) logs tag-only images in workload namespaces but admits them, so landing the policy cannot wedge a workload that has not yet migrated to digest pinning. Flip to \"Enforce\" only AFTER the deploy repos pin @sha256 (ADR-10 phase 3) and an Audit run shows zero violations."
-  type        = string
-  default     = "Audit"
-
-  validation {
-    condition     = contains(["Audit", "Enforce"], var.require_digest_action)
-    error_message = "require_digest_action must be \"Audit\" or \"Enforce\"."
-  }
-}
+# var.require_digest_action was REMOVED in A2 (#174). Its only consumer was
+# helm_release.aegis_policies (kyverno.tf), which moved to GitOps. The Audit /
+# Enforce posture now lives in git — gitops/platform-addons/addons/aegis-policies/
+# application.yaml (helm.values.requireDigestAction, default Audit). The B1 E2E
+# harness still overrides it to Enforce at render time (epic decision #8).
+# A1 (#173) may re-introduce a per-cluster override THROUGH the cluster-facts
+# bridge if variance is ever needed; today the git default is uniform.
