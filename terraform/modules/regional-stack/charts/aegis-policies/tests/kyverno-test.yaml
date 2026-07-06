@@ -1,0 +1,39 @@
+# kyverno-test manifest for the aegis-policies require-image-digest ClusterPolicy
+# (issue #170 / epic #167). Makes static-checks.sh Check 4 stop skipping.
+#
+# Run: kyverno test terraform/modules/regional-stack/charts/aegis-policies/tests
+#
+# Results map (see resources.yaml for the BVA rationale):
+#   pass : image carries a valid 64-hex @sha256: digest (admitted)
+#   fail : digest absent (tag-only / bare name), or a tag-only initContainer
+#   skip : tag-only pod in a system namespace (outside the aegis-* glob)
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-image-digest
+policies:
+  - policy-require-digest.yaml
+resources:
+  - resources.yaml
+results:
+  - policy: require-image-digest
+    rule: require-digest-pinned-image
+    kind: Pod
+    result: pass
+    resources:
+      - allow-tag-digest
+      - allow-digest-only
+  - policy: require-image-digest
+    rule: require-digest-pinned-image
+    kind: Pod
+    result: fail
+    resources:
+      - deny-tag-only
+      - deny-bare-name
+      - deny-init-tag-only
+  - policy: require-image-digest
+    rule: require-digest-pinned-image
+    kind: Pod
+    result: skip
+    resources:
+      - skip-system-tag-only
