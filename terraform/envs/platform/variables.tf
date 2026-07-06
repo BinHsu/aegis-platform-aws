@@ -49,6 +49,12 @@ variable "enable_observability" {
   default     = false
 }
 
+variable "enable_public_dashboard" {
+  description = "Whether to create a public (unauthenticated) share link for the greeter dashboard (grafana_dashboard_public). Demo/reviewer convenience ONLY — anyone with the link can view it, no Grafana Cloud account required. Default FALSE. Only takes effect when enable_observability = true."
+  type        = bool
+  default     = false
+}
+
 # ---- Grafana Cloud creds (sensitive; supplied via gitignored tfvars) -------
 variable "grafana_cloud_url" {
   description = "Grafana Cloud stack URL (e.g. https://aegis.grafana.net). Used by the grafana TF provider."
