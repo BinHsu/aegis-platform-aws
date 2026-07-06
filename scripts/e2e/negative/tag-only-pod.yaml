@@ -1,0 +1,26 @@
+# scripts/e2e/negative/tag-only-pod.yaml
+#
+# NEGATIVE fixture for the ADR-10 require-image-digest ClusterPolicy (epic #167 /
+# issue #170). This Pod references its image by a FLOATING TAG (busybox:1.37) —
+# no `@sha256:` digest — and lives in the `aegis-e2e` namespace, which matches
+# the policy's workload-namespace glob (`aegis-*`).
+#
+# EXPECTED: under require-digest in Enforce mode (the harness-local override the
+# golden-path driver applies), `kubectl apply` of this Pod is REJECTED at
+# admission. assert-require-digest.sh applies it and asserts the denial.
+#
+# Do NOT pin this image by digest — being tag-only is the whole point.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tag-only-pod
+  namespace: aegis-e2e
+  labels:
+    aegis.binhsu.org/test: require-digest-negative
+spec:
+  restartPolicy: Never
+  containers:
+    - name: tag-only
+      # Floating tag, NO @sha256: digest — this is what require-digest must deny.
+      image: busybox:1.37
+      command: ["sh", "-c", "sleep 3600"]
