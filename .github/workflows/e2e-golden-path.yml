@@ -1,13 +1,23 @@
 name: e2e-golden-path
 
-# NON-BILLABLE kind-in-CI E2E golden-path gate (epic #167 B1 / ADR-26). Mirrors
-# crossplane-kind-integration.yml: stands up a real Kubernetes API server (kind)
-# and runs the SAME ArgoCD + Kyverno + aegis-policies stack the platform installs
-# on EKS — with ZERO AWS creds, ZERO AWS calls, ZERO billable resources.
+# NON-BILLABLE kind-in-CI E2E golden-path gate (epic #167 B1 / ADR-26; delivery
+# inverted to GitOps in A2 / ADR-25 / #174). Mirrors crossplane-kind-integration.yml:
+# stands up a real Kubernetes API server (kind) and brings up the SAME ArgoCD +
+# Kyverno + aegis-policies stack the platform installs on EKS — with ZERO AWS
+# creds, ZERO AWS calls, ZERO billable resources.
+#
+# DELIVERY: since A2 (#174) the policy stack arrives THROUGH ArgoCD (app-of-apps
+# root → kyverno wave 0 → aegis-policies wave 1), NOT through a direct `helm
+# install`. This gate runs scripts/e2e/gitops-golden-path.sh — the exact driver
+# scripts/e2e/local/kind-gitops-run.sh validates locally — pointed at the PR's
+# own commit so ArgoCD reads gitops/platform-addons from the branch under test.
+# (kyverno.tf no longer holds the helm_release the old golden-path.sh scraped, so
+# that direct-apply driver is a local-only lane now; CI proves the GitOps path.)
 #
 # What it proves, for $0, before any A-stage (ownership inversion) touches real
 # infrastructure:
-#   1. ArgoCD + Kyverno + the aegis-policies ClusterPolicies stand up (golden path).
+#   1. ArgoCD renders + syncs the Kyverno + aegis-policies Applications from git
+#      (the ownership inversion), and the ClusterPolicies stand up (golden path).
 #   2. require-image-digest in Enforce mode REJECTS a tag-only Pod in an aegis-*
 #      namespace (the Enforce flip is a HARNESS-LOCAL overlay — platform default
 #      stays Audit; see golden-path.sh header + epic #167 open-decision 8).
@@ -25,6 +35,7 @@ on:
       # Scope to the harness + the policies it exercises — the kind spin-up +
       # Calico + image pulls take several minutes.
       - "scripts/e2e/**"
+      - "gitops/platform-addons/**"
       - "terraform/modules/regional-stack/charts/aegis-policies/**"
       - ".github/workflows/e2e-golden-path.yml"
   workflow_dispatch: {}
@@ -73,7 +84,8 @@ jobs:
           version: v3.16.4
 
       # Kyverno CLI for `kyverno test` (Check 4). Version tracks the kyverno chart
-      # kyverno.tf pins (3.2.x → Kyverno 1.12.x) so the test schema matches.
+      # the kyverno Application pins (gitops/platform-addons/addons/kyverno/
+      # application.yaml → 3.2.x → Kyverno 1.12.x) so the test schema matches.
       - name: install kyverno CLI
         run: |
           ver=v1.12.6
@@ -82,10 +94,31 @@ jobs:
           sudo install -m 0755 /tmp/kyverno /usr/local/bin/kyverno
           kyverno version
 
-      # Stage 1: bring up the golden path (ArgoCD + Kyverno + policies, Enforce
-      # overlay). Substrate-agnostic driver — kind's kubeconfig is the default.
-      - name: golden path — ArgoCD + Kyverno + aegis-policies
-        run: ./scripts/e2e/golden-path.sh
+      # yq (mikefarah v4) — gitops-golden-path.sh uses it to rewrite the root
+      # Application's repoURL/targetRevision at seed time. Pinned for determinism
+      # rather than relying on the runner image shipping it.
+      - name: install yq
+        run: |
+          ver=v4.44.3
+          sudo curl -sSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${ver}/yq_linux_amd64"
+          sudo chmod 0755 /usr/local/bin/yq
+          yq --version
+
+      # Stage 1: bring up the golden path VIA GITOPS (the A2 ownership inversion) —
+      # seed only the app-of-apps root and let ArgoCD sync Kyverno (wave 0) then
+      # aegis-policies (wave 1). Point ArgoCD at THIS PR's commit on the public
+      # repo (gitops/platform-addons does not exist on main yet), exactly as the
+      # local runner points it at a served worktree. Enforce overlay is applied by
+      # the driver (harness-local; platform default stays Audit). kind's kubeconfig
+      # is the default context.
+      - name: golden path — ArgoCD-delivered Kyverno + aegis-policies (GitOps)
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          # PR head commit (pushed + clonable); fall back to the run's own sha for
+          # workflow_dispatch. NOT github.sha on a PR (that is the merge ref).
+          TARGET_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/e2e/gitops-golden-path.sh
 
       # Stage 2 negatives.
       - name: negative — require-digest denies a tag-only pod

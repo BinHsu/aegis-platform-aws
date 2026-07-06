@@ -30,18 +30,22 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 POLICIES_CHART="$REPO_ROOT/terraform/modules/regional-stack/charts/aegis-policies"
-KYVERNO_TF="$REPO_ROOT/terraform/modules/regional-stack/kyverno.tf"
+# A2 (#174) moved the Kyverno helm_release + policy config OUT of kyverno.tf and
+# into the ArgoCD Applications. Those manifests are now the single source of truth
+# for both pins this direct-apply harness needs, so it reads them from there (same
+# anti-drift discipline as before — the value lives in exactly one place, and this
+# lane installs the SAME pin GitOps delivers).
+KYVERNO_APP="$REPO_ROOT/gitops/platform-addons/addons/kyverno/application.yaml"
+POLICIES_APP="$REPO_ROOT/gitops/platform-addons/addons/aegis-policies/application.yaml"
 
 # ── pinned versions ─────────────────────────────────────────────────────────
-# Kyverno chart version is READ FROM kyverno.tf so this harness cannot drift from
-# what the platform installs on EKS (same anti-drift discipline as
-# scripts/crossplane-kind-integration.sh).
-KYVERNO_CHART_VERSION="$(grep -A10 'resource "helm_release" "kyverno"' "$KYVERNO_TF" \
-  | grep -oE 'version[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' \
+# Kyverno chart version — the kyverno Application's source.targetRevision.
+KYVERNO_CHART_VERSION="$(grep -oE 'targetRevision:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$KYVERNO_APP" \
   | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
-# The workload-namespace glob the policies target — read from kyverno.tf too.
-WORKLOAD_NS_GLOB="$(grep -A2 'name  = "workloadNamespaceGlob"' "$KYVERNO_TF" \
-  | grep -oE 'value = "[^"]+"' | head -1 | sed -E 's/value = "([^"]+)"/\1/')"
+# The workload-namespace glob the policies target — the aegis-policies
+# Application's helm.values (workloadNamespaceGlob: "aegis-*").
+WORKLOAD_NS_GLOB="$(grep -oE 'workloadNamespaceGlob:[[:space:]]*"[^"]+"' "$POLICIES_APP" \
+  | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
 # ArgoCD chart — the platform installs ArgoCD from Terraform; B1 only needs A
 # working ArgoCD to prove the golden path, so this pin is harness-local.
 ARGOCD_CHART_VERSION="${ARGOCD_CHART_VERSION:-7.7.11}"
@@ -55,7 +59,7 @@ REQUIRE_DIGEST_ACTION="${REQUIRE_DIGEST_ACTION:-Enforce}"
 E2E_NS="${E2E_NS:-aegis-e2e}"
 
 if [ -z "$KYVERNO_CHART_VERSION" ] || [ -z "$WORKLOAD_NS_GLOB" ]; then
-  echo "FATAL: could not read pinned values from kyverno.tf." >&2
+  echo "FATAL: could not read pinned values from the GitOps Application manifests." >&2
   echo "  kyverno chart version : '${KYVERNO_CHART_VERSION}'" >&2
   echo "  workload ns glob      : '${WORKLOAD_NS_GLOB}'" >&2
   exit 1

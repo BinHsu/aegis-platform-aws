@@ -1,0 +1,116 @@
+# gitops/platform-addons/addons/kyverno/application.yaml
+#
+# Kyverno controller — SYNC-WAVE 0 (epic #167 A2 / #174).
+#
+# Migrated OUT of terraform/modules/regional-stack/kyverno.tf
+# (helm_release.kyverno). ArgoCD now owns the Kyverno controller + its CRDs, so
+# `terraform destroy` no longer helm-uninstalls it — dissolving the admission-
+# webhook teardown deadlock (incident 2026-06-06) at the ROOT rather than
+# papering over it with a Terraform-side `wait=false`.
+#
+# WAVE ORDER: this Application is wave 0; aegis-policies is wave 1. ArgoCD brings
+# this app to Healthy (controller Deployments Available + CRDs Established)
+# BEFORE it syncs wave 1, so the kyverno.io ClusterPolicy CRD exists before any
+# ClusterPolicy CR is applied. This replaces `depends_on = [helm_release.kyverno]`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    # CRDs (this app) must precede the policy CRs (aegis-policies, wave 1).
+    argocd.argoproj.io/sync-wave: "0"
+  # ── TEARDOWN SAFETY — the GitOps analog of the old TF `wait = false` ─────────
+  # DELIBERATELY NO `resources-finalizer.argocd.argoproj.io`. Kyverno's admission
+  # webhooks are fail-closed and its CRs carry finalizers; a foreground cascade
+  # delete (what the finalizer triggers on Application deletion) would hang on
+  # "no endpoints available" exactly like the old helm-uninstall deadlock. The
+  # Terraform `wait = false` existed to stop that hang blocking `terraform
+  # destroy`; here we get the same guarantee structurally — deleting this
+  # Application orphans Kyverno (reaped when the cluster is deleted), it never
+  # blocks on the webhook. Ephemeral teardown = delete the cluster, full stop.
+spec:
+  project: default
+  source:
+    # Same public chart + PINNED version the old helm_release used. The B1
+    # harness (scripts/e2e/golden-path.sh) reads this pin back out of kyverno.tf
+    # for anti-drift; keep the two in lock-step at every chart bump.
+    repoURL: https://kyverno.github.io/kyverno/
+    chart: kyverno
+    targetRevision: 3.2.6 # pinned — verify at bootstrap
+    helm:
+      # ── cleanup-image overrides — MOVED verbatim from kyverno.tf values ──────
+      # Bitnami pulled bitnami/kubectl from free Docker Hub on 2025-08-28 →
+      # ImagePullBackOff on every kyverno cleanup pod (caught live 2026-06-12,
+      # issue #65). registry.k8s.io/kubectl is distroless (no /bin/bash) and the
+      # 3.2.6 cleanup hooks exec `/bin/bash -c`. docker.io/alpine/k8s:1.31.13
+      # ships kubectl + bash, no auth wall, not distroless. cleanupJobs run as
+      # root by default but the chart sets runAsNonRoot without a UID → kubelet
+      # rejects the pod ("runAsNonRoot but no non-root UID"); pin runAsUser/Group
+      # 65534 (nobody). webhooksCleanup / policyReportsCleanup already default to
+      # 65534. All 7 image paths confirmed from `helm show values kyverno/kyverno
+      # --version 3.2.6`. Tech-debt (ADR-10): pin to a digest at next chart bump.
+      values: |
+        webhooksCleanup:
+          image:
+            registry: docker.io
+            repository: alpine/k8s
+            tag: "1.31.13"
+        policyReportsCleanup:
+          image:
+            registry: docker.io
+            repository: alpine/k8s
+            tag: "1.31.13"
+        cleanupJobs:
+          admissionReports:
+            image:
+              registry: docker.io
+              repository: alpine/k8s
+              tag: "1.31.13"
+            securityContext:
+              runAsUser: 65534
+              runAsGroup: 65534
+          clusterAdmissionReports:
+            image:
+              registry: docker.io
+              repository: alpine/k8s
+              tag: "1.31.13"
+            securityContext:
+              runAsUser: 65534
+              runAsGroup: 65534
+          updateRequests:
+            image:
+              registry: docker.io
+              repository: alpine/k8s
+              tag: "1.31.13"
+            securityContext:
+              runAsUser: 65534
+              runAsGroup: 65534
+          ephemeralReports:
+            image:
+              registry: docker.io
+              repository: alpine/k8s
+              tag: "1.31.13"
+            securityContext:
+              runAsUser: 65534
+              runAsGroup: 65534
+          clusterEphemeralReports:
+            image:
+              registry: docker.io
+              repository: alpine/k8s
+              tag: "1.31.13"
+            securityContext:
+              runAsUser: 65534
+              runAsGroup: 65534
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Kyverno's CRDs exceed the 256 KB client-side last-applied annotation
+      # limit; ServerSideApply avoids "metadata.annotations: Too long".
+      - ServerSideApply=true

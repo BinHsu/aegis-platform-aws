@@ -1,0 +1,58 @@
+# gitops/platform-addons/addons/aegis-policies/application.yaml
+#
+# aegis-policies ClusterPolicies — SYNC-WAVE 1 (epic #167 A2 / #174).
+#
+# Migrated OUT of terraform/modules/regional-stack/kyverno.tf
+# (helm_release.aegis_policies). Ships the ADR-07 four-pack #4 default-deny
+# NetworkPolicy baseline + the ADR-10 require-image-digest ClusterPolicy.
+#
+# WAVE 1: syncs only AFTER the kyverno Application (wave 0) is Healthy, so the
+# kyverno.io ClusterPolicy CRD is Established before these CRs apply. Declarative
+# replacement for `depends_on = [helm_release.kyverno]`.
+#
+# CHART LOCATION: the chart still lives at
+# terraform/modules/regional-stack/charts/aegis-policies so the B1 harness path
+# (golden-path.sh reads it there) and the `kyverno test` fixtures stay intact.
+# Relocating charts under gitops/ is a later cleanup (note for A1), out of A2 scope.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aegis-policies
+  namespace: argocd
+  annotations:
+    # Policy CRs depend on the kyverno CRDs delivered by wave 0.
+    argocd.argoproj.io/sync-wave: "1"
+  # NO resources-finalizer — same teardown-safety rationale as the kyverno
+  # child: these ClusterPolicy CRs carry Kyverno finalizers, so a foreground
+  # cascade on Application deletion can hang. Orphan-on-delete; the cluster
+  # delete reaps them. (Migrates the old aegis_policies `wait = false`.)
+spec:
+  project: default
+  source:
+    # TODO(A1 #173): parameterize repoURL + targetRevision from the TF cluster-
+    # facts Secret. Hardcoded to the public repo + main here (decisions #2/#3).
+    repoURL: https://github.com/BinHsu/aegis-platform-aws
+    targetRevision: main
+    path: terraform/modules/regional-stack/charts/aegis-policies
+    helm:
+      # PRODUCTION POSTURE, moved from the old TF `set` blocks:
+      #   - workloadNamespaceGlob: the namespaces the policies target (was the
+      #     only real knob on the TF release).
+      #   - requireDigestAction: "Audit" — the platform default (was
+      #     var.require_digest_action, default Audit). Audit LOGS tag-only images
+      #     but ADMITS them, so landing the policy cannot wedge a workload that
+      #     has not yet migrated to digest pinning. Flip to "Enforce" (in git,
+      #     here) only AFTER the deploy repos pin @sha256 (ADR-10 phase 3) and an
+      #     Audit run shows zero violations. The B1 E2E harness overrides this to
+      #     Enforce at render time (harness-local, epic decision #8) to exercise
+      #     the negative test — it does NOT change this production default.
+      values: |
+        workloadNamespaceGlob: "aegis-*"
+        requireDigestAction: "Audit"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

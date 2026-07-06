@@ -82,8 +82,9 @@ module "eks" {
   # not as N copy-pasted blocks. A role missing from the map gets K8s
   # `Unauthorized` on every helm_release operation: that is exactly how the
   # destroy role stranded a billing cluster in the 2026-06-06 incident shape
-  # (terraform destroy reaches helm_release.kyverno → Unauthorized → destroy
-  # fails → cluster keeps billing). The CI roles read/manage Helm release
+  # (terraform destroy reaches a TF-owned helm_release — historically
+  # kyverno, now the ArgoCD bootstrap + remaining add-ons — → Unauthorized →
+  # destroy fails → cluster keeps billing). The CI roles read/manage Helm release
   # state (stored in K8s Secrets, which the EKS View policy cannot read) so
   # they all get ClusterAdmin; the AWS-side trust scoping (ci = read-only AWS
   # / any ref; apply = admin AWS / main + apply environments; destroy =
