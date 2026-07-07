@@ -1,13 +1,22 @@
-# ADR-25: Node autoscaling — close the pending-pods-never-scale gap (#182)
+# ADR-27: Node autoscaling — close the pending-pods-never-scale gap (#182)
 
 ## Status
 
-**Proposed — AWAITING OPERATOR DECISION.** No code ships with this ADR. It
-frames the options and carries a recommendation; the operator picks. Filed from
-review finding [#182](https://github.com/BinHsu/aegis-platform-aws/issues/182)
-(epic #181).
+**Accepted — decided by Bin 2026-07-07: option (a) Karpenter.** Drafted as
+Proposed with four options from review finding
+[#182](https://github.com/BinHsu/aegis-platform-aws/issues/182) (epic #181);
+the operator picked Karpenter the following day. Options (b)–(d) below stand
+as the considered alternatives.
 
-ADR-24 is reserved by in-flight work on another branch; this record takes 25.
+**No implementation ships with this ADR's PR.** This record captures the
+decision only; the Karpenter install (helm_release + default NodePool /
+EC2NodeClass + interruption-queue infra + Pod Identity role, then the
+follow-up shrink of the static #183 On-Demand baseline once
+Karpenter-provisioned capacity is verified on staging) is follow-up work —
+**#182 stays open to track the implementation**.
+
+Numbering: ADR-24 is reserved by in-flight work on another branch; ADR-25/26
+are reserved by the epic #167 ownership-inversion work; this record takes 27.
 
 ## Context
 
@@ -39,9 +48,9 @@ That fix changes *what* the static groups run, not *whether* capacity scales —
 this ADR owns the scaling question. Whichever option is chosen below should be
 reconciled with the #183 shape (noted per option).
 
-## Options
+## Decision
 
-### (a) Karpenter — RECOMMENDED
+### (a) Karpenter — CHOSEN (Bin, 2026-07-07)
 
 Install Karpenter via the regional-stack module (helm_release, same pattern as
 the existing controller set), with a default `NodePool` + `EC2NodeClass`:
@@ -63,6 +72,8 @@ enabled.
   MNG serves as that static base, so this is handled, but it is a real
   constraint to document); largest implementation surface of the three install
   options.
+
+## Considered alternatives
 
 ### (b) Cluster Autoscaler
 
@@ -108,23 +119,31 @@ posture explicit instead of implied.
   rewording; leaves HPA (workload layer) able to request replicas the node
   layer can never host.
 
-## Recommendation (agent proposal, not a decision)
+## Rationale for the choice
 
-**(a) Karpenter.** It is the direction the repo's own documents already point
-to (ADR-08 escape hatch, tradeoffs.md), it is the AWS-canonical answer for a
-Spot-heavy cost-driven cluster, and it converts the #183 static On-Demand
-baseline into a policy (`capacity-type` fallback) rather than a second node
-group. Suggested scoping if chosen: install in the regional-stack module behind
-a variable (default on), keep the existing MNG as the static base for
-Karpenter itself, then shrink `node_min`/the #183 baseline in a follow-up once
-Karpenter-provisioned capacity is verified on staging.
+Karpenter is the direction the repo's own documents already point to (ADR-08
+escape hatch, tradeoffs.md), it is the AWS-canonical answer for a Spot-heavy
+cost-driven cluster, and it converts the #183 static On-Demand baseline into a
+policy (`capacity-type` fallback) rather than a second node group. The agent
+recommendation matched; Bin ratified it 2026-07-07.
 
-If the operator judges the operational surface too large for the current
-one-operator scale, **(b) Cluster Autoscaler** is the minimal honest fix; (d)
-is the fallback only if fixed capacity is an explicit accepted posture.
+Implementation scoping (for the follow-up tracked in #182): install in the
+regional-stack module behind a variable (default on), keep the existing MNG as
+the static base for Karpenter itself, then shrink `node_min` / the #183
+On-Demand baseline in a follow-up once Karpenter-provisioned capacity is
+verified on staging.
 
 ## Consequences
 
-Deferred to the accepted option. Until a decision lands, the cluster's
-capacity behaviour is: static at `node_min` (Spot) + the #183 On-Demand
-baseline; `node_max` remains aspirational.
+- **Until the follow-up lands** (the state this ADR's PR ships): capacity is
+  static at `node_min` (Spot, type-diversified per #183) plus the #183
+  On-Demand baseline; `node_max` remains aspirational. #182 stays open.
+- **Once Karpenter lands:** pending pods provision nodes (the finding's
+  failure scenario closes); the platform takes on one more controller to
+  operate — Pod Identity role, SQS + EventBridge interruption infra, upgrade
+  cadence; the existing MNG shrinks to the static base that hosts Karpenter;
+  the #183 baseline group is re-evaluated against `capacity-type` fallback
+  (likely removed); ADR-08's dedicated-NodePool escape hatch becomes real.
+- `docs/tradeoffs.md`'s "Karpenter as the escape hatch, unwired" entry and the
+  dual-region runbook's "no Karpenter" note become stale at implementation
+  time and are updated in the follow-up PR, not here.
