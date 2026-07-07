@@ -48,23 +48,51 @@ module "eks" {
 
   # Managed node group on Spot — significant cost reduction; acceptable for
   # take-home + stateless workload (greeter has no in-flight session state).
-  eks_managed_node_groups = {
-    default = {
-      # Graviton (arm64) node group. aegis-core engine/gateway publish arm64
-      # images to GHCR (release-onprem-image.yml); the platform addon stack is
-      # arm64-clean (verified: all helm charts + EKS addons multi-arch; the 3
-      # digest/tag-pinned helpers — alpine/k8s, public.ecr.aws/aws-cli,
-      # curlimages/curl — and the 3 Crossplane packages all resolve to
-      # manifest-list images carrying linux/arm64). t4g is ~20% cheaper than t3.
-      ami_type       = "AL2023_ARM_64_STANDARD"
-      instance_types = [var.node_instance]
-      capacity_type  = "SPOT"
+  #
+  # #183: single-instance-type all-Spot is a reclaim-the-whole-group
+  # anti-pattern — one AWS-wide Spot pool reclamation can take every node down
+  # at once, with only the 2-minute interruption notice. Two mitigations:
+  #   1. var.node_instance_types lists >=2 families (diversification below) so
+  #      the EKS module's EC2 Fleet spreads allocation across independent
+  #      Spot pools.
+  #   2. var.node_ondemand_baseline (>0 for prod) adds a small On-Demand node
+  #      group alongside the Spot one, so a Spot-wide reclamation cannot take
+  #      the cluster to zero nodes.
+  eks_managed_node_groups = merge(
+    {
+      default = {
+        # Graviton (arm64) node group. aegis-core engine/gateway publish arm64
+        # images to GHCR (release-onprem-image.yml); the platform addon stack
+        # is arm64-clean (verified: all helm charts + EKS addons multi-arch;
+        # the 3 digest/tag-pinned helpers — alpine/k8s,
+        # public.ecr.aws/aws-cli, curlimages/curl — and the 3 Crossplane
+        # packages all resolve to manifest-list images carrying linux/arm64).
+        # t4g is ~20% cheaper than t3.
+        ami_type       = "AL2023_ARM_64_STANDARD"
+        instance_types = var.node_instance_types
+        capacity_type  = "SPOT"
 
-      min_size     = var.node_min
-      max_size     = var.node_max
-      desired_size = var.node_min
-    }
-  }
+        min_size     = var.node_min
+        max_size     = var.node_max
+        desired_size = var.node_min
+      }
+    },
+    # On-Demand baseline — a separate managed node group (EKS managed node
+    # groups are single-capacity-type; Spot + On-Demand cannot mix inside
+    # one group). Only created when var.node_ondemand_baseline > 0 (prod);
+    # an empty map here means no resource at all, not a 0/0/0 no-op group.
+    var.node_ondemand_baseline > 0 ? {
+      on_demand_baseline = {
+        ami_type       = "AL2023_ARM_64_STANDARD"
+        instance_types = var.node_instance_types
+        capacity_type  = "ON_DEMAND"
+
+        min_size     = var.node_ondemand_baseline
+        max_size     = var.node_ondemand_baseline
+        desired_size = var.node_ondemand_baseline
+      }
+    } : {}
+  )
 
   # OFF — this flag injects the *running caller's* ARN into access_entries,
   # which is identity-dependent: a local `make` run (IAM user) and a CI run
@@ -109,7 +137,8 @@ module "eks" {
   tags = local.common_tags
 }
 
-# Bound the EKS access-entry -> API-server authorizer propagation lag (WS4).
+# Wait out the EKS access-entry -> API-server authorizer propagation lag (WS4)
+# by POLLING the actual condition, not sleeping a guessed duration (#185).
 #
 # The access_entries above (gh-tf-apply-platform -> AmazonEKSClusterAdminPolicy,
 # the role this apply RUNS AS) are created in the same apply as the first
@@ -120,13 +149,49 @@ module "eks" {
 # Terraform's existing depends_on=[module.eks] only waits for entry CREATION, not
 # propagation, so it cannot close this race on its own.
 #
-# This is a bounded wait, not a band-aid: the access-entries design is correct
-# (the executing role IS in cluster_admin_principals and gets ClusterAdmin); the
-# only gap is timing. Every in-cluster resource that the apply role authors
-# (namespaces, helm releases) depends_on this sleep instead of module.eks, so the
-# first API call happens after the authorizer is consistent. 30s is the EKS
-# guidance for access-entry propagation and matches the observed lag with margin.
-resource "time_sleep" "eks_access_propagation" {
-  depends_on      = [module.eks]
-  create_duration = "30s"
+# HISTORY (#185): this was a fixed 30s `time_sleep` — wrong in both directions:
+# too short under control-plane / IAM propagation load (the race resurfaces as
+# a flaky apply), pure waste on every normal apply. Replaced with the canonical
+# eventual-consistency wait: poll a SelfSubjectAccessReview (`kubectl auth
+# can-i`, executed AS the applying principal via a freshly-written kubeconfig)
+# until the authorizer actually serves the grant. Bounded at 120s (24 x 5s;
+# observed lag is seconds — 30s was the guidance ceiling, 120s adds margin for
+# the loaded case the fixed sleep could not cover). The fast path exits on the
+# first successful attempt instead of always burning 30s. Every in-cluster
+# resource the apply role authors (namespaces, helm releases) depends_on this
+# gate instead of module.eks, so the first real API call happens after the
+# authorizer is consistent.
+#
+# Provisioner requirements: aws CLI + kubectl on the applying host — both are
+# repo minimum requirements (CONTRIBUTING.md) and preinstalled on the GitHub
+# ubuntu runners. Provisioners run at APPLY only, so read-only plans (the
+# version gate, infra-plan under the ReadOnlyAccess CI role) never execute
+# this, and the mock-provider cold-start tftest is unaffected.
+resource "terraform_data" "eks_access_propagation" {
+  depends_on = [module.eks]
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      KUBECONFIG_TMP="$(mktemp)"
+      trap 'rm -f "$KUBECONFIG_TMP"' EXIT
+      aws eks update-kubeconfig \
+        --name "${local.cluster_name}" \
+        --region "${var.region}" \
+        --kubeconfig "$KUBECONFIG_TMP" >/dev/null
+      for i in $(seq 1 24); do
+        # SelfSubjectAccessReview as the applying principal: succeeds only
+        # once the access-entry grant is live in the cluster authorizer.
+        if kubectl --kubeconfig "$KUBECONFIG_TMP" auth can-i create namespace >/dev/null 2>&1; then
+          echo "EKS access entry propagated (attempt $i)."
+          exit 0
+        fi
+        echo "waiting for EKS access-entry propagation (attempt $i/24)..."
+        sleep 5
+      done
+      echo "ERROR: EKS access entry did not propagate within 120s — authorizer still denies the applying principal." >&2
+      exit 1
+    EOT
+  }
 }

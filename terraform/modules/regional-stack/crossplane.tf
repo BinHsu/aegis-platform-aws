@@ -28,7 +28,7 @@
 resource "kubernetes_namespace" "crossplane_system" {
   # Wait for the EKS access-entry -> authorizer propagation (eks.tf) before the
   # first cluster-scoped create — see kubernetes_namespace.argocd / run 27843245290.
-  depends_on = [time_sleep.eks_access_propagation]
+  depends_on = [terraform_data.eks_access_propagation]
 
   metadata {
     name = "crossplane-system"
@@ -102,9 +102,10 @@ resource "helm_release" "crossplane" {
   wait    = true
   timeout = 300
 
-  # time_sleep (eks.tf) chains off module.eks AND adds the access-entry -> authorizer
+  # The propagation gate (eks.tf terraform_data.eks_access_propagation) chains off
+  # module.eks AND performs (as a readiness poll, #185) the access-entry -> authorizer
   # propagation wait that the WS4 dual-region burn proved necessary (run 27843245290).
-  depends_on = [time_sleep.eks_access_propagation]
+  depends_on = [terraform_data.eks_access_propagation]
 }
 
 # ── aegis-xrds-v2 — STAGED install (ADR-22 install-ordering fix) ─────────────

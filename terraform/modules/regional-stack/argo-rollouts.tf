@@ -44,5 +44,5 @@ resource "helm_release" "argo_rollouts" {
   # create_namespace=true so this is a cluster-scoped create with no namespace
   # resource to chain through — gate it on the access-entry -> authorizer
   # propagation wait directly (eks.tf / run 27843245290).
-  depends_on = [time_sleep.eks_access_propagation]
+  depends_on = [terraform_data.eks_access_propagation]
 }

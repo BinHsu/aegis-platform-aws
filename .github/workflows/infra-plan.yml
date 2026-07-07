@@ -225,7 +225,7 @@ jobs:
         id: scalars
         run: |
           r='${{ matrix.region }}'
-          jq -r --arg r "$r" '.regions[$r] | "node_instance=\(.node_instance)\nnode_min=\(.node_min)\nnode_max=\(.node_max)"' \
+          jq -r --arg r "$r" '.regions[$r] | "node_instance_types=\(.node_instance_types | tojson)\nnode_min=\(.node_min)\nnode_max=\(.node_max)\nnode_ondemand_baseline=\(.node_ondemand_baseline // 0)"' \
             regions.auto.tfvars.json >> "$GITHUB_OUTPUT"
       - name: extract platform_region (single SoT)
         id: pr
@@ -234,9 +234,10 @@ jobs:
       - name: plan
         env:
           TF_VAR_region:          ${{ matrix.region }}
-          TF_VAR_node_instance:   ${{ steps.scalars.outputs.node_instance }}
+          TF_VAR_node_instance_types: ${{ steps.scalars.outputs.node_instance_types }}
           TF_VAR_node_min:        ${{ steps.scalars.outputs.node_min }}
           TF_VAR_node_max:        ${{ steps.scalars.outputs.node_max }}
+          TF_VAR_node_ondemand_baseline: ${{ steps.scalars.outputs.node_ondemand_baseline }}
           TF_VAR_platform_region: ${{ steps.pr.outputs.platform_region }}
           TF_VAR_tfstate_bucket:  ${{ secrets.TFSTATE_BUCKET }}
           TF_VAR_tfstate_region:  ${{ secrets.TFSTATE_REGION }}

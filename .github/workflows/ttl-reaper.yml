@@ -8,9 +8,11 @@ name: ttl-reaper
 # MULTI-ACCOUNT (W3 / accounts-dimension ADR): HEAD accounts.json is the single
 # source of topology. A matrix fans out over every bootstrapped account x its
 # enabled_regions; the per-account scan role is derived from the account id
-# (arn:aws:iam::<account_id>:role/gh-tf-apply-platform — created at bootstrap,
-# so accounts with bootstrap_complete=false are skipped). This is what makes
-# W3's ephemeral staging clusters visible to the reaper.
+# (arn:aws:iam::<account_id>:role/aegis-platform-aws-ci — the READ-ONLY CI role,
+# created at bootstrap, so accounts with bootstrap_complete=false are skipped;
+# #184 narrowed this from the AdministratorAccess apply role — a scan needs
+# describe calls only). This is what makes W3's ephemeral staging clusters
+# visible to the reaper.
 #
 # Default is ALERT-ONLY (REAPER_AUTODESTROY != 'true'): it reports + warns but
 # does not destroy, because auto-destroy currently hits the kyverno teardown
@@ -21,8 +23,8 @@ name: ttl-reaper
 # Override: tag a cluster `ttl-exempt=true` (or `keep=true`) and the reaper
 # skips it — the explicit human opt-out for a deliberately long-lived cluster.
 #
-# Scheduled runs execute on the default branch (main), so the main-only
-# gh-tf-apply OIDC trust is satisfied.
+# Scheduled runs execute on the default branch (main); the scan role's OIDC
+# trust (any ref on this repo — iam-seed.tf infra_ci_trust) is satisfied.
 
 on:
   schedule:
@@ -64,8 +66,8 @@ jobs:
       - id: m
         run: |
           # accounts.json = single source of topology (accounts-dimension ADR).
-          # Only bootstrapped accounts are scannable: the gh-tf-apply-platform
-          # scan role is created at bootstrap.
+          # Only bootstrapped accounts are scannable: the read-only
+          # aegis-platform-aws-ci scan role is created at bootstrap (iam-seed.tf).
           include="$(jq -c '[.accounts | to_entries[] | select(.value.bootstrap_complete == true) | . as $e | $e.value.enabled_regions[] | {env: $e.key, account_id: $e.value.account_id, region: .}]' accounts.json)"
           echo "include=${include}" >> "$GITHUB_OUTPUT"
           echo "scan targets: ${include}"
@@ -92,7 +94,13 @@ jobs:
         with:
           # Per-account scan role, derived from the account id (same convention
           # as the W3 apply path — no per-account secret).
-          role-to-assume: arn:aws:iam::${{ matrix.account_id }}:role/gh-tf-apply-platform
+          # #184: the scan is READ-ONLY (eks/ec2/rds/elbv2 describe calls), so
+          # it assumes the read-only aegis-platform-aws-ci role (ReadOnlyAccess,
+          # trust = any ref on this repo — a scheduled main run satisfies it),
+          # NOT the AdministratorAccess apply role: a compromised cron scan must
+          # yield scan-level read access, not account admin. The destroy itself
+          # stays on gh-tf-destroy-platform via the infra-ops dispatch below.
+          role-to-assume: arn:aws:iam::${{ matrix.account_id }}:role/aegis-platform-aws-ci
           aws-region: ${{ matrix.region }}
 
       - name: scan for over-TTL billable resources

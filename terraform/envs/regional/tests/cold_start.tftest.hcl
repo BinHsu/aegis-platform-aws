@@ -134,9 +134,10 @@ mock_provider "helm" {}
 variables {
   region                 = "eu-central-1"
   environment            = "staging"
-  node_instance          = "t3.large"
+  node_instance_types    = ["t3.large", "m5.large"]
   node_min               = 2
   node_max               = 4
+  node_ondemand_baseline = 1
   platform_region        = "eu-central-1"
   tfstate_bucket         = "mock-tfstate-bucket"
   tfstate_region         = "eu-central-1"

@@ -70,7 +70,8 @@ resource "helm_release" "alb_controller" {
     value = "false"
   }
 
-  # time_sleep (eks.tf) chains off module.eks AND adds the access-entry -> authorizer
+  # The propagation gate (eks.tf terraform_data.eks_access_propagation) chains off
+  # module.eks AND performs (as a readiness poll, #185) the access-entry -> authorizer
   # propagation wait that the WS4 dual-region burn proved necessary (run 27843245290).
-  depends_on = [time_sleep.eks_access_propagation]
+  depends_on = [terraform_data.eks_access_propagation]
 }

@@ -5,11 +5,17 @@ variable "regions" {
   # from the landing-zone IPAM pool (modules/regional-stack/vpc-ipam.tf), not
   # carried in regions.auto.tfvars.json. Platform only consumes `enabled` + the
   # region keys for ECR replication, so the schema drops the unused field.
+  # #183: node_instance -> node_instance_types (list) diversifies the Spot
+  # node group across capacity pools; node_ondemand_baseline sizes an optional
+  # On-Demand floor (0 = none). platform/ only consumes .enabled (ecr.tf), but
+  # the object type must mirror the full regions.auto.tfvars.json schema since
+  # it is loaded here via -var-file.
   type = map(object({
-    enabled       = bool
-    node_instance = string
-    node_min      = number
-    node_max      = number
+    enabled                = bool
+    node_instance_types    = list(string)
+    node_min               = number
+    node_max               = number
+    node_ondemand_baseline = optional(number, 0)
   }))
 }
 

@@ -12,7 +12,8 @@
       ],
       "overrides": {
         "node_min": 3,
-        "node_max": 3
+        "node_max": 3,
+        "node_ondemand_baseline": 0
       },
       "bootstrap_complete": false,
       "operator_principal_arn": "arn:aws:iam::251774439261:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_PlatformAdmin_5f5772e2bfd724a3",

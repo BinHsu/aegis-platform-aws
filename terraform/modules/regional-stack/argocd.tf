@@ -34,7 +34,7 @@ resource "kubernetes_namespace" "argocd" {
   # dual-region burn (run 27843245290) when the apply role's ClusterAdmin grant
   # had not yet propagated. Gating the namespace on the sleep gates the whole
   # argocd subtree (secret + helm releases chain off it).
-  depends_on = [time_sleep.eks_access_propagation]
+  depends_on = [terraform_data.eks_access_propagation]
 
   metadata {
     name = "argocd"
