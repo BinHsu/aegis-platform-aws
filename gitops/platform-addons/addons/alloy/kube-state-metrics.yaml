@@ -1,0 +1,40 @@
+# kube-state-metrics — migrated from Terraform helm_release.kube_state_metrics
+# (ADR-25 / epic #167 A1). Alloy scrapes it (see the kube_state_metrics relabel
+# in the Alloy River config). Delivered as an ApplicationSet so the clusters
+# generator's observability label gates fan-out (rationale in
+# node-exporter.yaml). Runs in the TF-owned monitoring namespace alongside
+# node-exporter and Alloy.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: kube-state-metrics
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            argocd.argoproj.io/secret-type: cluster
+            aegis.binhsu.org/observability: "true"
+  template:
+    metadata:
+      name: "kube-state-metrics-{{.nameNormalized}}"
+    spec:
+      project: default
+      source:
+        repoURL: https://prometheus-community.github.io/helm-charts
+        chart: kube-state-metrics
+        targetRevision: 5.25.1
+      destination:
+        server: "{{.server}}"
+        namespace: monitoring
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          # monitoring ns is Terraform-owned (privileged PSS + GC creds Secret).
+          - CreateNamespace=false

@@ -195,7 +195,7 @@ variable "cluster_profile" {
 
 # ---- observability toggle -------------------------------------------------
 variable "enable_observability" {
-  description = "Whether to deploy the in-cluster Grafana Alloy collector (DaemonSet), the monitoring namespace, the node-exporter + kube-state-metrics subcharts, and the grafana-cloud-credentials Secret. Default FALSE (the regional env passes this explicitly; the default just makes a bare module use observability-free). Set true to deploy the entire alloy.tf surface — the gc_* vars are then required."
+  description = "Whether to deploy the Grafana Alloy observability stack. Alloy + node-exporter + kube-state-metrics are now GitOps-owned (gitops/platform-addons/addons/alloy/); this toggle gates the Terraform-owned CREDS BRIDGE in gitops-bootstrap.tf — the monitoring namespace and the grafana-cloud-credentials Secret. Default FALSE (the regional env passes this explicitly; the default just makes a bare module observability-free). Set true to write the GC creds Secret — the gc_* vars are then required."
   type        = bool
   default     = false
 }

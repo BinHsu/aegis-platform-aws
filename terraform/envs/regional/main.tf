@@ -100,7 +100,8 @@ module "stack" {
   cluster_profile = var.cluster_profile
 
   # Observability toggle — when false the gc_* SSM data lookups are count=0,
-  # so we pass "" and the module skips Alloy + its credential Secret.
+  # so we pass "" and the module skips the creds bridge (monitoring namespace +
+  # grafana-cloud-credentials Secret). Alloy itself is GitOps-owned (ADR-25).
   enable_observability  = var.enable_observability
   gc_api_token          = var.enable_observability ? data.aws_ssm_parameter.gc_api_token[0].value : ""
   gc_mimir_url          = var.enable_observability ? data.aws_ssm_parameter.gc_mimir_url[0].value : ""

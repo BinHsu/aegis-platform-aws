@@ -1,6 +1,6 @@
 # regional-stack module
 
-Self-contained per-region stack: VPC + EKS + IRSA + ALB controller + per-cluster ArgoCD + Grafana Alloy DaemonSet (with node-exporter + kube-state-metrics subcharts).
+Self-contained per-region stack: VPC + EKS + IRSA + ALB controller + per-cluster ArgoCD + the GitOps bootstrap (root app + facts/creds bridge — ADR-25). The observability add-on stack (Grafana Alloy + node-exporter + kube-state-metrics) is GitOps-owned under `gitops/platform-addons/`, synced by the root app; Terraform only writes its namespace + credentials Secret.
 
 Invoked from `terraform/envs/regional/main.tf` via `module "stack" { for_each = var.regions ... }`. One module instance per declared region.
 
@@ -21,7 +21,7 @@ Invoked from `terraform/envs/regional/main.tf` via `module "stack" { for_each = 
 | `model-store.tf` | **Per-region** engine model S3 bucket `aegis-core-models-<acct>-<region>` + its read-only managed policy `aegis-core-model-read-<region>` (ADR-05). The ApplicationSet injects the bucket name into the engine's model-store ConfigMap and appends the read policy to the engine's WorkloadIdentity `policyArns`, so each region's engine reads its in-region bucket. Operator/CI must populate **each** region's bucket. |
 | `external-dns.tf` + `irsa-external-dns.tf` | `external-dns` (chart 1.21.1) + its IRSA role scoped to the one hosted zone. Reconciles the gateway Ingress into a latency-routed Route 53 record (see "Route 53 records" below). |
 | `acm.tf` | Per-region ACM certificate for the gateway ALB (region-bound; one per region). DNS-01 validated in the platform-owned zone. |
-| `alloy.tf` + `alloy-config.river.tpl` | Grafana Alloy DaemonSet (chart 0.10.1) — scrapes node-exporter + kube-state-metrics + cAdvisor, OTLP gRPC receiver on :4317, Pyroscope receiver on :4040, Loki source from pod stdout. K8s Secret holds GC creds (sourced via SSM Parameter Store in the regional env layer, passed in as module vars). |
+| `gitops-bootstrap.tf` | GitOps ownership bootstrap (ADR-25 / epic #167 A1). Terraform-owned trio: the in-cluster ArgoCD `cluster` Secret carrying cluster-facts annotations (name / region / profile) plus the observability fan-out gate label (the facts bridge, epic decision #3); the app-of-apps root `Application` pointing at `gitops/platform-addons/addons/` (via `argocd-apps` chart); and the creds bridge — `monitoring` namespace (privileged PSS) + `grafana-cloud-credentials` Secret (values via SSM at the regional env layer; referenced from git by name, never stored in git — decision #4). The Alloy stack itself (Alloy 0.10.1 + node-exporter + kube-state-metrics, formerly `alloy.tf` + `alloy-config.river.tpl`) is **GitOps-owned**: `gitops/platform-addons/addons/alloy/`. |
 | `outputs.tf` | `cluster_name` / `cluster_endpoint` / `cluster_ca_certificate` / `oidc_provider_arn` / `vpc_id`. **No `alb_dns_name`** — see note below. |
 
 ## Route 53 records — external-dns, latency routing (ADR-05)

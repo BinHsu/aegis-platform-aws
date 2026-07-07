@@ -16,6 +16,11 @@
 #      gitops/platform-addons/root-app.yaml (yamldecode — no second copy to
 #      drift, A2's design kept); Terraform threads repoURL + targetRevision
 #      over it (the A2 stub's TODO, now implemented).
+#   3. CREDS BRIDGE (epic #167 decision #4) — the monitoring namespace + the
+#      Grafana Cloud credentials Secret. Creds are TF-written and referenced
+#      from git by name (envFrom), never stored in git. Pre-migration ownership
+#      (helm_release.alloy / node_exporter / kube_state_metrics in alloy.tf) is
+#      now GitOps: gitops/platform-addons/addons/alloy/.
 
 # ── 1. Facts bridge ─────────────────────────────────────────────────────────
 # In-cluster ArgoCD `cluster` Secret. server=https://kubernetes.default.svc is
@@ -29,6 +34,11 @@ resource "kubernetes_secret" "argocd_cluster_facts" {
     labels = {
       # A `clusters` generator selects on this label.
       "argocd.argoproj.io/secret-type" = "cluster"
+      # Fan-out GATE for the observability add-ons (addons/alloy/*): "true"
+      # only when this same apply also wrote their prerequisites (monitoring
+      # namespace + grafana-cloud-credentials Secret). Labels, not annotations,
+      # because clusters-generator selectors match labels.
+      "aegis.binhsu.org/observability" = var.enable_observability ? "true" : "false"
     }
     annotations = {
       "aegis.binhsu.org/cluster-name" = local.cluster_name
@@ -90,4 +100,60 @@ resource "helm_release" "platform_addons_root" {
     helm_release.argocd,
     kubernetes_secret.argocd_cluster_facts,
   ]
+}
+
+# ── 3. Creds bridge (observability) ─────────────────────────────────────────
+# Migrated verbatim from alloy.tf. Gated on enable_observability so a bare /
+# observability-free module applies cleanly (the gc_* vars are only consumed
+# here). The Alloy ApplicationSet references the Secret by name via envFrom.
+resource "kubernetes_namespace" "monitoring" {
+  count = var.enable_observability ? 1 : 0
+
+  # Wait for the EKS access-entry -> authorizer propagation (eks.tf) before the
+  # first cluster-scoped create — same gate the argocd namespace uses
+  # (terraform_data active-poll since #185; was a fixed time_sleep).
+  depends_on = [terraform_data.eks_access_propagation]
+
+  metadata {
+    name = "monitoring"
+    labels = {
+      # Alloy + node-exporter use hostPath / hostNetwork and read kubelet
+      # metrics, so the namespace runs `privileged` PSS — not the restricted
+      # profile applied to the workload ns. ArgoCD CreateNamespace cannot set
+      # these labels, which is one reason the namespace stays Terraform-owned.
+      "pod-security.kubernetes.io/enforce" = "privileged"
+      "pod-security.kubernetes.io/audit"   = "baseline"
+      "pod-security.kubernetes.io/warn"    = "baseline"
+    }
+  }
+}
+
+# K8s Secret holding Grafana Cloud credentials (epic #167 D4). TF reads SSM at
+# the regional env scope and passes values in as sensitive module vars; the
+# Alloy DaemonSet mounts these as env vars (envFrom.secretRef) and the River
+# config reads them as sys.env("API_TOKEN") etc.
+resource "kubernetes_secret" "grafana_cloud" {
+  count = var.enable_observability ? 1 : 0
+
+  metadata {
+    name      = "grafana-cloud-credentials"
+    namespace = kubernetes_namespace.monitoring[0].metadata[0].name
+  }
+
+  # Keys are UPPERCASE — `envFrom.secretRef` maps each key verbatim to an env
+  # var, and the Alloy River config reads them via sys.env("API_TOKEN") etc.
+  # Lowercase keys here would silently not match.
+  data = {
+    API_TOKEN          = var.gc_api_token
+    MIMIR_URL          = var.gc_mimir_url
+    MIMIR_USERNAME     = var.gc_mimir_username
+    LOKI_URL           = var.gc_loki_url
+    LOKI_USERNAME      = var.gc_loki_username
+    TEMPO_URL          = var.gc_tempo_url
+    TEMPO_USERNAME     = var.gc_tempo_username
+    PYROSCOPE_URL      = var.gc_pyroscope_url
+    PYROSCOPE_USERNAME = var.gc_pyroscope_username
+  }
+
+  type = "Opaque"
 }
