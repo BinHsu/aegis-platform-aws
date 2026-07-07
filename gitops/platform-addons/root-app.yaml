@@ -1,20 +1,8 @@
 # gitops/platform-addons/root-app.yaml
 #
 # App-of-apps ROOT Application (epic #167 ADR-25 ownership inversion).
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# ⚠️  MINIMAL A2 SCAFFOLD — created by A2 (#174) because A1 (#173) is not yet
-#     implemented. A2 needs an app-of-apps root to deliver the Kyverno +
-#     aegis-policies child Applications, so it lays down the SMALLEST root that
-#     works. A1 OWNS this file's final form (facts bridge + per-cluster
-#     parameterization + the Alloy child) and MUST reconcile this stub:
-#       - A1 replaces the hardcoded repoURL/targetRevision below with values
-#         threaded from the Terraform-written cluster-facts Secret (epic
-#         decision #3), so one manifest serves every cluster/branch.
-#       - A1 adds addons/alloy/ as the first migrated add-on; A3–A6 add
-#         crossplane/, argo-rollouts/, alb-controller/, external-dns/ the same way.
-#     Until then this root points at `main` and enumerates only what exists.
-# ─────────────────────────────────────────────────────────────────────────────
+# A1 (#173) final form — supersedes the minimal A2 (#174) stub that first laid
+# this file down so Kyverno had a root to hang off.
 #
 # HOW IT WORKS: this single Application watches the addons/ directory in-repo and
 # applies every child Application manifest it finds (directory.recurse). Each
@@ -25,6 +13,19 @@
 # (aegis-policies ClusterPolicies) is synced — the declarative replacement for
 # the `depends_on = [helm_release.kyverno]` that ordered the old Terraform
 # helm_releases.
+#
+# TWO APPLY PATHS, one source of truth:
+#   - real EKS: Terraform seeds this Application via the argocd-apps chart
+#     (gitops-bootstrap.tf reads THIS file's .spec with yamldecode — no second
+#     copy to drift) and threads repoURL + targetRevision from module inputs
+#     (the A2 stub's TODO, now implemented). The cluster-facts Secret
+#     (epic decision #3) carries per-cluster identity for the CHILDREN — see
+#     addons/alloy/application.yaml's clusters generator.
+#   - local kind (B1 harness / pre-merge branches): `kubectl apply -f` this
+#     file, overriding targetRevision to the branch under test.
+#
+# The defaults below are the production values: public repo (anonymous HTTPS
+# clone, epic decision #2) at main.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -37,10 +38,6 @@ metadata:
 spec:
   project: default
   source:
-    # TODO(A1 #173): parameterize repoURL + targetRevision from the TF cluster-
-    # facts Secret (epic decision #3). Hardcoded to the public repo + main here.
-    # The repo is PUBLIC → ArgoCD clones anonymously, no credential (decision #2).
-    # On a pre-merge feature branch, point targetRevision at that branch.
     repoURL: https://github.com/BinHsu/aegis-platform-aws
     targetRevision: main
     path: gitops/platform-addons/addons

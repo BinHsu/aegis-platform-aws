@@ -95,8 +95,13 @@ module "stack" {
   zone_id   = try(data.terraform_remote_state.platform.outputs.zone_id, "Z0PLACEHOLDERGATEPLAN")
   zone_name = try(data.terraform_remote_state.platform.outputs.zone_name, "placeholder.example.com")
 
+  # Facts bridge (ADR-25): lifecycle profile annotation on the in-cluster
+  # ArgoCD cluster Secret. Inert in A1; A6 keys add-on scope on it.
+  cluster_profile = var.cluster_profile
+
   # Observability toggle — when false the gc_* SSM data lookups are count=0,
-  # so we pass "" and the module skips Alloy + its credential Secret.
+  # so we pass "" and the module skips the creds bridge (monitoring namespace +
+  # grafana-cloud-credentials Secret). Alloy itself is GitOps-owned (ADR-25).
   enable_observability  = var.enable_observability
   gc_api_token          = var.enable_observability ? data.aws_ssm_parameter.gc_api_token[0].value : ""
   gc_mimir_url          = var.enable_observability ? data.aws_ssm_parameter.gc_mimir_url[0].value : ""

@@ -97,9 +97,21 @@ variable "workload_registries" {
   default = {}
 }
 
+# ---- GitOps facts bridge --------------------------------------------------
+variable "cluster_profile" {
+  description = "Cluster lifecycle profile written onto the in-cluster ArgoCD `cluster` Secret as the aegis.binhsu.org/profile annotation (facts bridge, ADR-25). ephemeral = throwaway CI/burn cluster; full = long-lived. Inert in A1; A6 selects add-on scope on it. Default ephemeral (safe for burns); set full for a long-lived cluster."
+  type        = string
+  default     = "ephemeral"
+
+  validation {
+    condition     = contains(["ephemeral", "full"], var.cluster_profile)
+    error_message = "cluster_profile must be one of: ephemeral, full."
+  }
+}
+
 # ---- observability toggle -------------------------------------------------
 variable "enable_observability" {
-  description = "Whether to wire the in-cluster Grafana Alloy collector. Default FALSE (matches the platform env default). Set false to skip the SSM lookups of the Grafana Cloud creds (which do not exist when the platform env was applied with enable_observability=false) and to skip Alloy + its credential Secret in the regional-stack module. MUST match the platform env's enable_observability — a precondition (observability-guard.tf) fails loud if this is true while the platform stored no creds."
+  description = "Whether to wire the in-cluster Grafana Alloy observability stack. Default FALSE (matches the platform env default). Set false to skip the SSM lookups of the Grafana Cloud creds (which do not exist when the platform env was applied with enable_observability=false) and to skip the creds bridge (monitoring namespace + grafana-cloud-credentials Secret) in the regional-stack module. Alloy itself is GitOps-owned (gitops/platform-addons/addons/alloy/ — ADR-25); without the creds bridge its DaemonSet cannot reach Grafana Cloud. MUST match the platform env's enable_observability — a precondition (observability-guard.tf) fails loud if this is true while the platform stored no creds."
   type        = bool
   default     = false
 }

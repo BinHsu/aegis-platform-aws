@@ -175,9 +175,27 @@ variable "cluster_admin_principals" {
   type        = map(string)
 }
 
+# ---- GitOps facts bridge --------------------------------------------------
+variable "gitops_revision" {
+  description = "Git revision the app-of-apps root Application tracks (threaded over root-app.yaml's spec by gitops-bootstrap.tf, per the A2 stub's TODO). Default main = production. Point at a feature branch only for a pre-merge validation cluster."
+  type        = string
+  default     = "main"
+}
+
+variable "cluster_profile" {
+  description = "Cluster lifecycle profile, surfaced as the aegis.binhsu.org/profile annotation on the in-cluster ArgoCD `cluster` Secret (facts bridge, ADR-25 / gitops-bootstrap.tf). ephemeral = CI/kind + throwaway EKS; full = long-lived. A6 will select add-on scope on this via an ApplicationSet selector; in A1 it is written as an inert fact. Default ephemeral (safe); the regional env can override."
+  type        = string
+  default     = "ephemeral"
+
+  validation {
+    condition     = contains(["ephemeral", "full"], var.cluster_profile)
+    error_message = "cluster_profile must be one of: ephemeral, full."
+  }
+}
+
 # ---- observability toggle -------------------------------------------------
 variable "enable_observability" {
-  description = "Whether to deploy the in-cluster Grafana Alloy collector (DaemonSet), the monitoring namespace, the node-exporter + kube-state-metrics subcharts, and the grafana-cloud-credentials Secret. Default FALSE (the regional env passes this explicitly; the default just makes a bare module use observability-free). Set true to deploy the entire alloy.tf surface — the gc_* vars are then required."
+  description = "Whether to deploy the Grafana Alloy observability stack. Alloy + node-exporter + kube-state-metrics are now GitOps-owned (gitops/platform-addons/addons/alloy/); this toggle gates the Terraform-owned CREDS BRIDGE in gitops-bootstrap.tf — the monitoring namespace and the grafana-cloud-credentials Secret. Default FALSE (the regional env passes this explicitly; the default just makes a bare module observability-free). Set true to write the GC creds Secret — the gc_* vars are then required."
   type        = bool
   default     = false
 }
