@@ -124,7 +124,7 @@ the cluster starts with a node/image arch mismatch:
 | # | File | Field | arm64 value (default) | amd64 value |
 |---|------|--------|-----------------------|-------------|
 | 1 | `terraform/modules/regional-stack/eks.tf` | `ami_type` | `AL2023_ARM_64_STANDARD` | `AL2023_x86_64_STANDARD` |
-| 2 | `regions.auto.tfvars.json` | `regions.<region>.node_instance` | `t4g.large` | `t3.large` (or any x86 family) |
+| 2 | `regions.auto.tfvars.json` | `regions.<region>.node_instance_types` (renamed from `node_instance`, now a list — #183 Spot pool diversification) | `["t4g.large", "m6g.large", "m7g.large"]` | `["t3.large", "m5.large"]` (or any x86 families) |
 | 3 | `aegis-core-deploy` — `k8s/overlays/<env>/kustomization.yaml` | image digest pins | `ghcr.io/binhsu/aegis-core-{engine,gateway}@sha256:…` (arm64) | amd64 image digest — requires an amd64 build |
 
 **Knob 3 caveat.** The image digest pins live in `aegis-core-deploy`, not this

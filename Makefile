@@ -170,9 +170,10 @@ regional-one: $(BACKEND_HCL)
 	tfstate_region=$$(cd $(TF_BOOTSTRAP) && terraform output -raw region); \
 	platform_region=$$(jq -r '.platform_region' $(TFVARS_JSON)); \
 	cidr=$$(jq -r '.regions["$(REGION)"].cidr' $(TFVARS_JSON)); \
-	node_instance=$$(jq -r '.regions["$(REGION)"].node_instance' $(TFVARS_JSON)); \
+	node_instance_types=$$(jq -c '.regions["$(REGION)"].node_instance_types' $(TFVARS_JSON)); \
 	node_min=$$(jq -r '.regions["$(REGION)"].node_min' $(TFVARS_JSON)); \
 	node_max=$$(jq -r '.regions["$(REGION)"].node_max' $(TFVARS_JSON)); \
+	node_ondemand_baseline=$$(jq -r '.regions["$(REGION)"].node_ondemand_baseline // 0' $(TFVARS_JSON)); \
 	cd $(TF_REGIONAL) && \
 	  terraform init -reconfigure \
 	    -backend-config="bucket=$$bucket" \
@@ -184,9 +185,10 @@ regional-one: $(BACKEND_HCL)
 	  TF_VAR_platform_region=$$platform_region \
 	  TF_VAR_region=$(REGION) \
 	  TF_VAR_vpc_cidr=$$cidr \
-	  TF_VAR_node_instance=$$node_instance \
+	  TF_VAR_node_instance_types=$$node_instance_types \
 	  TF_VAR_node_min=$$node_min \
 	  TF_VAR_node_max=$$node_max \
+	  TF_VAR_node_ondemand_baseline=$$node_ondemand_baseline \
 	  terraform apply -var-file=$(REGISTRIES_JSON) $(AUTO_APPROVE)
 
 all: bootstrap platform regional
@@ -203,9 +205,10 @@ destroy-region: $(BACKEND_HCL)
 	tfstate_region=$$(cd $(TF_BOOTSTRAP) && terraform output -raw region); \
 	platform_region=$$(jq -r '.platform_region' $(TFVARS_JSON)); \
 	cidr=$$(jq -r '.regions["$(REGION)"].cidr' $(TFVARS_JSON)); \
-	node_instance=$$(jq -r '.regions["$(REGION)"].node_instance' $(TFVARS_JSON)); \
+	node_instance_types=$$(jq -c '.regions["$(REGION)"].node_instance_types' $(TFVARS_JSON)); \
 	node_min=$$(jq -r '.regions["$(REGION)"].node_min' $(TFVARS_JSON)); \
 	node_max=$$(jq -r '.regions["$(REGION)"].node_max' $(TFVARS_JSON)); \
+	node_ondemand_baseline=$$(jq -r '.regions["$(REGION)"].node_ondemand_baseline // 0' $(TFVARS_JSON)); \
 	cd $(TF_REGIONAL) && \
 	  terraform init -reconfigure \
 	    -backend-config="bucket=$$bucket" \
@@ -217,9 +220,10 @@ destroy-region: $(BACKEND_HCL)
 	  TF_VAR_platform_region=$$platform_region \
 	  TF_VAR_region=$(REGION) \
 	  TF_VAR_vpc_cidr=$$cidr \
-	  TF_VAR_node_instance=$$node_instance \
+	  TF_VAR_node_instance_types=$$node_instance_types \
 	  TF_VAR_node_min=$$node_min \
 	  TF_VAR_node_max=$$node_max \
+	  TF_VAR_node_ondemand_baseline=$$node_ondemand_baseline \
 	  terraform destroy -var-file=$(REGISTRIES_JSON) $(AUTO_APPROVE)
 
 # Full destroy of platform (post-submission cleanup). bootstrap's bucket

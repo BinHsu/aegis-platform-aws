@@ -22,19 +22,27 @@ variable "environment" {
   }
 }
 
-variable "node_instance" {
-  description = "EC2 instance type for the managed node group."
-  type        = string
+variable "node_instance_types" {
+  # #183 — see modules/regional-stack/variables.tf for the full rationale.
+  description = "EC2 instance types for the Spot managed node group, in preference order. List >=2 for Spot capacity-pool diversification."
+  type        = list(string)
 }
 
 variable "node_min" {
-  description = "Minimum node group size."
+  description = "Minimum node group size (Spot group)."
   type        = number
 }
 
 variable "node_max" {
-  description = "Maximum node group size."
+  description = "Maximum node group size (Spot group)."
   type        = number
+}
+
+variable "node_ondemand_baseline" {
+  # #183 — see modules/regional-stack/variables.tf for the full rationale.
+  description = "Size of a dedicated On-Demand node-group floor alongside the Spot group. 0 disables it (no On-Demand baseline)."
+  type        = number
+  default     = 0
 }
 
 # ---- cross-env wiring (set via TF_VAR_* by Makefile) ----------------------

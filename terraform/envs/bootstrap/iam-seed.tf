@@ -224,8 +224,11 @@ data "aws_iam_policy_document" "infra_apply_trust" {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        # Non-environment jobs on main: infra-apply.yml version-gate +
-        # apply-platform, infra-ops.yml bootstrap, ttl-reaper.yml scan.
+        # Non-environment jobs on main: infra-apply.yml apply-platform,
+        # infra-apply-account.yml apply-platform, infra-ops.yml bootstrap.
+        # (#184: the version-gate plans and the ttl-reaper scan moved OFF this
+        # role to the read-only aegis-platform-aws-ci — read-only jobs must not
+        # carry AdministratorAccess.)
         "repo:${var.github_owner}/aegis-platform-aws:ref:refs/heads/main",
         # infra-apply.yml apply-regional, clean version gate (ungated env).
         "repo:${var.github_owner}/aegis-platform-aws:environment:prod-apply",

@@ -24,20 +24,48 @@ variable "environment" {
   }
 }
 
-variable "node_instance" {
-  description = "EC2 instance type for the EKS managed node group."
-  type        = string
-  default     = "t3.medium"
+variable "node_instance_types" {
+  # #183: a single instance type means a Spot capacity-pool reclamation can
+  # take the WHOLE Spot node group down at once (one pool, one interruption
+  # wave). Listing >=2 families spreads the EKS module's EC2 Fleet allocation
+  # across independent Spot pools, so one pool's reclamation leaves the others
+  # standing. Callers pick sizes with matching vCPU/memory so pod scheduling
+  # is not surprised by which type actually launched.
+  description = "EC2 instance types for the Spot managed node group, in preference order. List >=2 for Spot capacity-pool diversification (single-type Spot is a reclaim-the-whole-group anti-pattern)."
+  type        = list(string)
+  default     = ["t4g.medium"]
+
+  validation {
+    condition     = length(var.node_instance_types) >= 1
+    error_message = "node_instance_types must list at least one instance type."
+  }
 }
 
 variable "node_min" {
-  description = "Minimum node count for the managed node group."
+  description = "Minimum node count for the managed (Spot) node group."
   type        = number
 }
 
 variable "node_max" {
-  description = "Maximum node count for the managed node group."
+  description = "Maximum node count for the managed (Spot) node group."
   type        = number
+}
+
+variable "node_ondemand_baseline" {
+  # #183: all-Spot has no floor — a single reclamation wave can take the
+  # entire node group to zero at once. A small On-Demand node group alongside
+  # the Spot one gives prod a capacity floor that Spot interruption cannot
+  # touch. 0 = no baseline (the module then creates only the Spot group);
+  # this is the correct default for cost-sensitive envs (e.g. staging) that
+  # accept all-Spot risk.
+  description = "Size (min=max=desired) of a dedicated On-Demand node group that runs alongside the Spot group. 0 disables it — no On-Demand baseline is created."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.node_ondemand_baseline >= 0
+    error_message = "node_ondemand_baseline must be >= 0."
+  }
 }
 
 # zone_id / zone_name ARE module inputs — external-dns (external-dns.tf)

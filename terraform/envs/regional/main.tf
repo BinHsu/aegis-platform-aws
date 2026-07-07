@@ -11,11 +11,12 @@ module "stack" {
     helm       = helm
   }
 
-  region        = var.region
-  environment   = var.environment
-  node_instance = var.node_instance
-  node_min      = var.node_min
-  node_max      = var.node_max
+  region                 = var.region
+  environment            = var.environment
+  node_instance_types    = var.node_instance_types
+  node_min               = var.node_min
+  node_max               = var.node_max
+  node_ondemand_baseline = var.node_ondemand_baseline
 
   # WS4: override ecr_region to the PLATFORM region so every region's workload
   # pulls the image from the single deployment-account ECR, which lives only in
