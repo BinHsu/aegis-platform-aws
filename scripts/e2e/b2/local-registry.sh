@@ -6,11 +6,16 @@
 # workflow (.github/workflows/e2e-golden-path.yml), so the registry wiring lives
 # in exactly one place.
 #
-# WHAT / WHY: a `registry:2` container (the standard kind local-registry pattern)
-# stands in for ECR on kind. The kind cluster's containerd is configured (see
-# scripts/e2e/kind/kind-calico.yaml :: containerdConfigPatches) to mirror
-# `localhost:5000` to this container over the kind docker network, so an
-# in-cluster image ref `localhost:5000/<repo>@sha256:<digest>` pulls from it.
+# WHAT / WHY: a `registry:2` container (kind's documented local-registry pattern)
+# stands in for ECR on kind. The kind cluster's containerd has the registry
+# host-config directory enabled (scripts/e2e/kind/kind-calico.yaml ::
+# containerdConfigPatches -> config_path = /etc/containerd/certs.d); registry_up
+# writes a per-node hosts.toml mapping `localhost:5000` to this container over
+# the kind docker network, so an in-cluster image ref
+# `localhost:5000/<repo>@sha256:<digest>` pulls from it. hosts.toml (NOT the
+# legacy containerd `registry.mirrors` table) because containerd 2.x REMOVED that
+# table — this pattern works on containerd 1.7 (CI's v1.32.11 node image) and
+# 2.x (newer local node images) alike.
 #
 # DIGEST PRESERVATION: we SEED with `crane copy`, which copies the source
 # manifest byte-for-byte — the destination digest EQUALS the source digest
@@ -20,7 +25,10 @@
 # index), breaking the committed pin — hence crane, not docker.
 #
 # Functions:
-#   registry_up   <kind-cluster-name>          — start registry:2 + join kind net
+#   registry_up   <kind-cluster-name>          — start registry:2, join kind net,
+#                                                write per-node hosts.toml mirror
+#                                                (nodes must exist — run AFTER
+#                                                `kind create cluster`)
 #   registry_seed <src-ref@sha256:..> <dstRepo> — crane copy, preserving digest
 #   registry_down                               — remove the registry container
 set -euo pipefail
@@ -56,8 +64,9 @@ ensure_crane() {
   "$CRANE" version || true
 }
 
-# Start registry:2 (idempotent) and attach it to the kind docker network so the
-# nodes resolve it as $REGISTRY_NAME:$REGISTRY_PORT via the containerd mirror.
+# Start registry:2 (idempotent), attach it to the kind docker network, and write
+# the per-node containerd hosts.toml so `localhost:$REGISTRY_PORT` resolves to it
+# in-cluster. Must run AFTER `kind create cluster` (it writes into the nodes).
 registry_up() {
   local cluster="${1:?registry_up needs the kind cluster name}"
   local net="kind"
@@ -72,7 +81,21 @@ registry_up() {
   fi
   # Join the kind network (idempotent — ignore "already exists").
   docker network connect "$net" "$REGISTRY_NAME" >/dev/null 2>&1 || true
-  echo "    ${REGISTRY_NAME} on docker network '${net}', mirror target http://${REGISTRY_NAME}:${REGISTRY_PORT}"
+  echo "    ${REGISTRY_NAME} on docker network '${net}', mirror target http://${REGISTRY_NAME}:5000"
+
+  # Per-node hosts.toml: containerd resolves `localhost:$REGISTRY_PORT` via
+  # config_path (/etc/containerd/certs.d, enabled in kind-calico.yaml) to the
+  # registry container over the kind network. `skip_verify` because the harness
+  # registry is plain HTTP. containerd picks hosts.toml changes up per-pull —
+  # no containerd restart needed (kind's documented pattern).
+  local hosts_dir="/etc/containerd/certs.d/localhost:${REGISTRY_PORT}"
+  local node
+  for node in $(kind get nodes --name "$cluster"); do
+    echo "    wiring mirror on node ${node} (${hosts_dir}/hosts.toml)"
+    docker exec "$node" mkdir -p "$hosts_dir"
+    printf '[host."http://%s:5000"]\n  skip_verify = true\n' "$REGISTRY_NAME" \
+      | docker exec -i "$node" tee "${hosts_dir}/hosts.toml" >/dev/null
+  done
 }
 
 # crane copy a digest-pinned source image into localhost:<port>/<dstRepo>,

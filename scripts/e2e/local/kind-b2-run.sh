@@ -52,8 +52,14 @@ echo "==> [local] Building a bare git mirror of worktree HEAD ($BRANCH)"
 git clone --quiet --bare "$REPO_ROOT" "$SERVE_DIR/repo.git"
 git -C "$SERVE_DIR/repo.git" update-server-info
 
-echo "==> [local] Creating kind cluster '$CLUSTER_NAME' (Calico + localhost:5000 registry mirror)"
+# Node image pinned to the SAME Kubernetes minor CI pins (e2e-golden-path.yml →
+# kindest/node:v1.32.11) for lane parity. Tag (not digest) so the multi-arch
+# manifest resolves on arm64 hosts too.
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.32.11}"
+
+echo "==> [local] Creating kind cluster '$CLUSTER_NAME' (Calico + localhost:5000 registry mirror, $KIND_NODE_IMAGE)"
 kind create cluster --name "$CLUSTER_NAME" \
+  --image "$KIND_NODE_IMAGE" \
   --config "$REPO_ROOT/scripts/e2e/kind/kind-calico.yaml" --wait 0s
 
 echo "==> [local] Starting + seeding the local registry:2"
