@@ -1,0 +1,16 @@
+# B2 (epic #167 / ADR-26) — model-store ConfigMap, the INJECTION target.
+#
+# Name MUST be `<trimSuffix "-deploy" repository>-model-store` = aegis-sample-
+# model-store: that is exactly what the ApplicationSet templatePatch targets when
+# a workload declares engine_irsa (argocd.tf, gated on engineServiceAccount +
+# modelBucket). `data.bucket` ships a PLACEHOLDER here; the ApplicationSet's
+# JSON6902 patch replaces it with the per-cluster model bucket at sync. The
+# harness asserts the replacement landed — proving the conditional, per-account
+# injection A5 must preserve actually FIRES on a rendered Application.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegis-sample-model-store
+data:
+  # Replaced at sync by the ApplicationSet injection (op: replace /data/bucket).
+  bucket: PLACEHOLDER-model-bucket

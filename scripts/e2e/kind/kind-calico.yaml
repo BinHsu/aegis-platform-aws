@@ -14,3 +14,13 @@ apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true
   podSubnet: "192.168.0.0/16"
+# B2 (issue #171): mirror `localhost:5000` to the in-cluster registry:2 container
+# (scripts/e2e/b2/local-registry.sh joins it to the kind docker network as
+# `kind-registry`). This is the standard kind local-registry pattern and lets the
+# sample workload pull its digest-pinned image from a local registry instead of
+# ECR. Purely additive — the B1/A2 golden-path tests pull no `localhost:5000`
+# image, so this mirror is inert for them; it only activates for B2's fixture.
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+      endpoint = ["http://kind-registry:5000"]

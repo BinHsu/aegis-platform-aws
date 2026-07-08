@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "B2 (epic #167 / ADR-26) — HARNESS-LOCAL sample workload catalog.",
+    "",
+    "Shape mirrors var.workload_registries (terraform/modules/regional-stack/",
+    "variables.tf): a map keyed by deploy-repo name, each carrying the ECR",
+    "coordinates + opt-in engine_irsa / ingress_cert the ApplicationSet List",
+    "generator turns into per-workload elements (argocd.tf ::",
+    "local.workload_list_elements). scripts/e2e/b2/assert-workload-onboarding.sh",
+    "reads THIS file and runs the SAME transformation to build the harness",
+    "ApplicationSet's generator elements — so the kind lane exercises the exact",
+    "onboarding path A5 (migrate the workload ApplicationSet) must preserve.",
+    "",
+    "The values here are PLACEHOLDERS — no real account IDs (this file is",
+    "committed; the production registries.auto.tfvars.json stays gitignored). On",
+    "kind the ECR account/region only ever surface as the injected",
+    "aegis.binhsu.org/ecr-repository ANNOTATION (never a live pull target — the",
+    "image itself comes from the in-cluster registry:2 mirror), so a placeholder",
+    "account ID exercises the injection without touching AWS.",
+    "",
+    "aegis-sample-deploy is ENGINE-LIKE on purpose: declaring engine_irsa gates",
+    "the model-store ConfigMap injection (argocd.tf templatePatch), so this one",
+    "workload exercises BOTH the always-on commonAnnotations (region + ecr-",
+    "repository) AND a conditional templatePatch injection that actually FIRES —",
+    "while the cert / gateway-oidc guards stay OFF (no ingress_cert, no Cognito",
+    "values), proving the guard-off path too."
+  ],
+  "workload_registries": {
+    "aegis-sample-deploy": {
+      "ecr_account_id": "000000000000",
+      "ecr_region": "eu-central-1",
+      "engine_irsa": {
+        "service_account": "aegis-sample-engine",
+        "role_name": "aegis-workload/aegis-sample-engine"
+      }
+    }
+  }
+}

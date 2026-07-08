@@ -1,0 +1,144 @@
+# scripts/e2e/b2/workload-applicationset.yaml
+#
+# B2 (epic #167 / ADR-26) — the workload AppProject + ApplicationSet the kind
+# lane exercises. This is a FAITHFUL PORT of the production spec in
+# terraform/modules/regional-stack/argocd.tf (helm_release.argocd_apps ::
+# projects.aegis-workloads + applicationsets.aegis-workloads): same List
+# generator, same goTemplate template, same per-workload/per-account
+# templatePatch conditionals. Onboarding a sample workload through THIS is the
+# acceptance gate A5 (migrate the workload ApplicationSet to GitOps) must pass.
+#
+# ┌─ OPEN DECISION B2-a (issue #171) — AWAITING BIN ───────────────────────────┐
+# │ The issue recommends factoring this ApplicationSet/AppProject into a SINGLE │
+# │ source of truth that BOTH Terraform (argocd.tf, today) and this harness     │
+# │ read, instead of the two copies that exist now (argocd.tf + this file).     │
+# │ NOT done here on purpose: rewiring argocd.tf to yamldecode an external file │
+# │ changes a PRODUCTION Terraform resource whose rendered output can only be   │
+# │ proven equivalent with `terraform plan` against AWS (local.workload_list_   │
+# │ elements references aws_s3_bucket / aws_acm_certificate_validation) — out of │
+# │ scope for this $0 kind-only harness, and entangled with the still-open A5   │
+# │ decision (#177). So this file is an additive, revert-safe harness copy; the │
+# │ single-source refactor is recommended as an A5-adjacent follow-up. Keep the │
+# │ template/templatePatch below in lock-step with argocd.tf until B2-a lands.  │
+# └────────────────────────────────────────────────────────────────────────────┘
+#
+# HARNESS DEVIATIONS from argocd.tf (kept minimal, marked HARNESS below):
+#   - generators[0].list.elements is a placeholder []; the driver
+#     (assert-workload-onboarding.sh) injects elements built from
+#     sample-registries.json via the same transform as local.workload_list_elements.
+#   - source.path is per-element ({{.path}}) — the harness co-locates every
+#     sample workload in THIS repo under fixtures/, whereas each real deploy repo
+#     has its own repo + a fixed k8s/overlays/<env> path.
+#   - AppProject.sourceRepos is "*" (the harness serves the fixture from a local
+#     git mirror / the repo's own PR commit, not github.com/<owner>/*).
+#   - region + modelBucket ride the element (the driver sets them) rather than a
+#     TF var / aws_s3_bucket output.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: aegis-workloads
+  namespace: argocd
+spec:
+  description: >-
+    HARNESS copy of the aegis-workloads AppProject (argocd.tf). Destinations
+    locked to aegis-* namespaces; cluster-scoped kinds limited to Namespace.
+  # HARNESS: production pins sourceRepos to https://github.com/<owner>/*; the
+  # harness reads the fixture from a local git mirror / the PR commit, so "*".
+  sourceRepos:
+    - "*"
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "aegis-*"
+  # Namespace is the ONLY cluster-scoped kind a deploy repo may ship (matches
+  # argocd.tf: the destination allowlist does not constrain cluster-scoped
+  # resources, so this whitelist is the wall).
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: aegis-workloads
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    # HARNESS: elements injected by assert-workload-onboarding.sh from
+    # sample-registries.json (same transform as local.workload_list_elements).
+    - list:
+        elements: []
+  template:
+    metadata:
+      name: "{{trimSuffix \"-deploy\" .repository}}"
+    spec:
+      project: aegis-workloads
+      source:
+        repoURL: "{{.url}}"
+        targetRevision: "{{.branch}}"
+        # HARNESS: per-element path (fixtures co-located in one repo). Production
+        # argocd.tf uses a fixed path = k8s/overlays/<var.environment>.
+        path: "{{.path}}"
+        kustomize:
+          # Always-on, per-workload/per-account injections (identical to argocd.tf).
+          commonAnnotations:
+            # region injection — workload INTENT (region-aware workloads read it).
+            "aegis.binhsu.org/region": "{{.region}}"
+            # ECR account-ID hide — full repository URL, NO tag/digest (ADR-12).
+            "aegis.binhsu.org/ecr-repository": "{{.ecrAccountId}}.dkr.ecr.{{.ecrRegion}}.amazonaws.com/{{trimSuffix \"-deploy\" .repository}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{trimSuffix \"-deploy\" .repository}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+  # Conditional, account-bound injections — each keyed off an empty string so a
+  # workload that declares neither renders nothing (verbatim from argocd.tf).
+  templatePatch: |
+    {{- if or .engineServiceAccount .certArn }}
+    spec:
+      source:
+        kustomize:
+          patches:
+          {{- if .certArn }}
+            - target:
+                kind: Ingress
+                name: {{ .ingressName }}
+              patch: |-
+                - op: add
+                  path: /metadata/annotations/alb.ingress.kubernetes.io~1certificate-arn
+                  value: {{ .certArn }}
+          {{- end }}
+          {{- if and .engineServiceAccount .modelBucket }}
+            - target:
+                kind: ConfigMap
+                name: {{ trimSuffix "-deploy" .repository }}-model-store
+              patch: |-
+                - op: replace
+                  path: /data/bucket
+                  value: {{ .modelBucket }}
+          {{- end }}
+          {{- if and .engineServiceAccount .cognitoIssuer .cognitoAudience .cognitoJwks }}
+            - target:
+                kind: ConfigMap
+                name: {{ trimSuffix "-deploy" .repository }}-gateway-oidc
+              patch: |-
+                - op: replace
+                  path: /data/issuer
+                  value: {{ .cognitoIssuer }}
+                - op: replace
+                  path: /data/audience
+                  value: {{ .cognitoAudience }}
+                - op: replace
+                  path: /data/jwksUrl
+                  value: {{ .cognitoJwks }}
+          {{- end }}
+    {{- end }}

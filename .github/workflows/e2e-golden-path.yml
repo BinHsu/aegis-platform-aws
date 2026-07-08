@@ -25,6 +25,12 @@ name: e2e-golden-path
 #      traffic (needs a policy-enforcing CNI — kindnet does not enforce, so this
 #      workflow installs Calico; k3s enforces natively — see scripts/e2e/kind/).
 #   4. `kyverno test` (BVA unit tests) is green against the aegis-policies chart.
+#   5. B2 (#171): a sample workload onboards through the workload ApplicationSet
+#      (List generator + per-workload/per-account templatePatch injections, a
+#      faithful port of argocd.tf) — the rendered Application reaches Synced +
+#      Healthy pulling a digest-pinned image from an in-cluster registry:2, the
+#      injections land, and a tag-only workload variant is denied. This golden
+#      path is the acceptance gate the A5 ApplicationSet migration reuses.
 #
 # No AWS: this workflow declares NO id-token permission and assumes NO AWS role.
 
@@ -37,6 +43,9 @@ on:
       - "scripts/e2e/**"
       - "gitops/platform-addons/**"
       - "terraform/modules/regional-stack/charts/aegis-policies/**"
+      # B2 (#171): the sample workload fixture + its registries catalog.
+      - "fixtures/sample-deploy/**"
+      - "sample-registries.json"
       - ".github/workflows/e2e-golden-path.yml"
   workflow_dispatch: {}
 
@@ -77,6 +86,18 @@ jobs:
           kubectl -n kube-system rollout status daemonset/calico-node --timeout=300s
           kubectl wait --for=condition=Ready nodes --all --timeout=180s
           kubectl -n kube-system rollout status deployment/coredns --timeout=180s
+
+      # B2 (#171): stand up the local registry:2 the sample workload pulls from
+      # (stands in for ECR on kind). The kind cluster's containerd is already
+      # configured to mirror localhost:5000 -> kind-registry:5000
+      # (scripts/e2e/kind/kind-calico.yaml). Seed the fixture's digest-pinned image
+      # with `crane copy` (digest preserved), so localhost:5000/aegis-sample@sha256
+      # resolves in-cluster. crane is fetched by the helper (no global install).
+      - name: local registry — start, join kind net, seed sample image (B2)
+        run: |
+          source scripts/e2e/b2/local-registry.sh
+          registry_up aegis-e2e
+          registry_seed "busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028" aegis-sample
 
       - name: install Helm
         uses: azure/setup-helm@v4
@@ -126,6 +147,17 @@ jobs:
 
       - name: negative — default-deny NetworkPolicy blocks cross-ns traffic
         run: ./scripts/e2e/negative/assert-default-deny.sh
+
+      # B2 (#171): onboard a sample workload through the workload ApplicationSet
+      # (List generator + per-workload/per-account templatePatch injections) — a
+      # faithful port of argocd.tf. Proves the Application reaches Synced+Healthy,
+      # the injections land, and a tag-only workload variant is denied. This golden
+      # path is the acceptance gate A5 (migrate the workload ApplicationSet) reuses.
+      - name: B2 — sample workload onboarding via ApplicationSet fan-out
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          TARGET_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/e2e/b2/assert-workload-onboarding.sh
 
       # Offline BVA unit tests (also wired into scripts/verify/static-checks.sh
       # Check 4, which now stops skipping because tests/ exists).
