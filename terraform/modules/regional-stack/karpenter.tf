@@ -91,15 +91,6 @@ module "karpenter" {
   tags = local.common_tags
 }
 
-# Public ECR auth for the OCI Helm pull. public.ecr.aws serves anonymously but
-# throttles unauthenticated pulls; an auth token avoids a throttled apply. AWS
-# provider v6 takes a per-data-source `region` (ECR Public tokens are issued
-# only from us-east-1), so no separate provider alias is needed.
-data "aws_ecrpublic_authorization_token" "karpenter" {
-  count  = var.enable_karpenter ? 1 : 0
-  region = "us-east-1"
-}
-
 # Karpenter controller. Pinned (repo convention) — VERIFY against
 # https://gallery.ecr.aws/karpenter/karpenter and the Karpenter/K8s
 # compatibility matrix (https://karpenter.sh/docs/upgrading/compatibility/)
@@ -110,13 +101,19 @@ data "aws_ecrpublic_authorization_token" "karpenter" {
 resource "helm_release" "karpenter" {
   count = var.enable_karpenter ? 1 : 0
 
-  name                = "karpenter"
-  namespace           = "kube-system"
-  repository          = "oci://public.ecr.aws/karpenter"
-  repository_username = data.aws_ecrpublic_authorization_token.karpenter[0].user_name
-  repository_password = data.aws_ecrpublic_authorization_token.karpenter[0].password
-  chart               = "karpenter"
-  version             = "1.13.0" # pinned — see VERIFY note above
+  name      = "karpenter"
+  namespace = "kube-system"
+  # ANONYMOUS OCI pull. public.ecr.aws serves Helm charts without credentials; an
+  # ECR-Public auth token only raises the pull-throttle ceiling. We deliberately
+  # do NOT use `data.aws_ecrpublic_authorization_token` here: it calls
+  # sts:GetServiceBearerToken at PLAN time, which the read-only infra-plan CI role
+  # (ReadOnlyAccess) is not authorized for — that AccessDenied would red every PR
+  # plan. Anonymous pull happens only at APPLY (operator-attended); a single
+  # cluster bring-up is far under the anonymous throttle. Add the token (via a
+  # us-east-1 provider) only if a real throttle appears.
+  repository = "oci://public.ecr.aws/karpenter"
+  chart      = "karpenter"
+  version    = "1.13.0" # pinned — see VERIFY note above
 
   # B1 (2026-06-11): 600s so a busy bring-up does not deadline the 300s default.
   timeout = 600
