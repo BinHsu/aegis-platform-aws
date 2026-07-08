@@ -37,3 +37,40 @@ variable "github_owner" {
     error_message = "github_owner must be set explicitly for the target GitHub org/user."
   }
 }
+
+# ---- Immutable repository_id binding (issue #144) ---------------------------
+# GitHub's `sub` claim carries the repo NAME, which changes on rename/transfer.
+# The numeric repository_id is immutable for the life of the repo and is the
+# binding these trust policies key on going forward — the sub's repo-name
+# segment is wildcarded (StringLike `repo:<owner>/*:...`) so a rename cannot
+# break CI auth, matching the pattern already in production in
+# aegis-landing-zone-aws (oidc-github-*-role.tf, ADR-019 there). Fetch each
+# value with `gh api repos/<owner>/<repo> --jq .id` — never guess it; a wrong
+# id fails closed (StringEquals mismatch), so a bad value manifests as every
+# CI OIDC assume-role failing, not a silent bypass.
+variable "github_platform_repo_id" {
+  description = "Numeric GitHub repository id (as a string) for aegis-platform-aws (this repo). Binds aegis-platform-aws-ci, gh-tf-apply-platform, and gh-tf-destroy-platform. Get it via: gh api repos/<owner>/aegis-platform-aws --jq .id"
+  type        = string
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_platform_repo_id))
+    error_message = "github_platform_repo_id must be the real numeric repository id, as a digit-only string (gh api repos/<owner>/aegis-platform-aws --jq .id)."
+  }
+}
+
+variable "github_greeter_repo_id" {
+  description = "Numeric GitHub repository id (as a string) for aegis-greeter. Binds aegis-greeter-ci. Get it via: gh api repos/<owner>/aegis-greeter --jq .id"
+  type        = string
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_greeter_repo_id))
+    error_message = "github_greeter_repo_id must be the real numeric repository id, as a digit-only string (gh api repos/<owner>/aegis-greeter --jq .id)."
+  }
+}
+
+variable "github_core_repo_id" {
+  description = "Numeric GitHub repository id (as a string) for aegis-core. Binds github-actions-aegis-core-frontend. Get it via: gh api repos/<owner>/aegis-core --jq .id"
+  type        = string
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_core_repo_id))
+    error_message = "github_core_repo_id must be the real numeric repository id, as a digit-only string (gh api repos/<owner>/aegis-core --jq .id)."
+  }
+}
