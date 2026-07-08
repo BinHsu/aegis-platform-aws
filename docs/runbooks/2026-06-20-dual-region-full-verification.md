@@ -189,7 +189,12 @@ unless marked cross-region. Each cluster runs its own ArgoCD (`argocd.tf:1`).
 - A4: active mechanism is **direct cross-region pull**, not replication
   (`aws_ecr_replication_configuration` at `ecr.tf:80` is for the greeter repo;
   per-region aegis-core replicas are a future DR item). Test direct pull.
-- A9: **no Karpenter** — managed SPOT node group only.
+- A9: **no Karpenter** — managed SPOT node group only. _UPDATE (2026-07-08,
+  #182 / ADR-27): Karpenter has since been wired (`karpenter.tf` — controller,
+  Pod Identity IAM, SQS interruption queue, default NodePool/EC2NodeClass). This
+  2026-06-20 record stands as-observed; the A9 row must be RE-VERIFIED on the
+  next cluster run (pending-pod → Karpenter provisions a node → consolidation
+  reclaims it). See the #182 PR for the deferred ephemeral-EKS validation._
 - A14: **no enclave/CloudWatch-EMF** resource in this IaC → mark N/A.
 - **prod gateway digest ≠ staging** (partial-promotion residue) → reconcile before
   any prod functional run (ties to §4.2 / §9).

@@ -312,7 +312,10 @@ forgotten):
   the current single-cloud, two-workload scale, ALB `Ingress` is sufficient;
   Gateway API is the first concrete step **if** multi-cloud or multi-ingress
   ever becomes a goal. Effort: ~1–2 days per workload + the controller.
-- **EKS Auto Mode** — we run a managed node group on Spot (with Karpenter as the
-  ADR-08 escape hatch). EKS Auto Mode would hand AWS the compute/Karpenter
-  lifecycle. Managed node groups are perfectly mature; Auto Mode is a
-  convenience-vs-control trade we have not taken. Revisit if node-ops toil grows.
+- **EKS Auto Mode** — we run a managed node group on Spot as the static base,
+  with **Karpenter now installed** (ADR-27 / #182, `karpenter.tf`) provisioning
+  elastic capacity on pending-pod pressure (Graviton, Spot-preferred with
+  On-Demand fallback, consolidation on). EKS Auto Mode would instead hand AWS the
+  compute/Karpenter lifecycle. Self-managed Karpenter keeps control over
+  AMI/bootstrap + upgrade cadence; Auto Mode is a convenience-vs-control trade we
+  have not taken. Revisit if node-ops toil grows.

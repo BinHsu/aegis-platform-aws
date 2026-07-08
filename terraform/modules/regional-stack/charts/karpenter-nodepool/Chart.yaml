@@ -1,0 +1,12 @@
+apiVersion: v2
+name: karpenter-nodepool
+description: >-
+  Default Karpenter NodePool + EC2NodeClass for the aegis platform regional
+  stack (ADR-27, #182). Shipped as a local Helm chart because a CRD instance
+  (karpenter.sh/NodePool, karpenter.k8s.aws/EC2NodeClass) cannot be applied via
+  kubernetes_manifest at plan time — the CRDs do not exist until the Karpenter
+  controller chart installs them. A helm_release renders + applies at apply
+  time, after the controller. Same CRD-safe pattern as charts/aegis-policies.
+type: application
+version: 0.1.0
+appVersion: "1.13.0"
