@@ -34,7 +34,15 @@
 set -euo pipefail
 
 REGISTRY_NAME="${REGISTRY_NAME:-kind-registry}"
+# CLUSTER-facing registry name/port — what the fixture's image refs use
+# (localhost:5000/...), resolved per-node via hosts.toml to kind-registry:5000.
 REGISTRY_PORT="${REGISTRY_PORT:-5000}"
+# HOST-facing port for seeding from the host (crane). Deliberately NOT 5000:
+# macOS ControlCenter (AirPlay Receiver) squats 5000 and answers 403, which
+# broke `crane copy` on a mac (caught live 2026-07-08). The host port is ONLY a
+# seeding path — in-cluster pulls go through hosts.toml, never through it — so
+# the two ports are independent.
+REGISTRY_HOST_PORT="${REGISTRY_HOST_PORT:-5001}"
 # registry:2 pinned by digest (harness-local supply-chain hygiene). 2.8.3.
 REGISTRY_IMAGE="${REGISTRY_IMAGE:-registry:2.8.3}"
 # crane (google/go-containerregistry) — pinned. Fetched to a temp bin if absent
@@ -71,9 +79,9 @@ registry_up() {
   local cluster="${1:?registry_up needs the kind cluster name}"
   local net="kind"
   if [ "$(docker inspect -f '{{.State.Running}}' "$REGISTRY_NAME" 2>/dev/null || true)" != "true" ]; then
-    echo "==> [registry] starting ${REGISTRY_NAME} (${REGISTRY_IMAGE}) on 127.0.0.1:${REGISTRY_PORT}"
+    echo "==> [registry] starting ${REGISTRY_NAME} (${REGISTRY_IMAGE}) on 127.0.0.1:${REGISTRY_HOST_PORT} (host seed port)"
     docker run -d --restart=always \
-      -p "127.0.0.1:${REGISTRY_PORT}:5000" \
+      -p "127.0.0.1:${REGISTRY_HOST_PORT}:5000" \
       --name "$REGISTRY_NAME" \
       "$REGISTRY_IMAGE" >/dev/null
   else
@@ -98,13 +106,15 @@ registry_up() {
   done
 }
 
-# crane copy a digest-pinned source image into localhost:<port>/<dstRepo>,
-# preserving the manifest digest. HTTP (insecure) — the harness registry is plain.
+# crane copy a digest-pinned source image into the registry via the HOST seed
+# port, preserving the manifest digest. In-cluster refs still say
+# localhost:$REGISTRY_PORT — same storage, different door. HTTP (insecure) —
+# the harness registry is plain.
 registry_seed() {
   local src="${1:?registry_seed needs a src image ref (…@sha256:…)}"
   local dst_repo="${2:?registry_seed needs a destination repo name}"
   ensure_crane
-  local dst="localhost:${REGISTRY_PORT}/${dst_repo}"
+  local dst="localhost:${REGISTRY_HOST_PORT}/${dst_repo}"
   echo "==> [registry] crane copy ${src} -> ${dst} (digest preserved)"
   "$CRANE" copy --insecure "$src" "$dst"
   # Echo the resulting digest for evidence — MUST equal the source digest.
