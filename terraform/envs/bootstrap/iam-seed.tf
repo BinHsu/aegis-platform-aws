@@ -98,13 +98,24 @@ data "aws_iam_policy_document" "greeter_ci_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Immutable binding (issue #144): repository_id survives a repo rename;
+    # the repo name in `sub` does not. This condition is what actually scopes
+    # the trust to aegis-greeter — the StringLike below only narrows the ref.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_greeter_repo_id]
+    }
+
     # Pinned to the main ref — aegis-greeter's publish.yml only runs on push to
     # main, so the OIDC subject can be the exact ref (no branch wildcard).
     # Tightest blast radius: a PR / fork branch on greeter cannot assume this.
+    # Repo NAME is wildcarded (rename-proof); repository_id above is the real
+    # binding.
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_owner}/aegis-greeter:ref:refs/heads/main"]
+      values   = ["repo:${var.github_owner}/*:ref:refs/heads/main"]
     }
   }
 }
@@ -172,10 +183,20 @@ data "aws_iam_policy_document" "infra_ci_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Immutable binding (issue #144) — see Role A comment. Scopes the trust to
+    # this repo regardless of the `sub` wildcard below.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_platform_repo_id]
+    }
+
+    # Repo NAME wildcarded (rename-proof); repository_id above is the real
+    # binding. Suffix stays `*` — any ref/PR, matching the pre-migration scope.
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_owner}/aegis-platform-aws:*"]
+      values   = ["repo:${var.github_owner}/*:*"]
     }
   }
 }
@@ -214,14 +235,26 @@ data "aws_iam_policy_document" "infra_apply_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Immutable binding (issue #144) — see Role A comment. Scopes the trust to
+    # this repo regardless of the `sub` wildcards below.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_platform_repo_id]
+    }
+
     # GitHub mints DIFFERENT OIDC subjects depending on whether a job declares
     # `environment:` — the environment sub REPLACES the ref sub. Each accepted
     # subject is tied to a job in infra-apply-account.yml / infra-apply.yml /
     # infra-ops.yml. The blast-radius story is unchanged: the ref sub requires a
     # reviewed commit on main; each environment sub requires a run GitHub routed
     # through that environment (main-branch-only deployment policy for all four).
+    # Repo NAME wildcarded in every value (rename-proof); repository_id above
+    # is the real binding, so this switches from StringEquals to StringLike —
+    # the ref/environment suffixes themselves stay byte-for-byte identical, no
+    # loosening.
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
         # Non-environment jobs on main: infra-apply.yml apply-platform,
@@ -229,14 +262,14 @@ data "aws_iam_policy_document" "infra_apply_trust" {
         # (#184: the version-gate plans and the ttl-reaper scan moved OFF this
         # role to the read-only aegis-platform-aws-ci — read-only jobs must not
         # carry AdministratorAccess.)
-        "repo:${var.github_owner}/aegis-platform-aws:ref:refs/heads/main",
+        "repo:${var.github_owner}/*:ref:refs/heads/main",
         # infra-apply.yml apply-regional, clean version gate (ungated env).
-        "repo:${var.github_owner}/aegis-platform-aws:environment:prod-apply",
+        "repo:${var.github_owner}/*:environment:prod-apply",
         # apply-regional, version gate tripped (required reviewer) + the W3 prod
         # promotion path (prod ALWAYS gated).
-        "repo:${var.github_owner}/aegis-platform-aws:environment:prod-apply-gated",
+        "repo:${var.github_owner}/*:environment:prod-apply-gated",
         # W3 staging auto-apply on merge to main (ungated env).
-        "repo:${var.github_owner}/aegis-platform-aws:environment:staging",
+        "repo:${var.github_owner}/*:environment:staging",
       ]
     }
   }
@@ -286,14 +319,24 @@ data "aws_iam_policy_document" "infra_destroy_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Immutable binding (issue #144) — see Role A comment. Scopes the trust to
+    # this repo regardless of the `sub` wildcards below.
     condition {
       test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_platform_repo_id]
+    }
+
+    # Repo NAME wildcarded in every value (rename-proof); repository_id above
+    # is the real binding. environment suffixes stay byte-for-byte identical.
+    condition {
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
         # infra-ops.yml destroy — gated by the `destroy` environment reviewer.
-        "repo:${var.github_owner}/aegis-platform-aws:environment:destroy",
+        "repo:${var.github_owner}/*:environment:destroy",
         # ttl-reaper auto-destroy — UNGATED but tag-guarded, re-verified in-job.
-        "repo:${var.github_owner}/aegis-platform-aws:environment:reaper-destroy",
+        "repo:${var.github_owner}/*:environment:reaper-destroy",
       ]
     }
   }
@@ -340,10 +383,20 @@ data "aws_iam_policy_document" "core_frontend_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Immutable binding (issue #144) — see Role A comment. Scopes the trust to
+    # aegis-core regardless of the `sub` wildcard below.
     condition {
       test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_core_repo_id]
+    }
+
+    # Repo NAME wildcarded (rename-proof); repository_id above is the real
+    # binding. Ref suffix unchanged — main only.
+    condition {
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_owner}/aegis-core:ref:refs/heads/main"]
+      values   = ["repo:${var.github_owner}/*:ref:refs/heads/main"]
     }
   }
 }
