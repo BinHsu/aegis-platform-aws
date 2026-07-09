@@ -167,6 +167,14 @@ jobs:
           TARGET_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: ./scripts/e2e/b2/assert-workload-onboarding.sh
 
+      # A6 (#178): prove the ephemeral/full PROFILE GATE. Runs LAST and is fully
+      # hermetic — it registers a synthetic facts-bridge cluster Secret pointing at
+      # an unreachable server, so the ALB controller + external-dns Applications are
+      # GENERATED (profile=full) / excluded (profile=ephemeral) without any chart
+      # ever syncing onto this kind cluster, then tears its fixtures down.
+      - name: A6 — ephemeral/full profile gates ALB controller + external-dns
+        run: ./scripts/e2e/assert-ephemeral-profile.sh
+
       # Offline BVA unit tests (also wired into scripts/verify/static-checks.sh
       # Check 4, which now stops skipping because tests/ exists).
       - name: kyverno test — aegis-policies BVA unit tests

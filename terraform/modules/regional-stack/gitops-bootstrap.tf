@@ -39,6 +39,17 @@ resource "kubernetes_secret" "argocd_cluster_facts" {
       # namespace + grafana-cloud-credentials Secret). Labels, not annotations,
       # because clusters-generator selectors match labels.
       "aegis.binhsu.org/observability" = var.enable_observability ? "true" : "false"
+      # Profile GATE for the profile-scoped add-ons (A6 / #178): the ALB
+      # controller + external-dns ApplicationSets (gitops/platform-addons/addons/
+      # alb-controller, .../external-dns) select clusters whose profile is "full",
+      # so an EPHEMERAL cluster installs NEITHER. Those two are the only add-ons
+      # that create AWS objects OUTSIDE Terraform state (ALBs, controller-owned
+      # SGs, Route53 records) — the exact objects the bespoke teardown machinery
+      # existed to reap. Gating them to full means an ephemeral teardown collapses
+      # to a plain `terraform destroy` (epic #167 target end-state). Mirrored from
+      # the /profile ANNOTATION below (same var) because clusters-generator
+      # selectors match LABELS, not annotations — the observability idiom above.
+      "aegis.binhsu.org/profile" = var.cluster_profile
     }
     annotations = {
       "aegis.binhsu.org/cluster-name" = local.cluster_name
@@ -52,10 +63,25 @@ resource "kubernetes_secret" "argocd_cluster_facts" {
       # manifests, the A1 facts-bridge rule); surfaced to the ApplicationSet
       # template via the clusters generator.
       "aegis.binhsu.org/account-id" = data.aws_caller_identity.current.account_id
-      # Lifecycle profile fact (epic #167 decision #6). Inert in A1 — A6 will
-      # select add-on scope on it; written now so the bridge carries it from
-      # day one.
+      # Lifecycle profile fact (epic #167 decision #6). CONSUMED as of A6 (#178):
+      # the add-on scope selector is the /profile LABEL above (selectors match
+      # labels); this annotation stays as the human-readable / greppable copy of
+      # the same var.cluster_profile value.
       "aegis.binhsu.org/profile" = var.cluster_profile
+      # ── ALB controller + external-dns facts (A6 / #178) ──────────────────────
+      # These two add-ons moved from Terraform helm_release to GitOps-owned
+      # ApplicationSets gated to profile=full (gitops/platform-addons/addons/
+      # alb-controller, .../external-dns). Their charts need account/cluster-bound
+      # values that must NOT be hardcoded in the public git manifest (the same
+      # cluster-agnostic rule A1 set for Alloy's cluster-name/region). Surfaced
+      # here for the clusters generator to inject verbatim into the chart values —
+      # a byte-for-byte port of the `set` blocks the old helm_releases carried.
+      "aegis.binhsu.org/vpc-id"                = module.vpc.vpc_id
+      "aegis.binhsu.org/alb-role-arn"          = module.irsa_alb_controller.arn
+      "aegis.binhsu.org/external-dns-role-arn" = module.irsa_external_dns.arn
+      # external-dns domainFilter — the platform-owned zone, trailing dot trimmed
+      # (identical to the old external-dns.tf `domainFilters[0]` set).
+      "aegis.binhsu.org/zone-name" = trimsuffix(var.zone_name, ".")
       # Workload catalog (epic #167 A5 / issue #177). Terraform still builds the
       # per-workload element list from registries.auto.tfvars.json + AWS resources
       # (argocd.tf :: local.workload_list_elements — registries.auto.tfvars.json

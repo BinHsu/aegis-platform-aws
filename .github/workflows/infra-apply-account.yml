@@ -352,8 +352,11 @@ jobs:
             # elbv2.k8s.aws/cluster) is NOT swept here: a one-shot pre-destroy sweep
             # runs too early (the SG is still attached to node ENIs). It is reaped by
             # the background loop that runs CONCURRENTLY with `terraform destroy` below,
-            # behind the enableBackendSecurityGroup=false source fix in
-            # modules/regional-stack/alb-controller.tf (2026-06-17).
+            # behind the enableBackendSecurityGroup=false source fix in the ALB
+            # controller ApplicationSet (gitops/platform-addons/addons/alb-controller;
+            # was modules/regional-stack/alb-controller.tf before A6 #178). This is a
+            # FAILED-apply self-reap (defense-in-depth for a partial stack), NOT the
+            # #178 profile-gated teardown — kept unconditional on purpose.
           fi
           terraform state list 2>/dev/null | grep -E 'helm_release\.|kubernetes_' | while read -r addr; do
             echo "self-reap: state rm ${addr} (cluster deletion reaps it)"

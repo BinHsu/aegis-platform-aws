@@ -99,7 +99,7 @@ variable "workload_registries" {
 
 # ---- GitOps facts bridge --------------------------------------------------
 variable "cluster_profile" {
-  description = "Cluster lifecycle profile written onto the in-cluster ArgoCD `cluster` Secret as the aegis.binhsu.org/profile annotation (facts bridge, ADR-25). ephemeral = throwaway CI/burn cluster; full = long-lived. Inert in A1; A6 selects add-on scope on it. Default ephemeral (safe for burns); set full for a long-lived cluster."
+  description = "Cluster lifecycle profile written onto the in-cluster ArgoCD `cluster` Secret as the aegis.binhsu.org/profile label + annotation (facts bridge, ADR-25). ephemeral = throwaway CI/burn cluster; full = long-lived. A6 (#178): the ALB controller + external-dns ApplicationSets select on the label, so only full clusters install them (an ephemeral cluster's teardown is a plain `terraform destroy`). Default ephemeral (safe for burns); set full for a long-lived cluster."
   type        = string
   default     = "ephemeral"
 
