@@ -1,0 +1,11 @@
+# B2 (epic #167 / ADR-26) — sample-deploy base overlay.
+#
+# Namespace is deliberately NOT set here: ArgoCD places these namespaced
+# resources into the Application's destination namespace (aegis-sample, derived
+# by the ApplicationSet from the repo name), exactly as a real deploy repo's
+# base leaves the namespace to the platform.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - configmap.yaml

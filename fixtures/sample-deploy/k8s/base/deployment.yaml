@@ -1,0 +1,46 @@
+# B2 (epic #167 / ADR-26) — sample onboarded workload, DIGEST-PINNED.
+#
+# Stands in for a real `aegis-*-deploy` repo's workload. The image is pinned by
+# sha256 digest (ADR-10 promote-by-digest), NO floating tag — so the require-
+# image-digest ClusterPolicy in Enforce mode ADMITS it (the positive control the
+# ApplicationSet proves by reaching Healthy). The registry host is the in-cluster
+# registry:2 mirror (localhost:5000, wired by scripts/e2e/b2/local-registry.sh);
+# scripts/e2e/b2/assert-workload-onboarding.sh crane-copies busybox into it under
+# THIS exact digest before the Application syncs, so the pull resolves.
+#
+# Do NOT rewrite this image to a floating tag — being digest-pinned is the whole
+# point (the tag-only negative variant is generated at runtime by the assertion).
+#
+# No ports / probes / egress: a sleeping busybox becomes Ready as soon as it is
+# Running, so it goes Healthy even inside the aegis-* namespace's generated
+# default-deny NetworkPolicy (which blocks traffic, not image pulls).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  labels:
+    app.kubernetes.io/name: sample-app
+    aegis.binhsu.org/managed-by: e2e-b2-workload-onboarding
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sample-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sample-app
+    spec:
+      containers:
+        - name: sample-app
+          # Digest-pinned (busybox 1.37 index digest) — served from the in-cluster
+          # registry:2 mirror at localhost:5000. crane copy preserves this digest.
+          image: localhost:5000/aegis-sample@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+          command: ["sh", "-c", "sleep 3600"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

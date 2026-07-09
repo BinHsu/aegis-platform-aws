@@ -1,0 +1,10 @@
+# B2 (epic #167 / ADR-26) — sample-deploy `e2e` overlay.
+#
+# The ApplicationSet template points source.path at k8s/overlays/<env>; the
+# harness syncs the `e2e` overlay (the real platform uses staging/prod). Kept as
+# a thin overlay over base so the fixture mirrors a real deploy repo's
+# base+overlay layout — the shape A5's migrated ApplicationSet renders.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base

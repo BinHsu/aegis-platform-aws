@@ -14,3 +14,23 @@ apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true
   podSubnet: "192.168.0.0/16"
+# B2 (issue #171): enable containerd's registry host-config directory so
+# `localhost:5000` can be mirrored to the registry:2 container that
+# scripts/e2e/b2/local-registry.sh joins to the kind docker network as
+# `kind-registry`. This is kind's DOCUMENTED local-registry pattern: config_path
+# here + a per-node hosts.toml (written by local-registry.sh::registry_up, which
+# needs running nodes so it cannot live in this create-time config).
+#
+# WHY config_path and NOT the legacy `registry.mirrors` table: containerd 2.x
+# REMOVED `plugins."io.containerd.grpc.v1.cri".registry.mirrors` — patching it in
+# makes kubelet/containerd fail to start on node images >= v1.33 (caught live
+# 2026-07-08: `kubeadm init` died on kindest/node:v1.35.0 with that patch).
+# config_path works on BOTH containerd 1.7 (CI's pinned v1.32.11 node image)
+# and containerd 2.x.
+#
+# Purely additive — the B1/A2 golden-path tests pull no `localhost:5000` image,
+# so this mirror is inert for them; it only activates for B2's fixture.
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
