@@ -113,5 +113,8 @@ echo "==> [local] Negative: require-digest denies a tag-only pod (ArgoCD-deliver
 echo "==> [local] Negative: default-deny NetworkPolicy blocks cross-ns traffic (ArgoCD-delivered policy)"
 "$REPO_ROOT/scripts/e2e/negative/assert-default-deny.sh"
 
+echo "==> [local] A4: argo-rollouts CRD established before a Rollout workload syncs (ArgoCD-delivered controller)"
+"$REPO_ROOT/scripts/e2e/assert-argo-rollouts.sh"
+
 echo ""
-echo "==> A2 GITOPS E2E PASSED — Kyverno + aegis-policies delivered by ArgoCD, negatives green."
+echo "==> GITOPS E2E PASSED — Kyverno + aegis-policies + argo-rollouts delivered by ArgoCD, negatives green."

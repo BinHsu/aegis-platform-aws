@@ -148,6 +148,14 @@ jobs:
       - name: negative — default-deny NetworkPolicy blocks cross-ns traffic
         run: ./scripts/e2e/negative/assert-default-deny.sh
 
+      # A4 (#176): the Argo Rollouts controller now arrives via ArgoCD (the
+      # app-of-apps root enumerates addons/argo-rollouts, sync-wave 0). Prove the
+      # #176 gate: the Rollout CRD is Established BEFORE a Rollout-shaped workload
+      # is admitted (no race). No env — reads the same seeded root as the stages
+      # above; the argo-rollouts child is already synced by the golden-path seed.
+      - name: A4 — argo-rollouts CRD established before workload sync (GitOps)
+        run: ./scripts/e2e/assert-argo-rollouts.sh
+
       # B2 (#171): onboard a sample workload through the workload ApplicationSet
       # (List generator + per-workload/per-account templatePatch injections) — a
       # faithful port of argocd.tf. Proves the Application reaches Synced+Healthy,

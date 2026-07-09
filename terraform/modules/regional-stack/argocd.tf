@@ -327,12 +327,21 @@ resource "helm_release" "argocd_apps" {
     })
   ]
 
-  # argo_rollouts must precede the ApplicationSet: aegis-core's gateway/engine
-  # are argoproj.io Rollouts, so the controller running first (and its CRD
-  # registered) before ArgoCD starts syncing aegis-core avoids a transient
-  # `Rollout.argoproj.io "" not found` sync failure on the first bring-up.
+  # ArgoCD must exist before this ApplicationSet lands.
+  #
+  # A4 (epic #167 / #176, ADR-25): the Argo Rollouts controller is no longer a
+  # Terraform helm_release — it moved to GitOps as an app-of-apps child
+  # (gitops/platform-addons/addons/argo-rollouts, sync-wave 0). So the old
+  # `helm_release.argo_rollouts` gate that forced the Rollout CRD to exist BEFORE
+  # this ApplicationSet was created is gone with the resource. aegis-core's
+  # gateway/engine are argoproj.io Rollouts, so on first bring-up aegis-core can
+  # now briefly sync ahead of the CRD and hit a TRANSIENT
+  # `Rollout.argoproj.io "" not found`; ArgoCD's automated retry + selfHeal
+  # converges once wave 0 lands the CRD. The hard pre-CRD ordering returns when
+  # A5 (AWAITING BIN — epic #167 open-decision 5) moves THIS ApplicationSet under
+  # the app-of-apps root at a wave after argo-rollouts. See addons/argo-rollouts/
+  # application.yaml for the full ordering note.
   depends_on = [
     helm_release.argocd,
-    helm_release.argo_rollouts,
   ]
 }
