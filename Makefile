@@ -56,6 +56,28 @@ define BOOTSTRAP_WS
 	cd $(TF_BOOTSTRAP) && terraform workspace select -or-create "$(ENV)"
 endef
 
+# One-time migration guard (issue #90). PR #139 moved bootstrap to per-account
+# workspaces (state under terraform.tfstate.d/<ENV>/), but a machine bootstrapped
+# BEFORE #139 still holds its real state in the pre-workspace default-workspace
+# file (terraform/envs/bootstrap/terraform.tfstate). If that legacy state still
+# carries managed resources and the target <ENV> workspace does not exist yet,
+# the workspace flow below would select an EMPTY <ENV> workspace, orphan the
+# legacy state, and the follow-on apply would try to re-create the
+# prevent_destroy state bucket and fail. Refuse until the operator has run the
+# one-time migration in docs/runbooks/bootstrap-state-migration-90.md.
+# Detection: a real state file contains `"mode": "managed"`; a fresh-account
+# empty-scaffold state does not, so a forker's clean cold-start never trips this.
+define BOOTSTRAP_MIGRATION_GUARD
+	@if grep -q '"mode": "managed"' "$(TF_BOOTSTRAP)/terraform.tfstate" 2>/dev/null && [ ! -d "$(TF_BOOTSTRAP)/terraform.tfstate.d/$(ENV)" ]; then \
+	  echo "ERROR: legacy pre-#90 default-workspace bootstrap state is present"; \
+	  echo "       ($(TF_BOOTSTRAP)/terraform.tfstate holds managed resources) but the"; \
+	  echo "       per-account workspace terraform.tfstate.d/$(ENV)/ does not exist yet."; \
+	  echo "       Running the workspace flow now would orphan that state."; \
+	  echo "       Run the one-time migration first: docs/runbooks/bootstrap-state-migration-90.md"; \
+	  exit 1; \
+	fi
+endef
+
 # Enabled region list (jq selects .value.enabled = true). Evaluated lazily
 # inside recipes — chicken-and-egg: file may not exist on a fresh clone
 # until regions.auto.tfvars.json is created.
@@ -135,12 +157,14 @@ crossplane-validate:
 
 bootstrap:
 	@test -n "$(ENV)" || (echo "ERROR: ENV=<staging|prod> required (selects the bootstrap workspace per account — issue #90)"; exit 1)
+	$(BOOTSTRAP_MIGRATION_GUARD)
 	cd $(TF_BOOTSTRAP) && terraform init
 	$(BOOTSTRAP_WS)
 	cd $(TF_BOOTSTRAP) && terraform apply -var-file=$(TFVARS_JSON)
 	@$(MAKE) regenerate-backend ENV=$(ENV)
 
 regenerate-backend:
+	$(BOOTSTRAP_MIGRATION_GUARD)
 	$(BOOTSTRAP_WS)
 	@cd $(TF_BOOTSTRAP) && terraform output -raw backend_hcl > $(BACKEND_HCL)
 	@echo ">>> $(BACKEND_HCL) regenerated (workspace $(ENV)):"

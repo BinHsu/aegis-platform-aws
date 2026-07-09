@@ -15,6 +15,8 @@ make bootstrap ENV=prod      # workspace "prod"    → terraform.tfstate.d/prod/
 
 The Makefile runs `terraform workspace select -or-create <ENV>` after `terraform init` and before any apply/output, so every state read/write hits the correct per-account file. `make regenerate-backend ENV=<env>` selects the same workspace before emitting `backend.hcl`.
 
+> **Migrating a machine bootstrapped BEFORE #90?** A laptop whose bootstrap state predates the workspace switch still holds it in the pre-workspace layout (`terraform.tfstate` / a `-state=` juggle file). Run the one-time, operator-attended [`docs/runbooks/bootstrap-state-migration-90.md`](../../../docs/runbooks/bootstrap-state-migration-90.md) to move it into `terraform.tfstate.d/<ENV>/` before your next `make bootstrap`. The Makefile's `BOOTSTRAP_MIGRATION_GUARD` blocks `bootstrap` / `regenerate-backend` until you do, so the workspace flow cannot orphan that legacy state. A fresh account has no legacy state and skips this entirely.
+
 Only the **state bucket** carries `lifecycle { prevent_destroy = true }` — losing it loses every downstream env's state (irreversible). The four CI roles (`iam-seed.tf`, ADR-13) carry **no** such guard: they are cheaply, idempotently recreatable, so a full teardown may delete them and a later seed apply restores them from zero.
 
 **The seed apply runs from the operator's laptop as break-glass / `AWSControlTowerExecution`** (a principal the org SCP permits to write IAM — SSO principals are denied). The roles cannot create themselves; the seed principal must. After the seed exists, the `infra-ops` bootstrap job (which assumes `gh-tf-apply-platform`) can re-apply to reconcile baseline drift.

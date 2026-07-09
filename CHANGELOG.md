@@ -16,6 +16,15 @@ This project uses [Semantic Versioning](https://semver.org/).
 - OpenSSF Scorecard workflow (`.github/workflows/scorecard.yml`).
 - RETRO moved to `docs/postmortems/` — maintains permalink.
 - C4-L3 component diagram for `terraform/modules/regional-stack` in README Architecture section.
+- `docs/runbooks/bootstrap-state-migration-90.md` — one-time operator-attended
+  runbook to migrate the pre-#90 local bootstrap state into the per-account
+  workspace layout (`terraform.tfstate.d/<ENV>/`); local-file only, no
+  `terraform apply`, read-only `plan` verification, per-step rollback (#90).
+- `Makefile` `BOOTSTRAP_MIGRATION_GUARD` — blocks `make bootstrap` /
+  `make regenerate-backend` when a legacy pre-#90 default-workspace state still
+  holds managed resources and the target `<ENV>` workspace does not exist yet, so
+  the workspace flow cannot silently orphan that state. A fresh-account cold-start
+  (empty-scaffold or absent state) never trips it (#90).
 
 ### Changed
 - Bootstrap env now uses a Terraform **workspace per account** keyed by `ENV`
