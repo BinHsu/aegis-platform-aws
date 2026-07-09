@@ -34,7 +34,7 @@
 #   Requires: kubectl.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ADDONS="$REPO_ROOT/gitops/platform-addons/addons"
 ALB_APPSET="$ADDONS/alb-controller/application.yaml"
 EDNS_APPSET="$ADDONS/external-dns/application.yaml"
