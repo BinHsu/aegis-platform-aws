@@ -1,0 +1,83 @@
+# gitops/platform-addons/addons/argo-rollouts/application.yaml
+#
+# Argo Rollouts controller — SYNC-WAVE 0 (epic #167 A4 / #176, ADR-25).
+#
+# Migrated OUT of terraform/modules/regional-stack/argo-rollouts.tf
+# (helm_release.argo_rollouts). ArgoCD now owns the Rollouts controller + its
+# CRDs, so `terraform destroy` no longer helm-uninstalls it — one more add-on off
+# Terraform state, dissolving its teardown-unwind at the root (epic #167).
+#
+# WHY THIS ADD-ON EXISTS: aegis-core-deploy ships the gateway + engine as
+# `argoproj.io/v1alpha1` Rollouts (canary + ALB trafficRouting), NOT plain
+# Deployments. Without this controller the Rollout CRD does not exist, so the
+# aegis-core Application fails to sync with `Rollout.argoproj.io "" not found`
+# and the workload never comes up (caught live 2026-06-18 on the first AWS
+# staging bring-up of aegis-core). This is a cluster CAPABILITY, so it belongs
+# in the platform tier next to the other add-ons — deploy repos carry only the
+# workload `Rollout` resources, never the controller.
+#
+# WAVE ORDER: sync-wave 0 — the Rollout CRD must be Established before any
+# Rollout-shaped workload is synced. Within this app-of-apps, wave 0 brings the
+# controller + CRDs Healthy before later waves. The workload ApplicationSet
+# (aegis-apps) is still Terraform-owned in the A4 stopping point (A5 is
+# AWAITING BIN — epic #167 open-decision 5), so it lives in a SEPARATE ArgoCD
+# app tree and ArgoCD's cross-Application sync-waves do NOT span it. On first
+# bring-up aegis-core can therefore briefly race ahead of this CRD; that surfaces
+# as a TRANSIENT `Rollout.argoproj.io "" not found` sync error that ArgoCD
+# self-heals once wave 0 lands the CRD (automated retry + selfHeal). The old TF
+# `depends_on = [helm_release.argo_rollouts]` on the ApplicationSet gave a hard
+# pre-CRD gate; removing that resource necessarily drops the gate. A5 closes the
+# residual window by moving the workload ApplicationSet under THIS root at a
+# later wave. See the PR for the note carried to A5.
+#
+# NO FACTS BRIDGE: unlike Alloy (addons/alloy), this controller takes NO
+# account-bound values — the pre-migration helm_release carried zero `set`
+# blocks (the Rollout's own trafficRouting.alb block references the workload
+# Ingress; the aws-load-balancer-controller provisions the TargetGroups; the
+# controller's default RBAC already covers Ingress/Service edits). So this is a
+# plain Application (like kyverno), not an ApplicationSet with a clusters
+# generator.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-rollouts
+  namespace: argocd
+  annotations:
+    # CRD + controller must precede any Rollout-shaped workload sync.
+    argocd.argoproj.io/sync-wave: "0"
+  # ── TEARDOWN SAFETY — the GitOps analog of the old TF `wait = false` ─────────
+  # DELIBERATELY NO `resources-finalizer.argocd.argoproj.io` (same posture as the
+  # kyverno / aegis-policies children and the app-of-apps root). Deleting this
+  # Application must not trigger a foreground cascade; ephemeral teardown deletes
+  # the whole cluster and reaps the controller with it. The chart keeps its CRDs
+  # on uninstall (keepCRDs: true) regardless.
+spec:
+  project: default
+  source:
+    # Same public chart + PINNED version the old helm_release used. Chart 2.37.x
+    # tracks argo-rollouts v1.7.x. VERIFY against
+    # https://argoproj.github.io/argo-helm before a bootstrap apply (same
+    # convention as the other pinned add-ons; a stale pin surfaces as a sync
+    # error, not silent drift).
+    repoURL: https://argoproj.github.io/argo-helm
+    chart: argo-rollouts
+    targetRevision: 2.37.7 # pinned — verify at bootstrap
+    helm:
+      # installCRDs defaults true in this chart and the CRDs render into
+      # `helm template` output (templates/, not the Helm-native crds/ dir ArgoCD
+      # would skip), so ArgoCD installs the Rollout CRD before the controller.
+      # No values were carried from the TF release — the controller needs none.
+      values: ""
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo-rollouts
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The argoproj.io CRDs (analysisruns ~200 KB, rollouts ~178 KB) exceed the
+      # 256 KB client-side last-applied-annotation limit; ServerSideApply avoids
+      # "metadata.annotations: Too long" — same fix the kyverno child uses.
+      - ServerSideApply=true
