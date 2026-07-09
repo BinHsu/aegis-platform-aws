@@ -111,18 +111,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Outputs go through env, NOT inline ${{ }} interpolation in the script:
+      # meta's `tags` is MULTILINE — textual substitution inside a quoted echo
+      # would splice raw newlines (and backticks) into the shell source and break
+      # only on the push run, which the PR gate never exercises.
       - name: report result
+        env:
+          PUSH: ${{ steps.mode.outputs.push }}
+          IMG_REF: ${{ steps.img.outputs.ref }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
             echo "### verifier-image"
             echo ""
-            if [ "${{ steps.mode.outputs.push }}" = "true" ]; then
-              echo "**Published** to \`${{ steps.img.outputs.ref }}\`"
+            if [ "$PUSH" = "true" ]; then
+              echo "**Published** to \`${IMG_REF}\`"
               echo ""
-              echo "- tags: \`${{ steps.meta.outputs.tags }}\`"
-              echo "- digest: \`${{ steps.build.outputs.digest }}\`"
+              echo "$TAGS" | sed 's/^/- tag: `/; s/$/`/'
+              echo "- digest: \`${DIGEST}\`"
               echo ""
-              echo "Pin \`VERIFY_IMAGE\` to \`${{ steps.img.outputs.ref }}@${{ steps.build.outputs.digest }}\`"
+              echo "Pin \`VERIFY_IMAGE\` to \`${IMG_REF}@${DIGEST}\`"
               echo "when require-image-digest is in Enforce mode (#145)."
             else
               echo "**Build-only** (pull_request) — image built, not published. Merge to main to publish."
