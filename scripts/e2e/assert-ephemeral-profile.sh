@@ -73,6 +73,16 @@ cleanup() {
 }
 trap dump_on_failure EXIT
 
+# Force the ApplicationSet controller to re-run its clusters generator NOW.
+# The generator only re-evaluates cluster Secret label changes on its slow
+# requeue interval (~3 min), so bumping an annotation on the ApplicationSet
+# object triggers an immediate reconcile → the child Application is created /
+# deleted to match the current selector without waiting out the requeue.
+poke_appsets() {
+  kubectl annotate applicationset aws-load-balancer-controller external-dns \
+    -n "$ARGOCD_NS" "e2e.aegis.binhsu.org/poke=$(date +%s%N)" --overwrite >/dev/null
+}
+
 # poll_until_present <app-name> <timeout-s>
 poll_until_present() {
   local app="$1" timeout="${2:-60}" t=0
@@ -136,19 +146,21 @@ stringData:
 YAML
 }
 apply_facts_secret full
+poke_appsets
 
 echo "==> [3-assert] FULL profile → both add-on Applications must be GENERATED"
-poll_until_present "$ALB_APP" 90 || { echo "    FAIL: '$ALB_APP' was not generated under profile=full."; exit 1; }
-poll_until_present "$EDNS_APP" 90 || { echo "    FAIL: '$EDNS_APP' was not generated under profile=full."; exit 1; }
+poll_until_present "$ALB_APP" 120 || { echo "    FAIL: '$ALB_APP' was not generated under profile=full."; exit 1; }
+poll_until_present "$EDNS_APP" 120 || { echo "    FAIL: '$EDNS_APP' was not generated under profile=full."; exit 1; }
 echo "    OK: profile=full generated both '$ALB_APP' and '$EDNS_APP'."
 
 # ── 4. flip the profile LABEL to ephemeral ───────────────────────────────────
-echo "==> [4] Flipping the facts-bridge profile LABEL to ephemeral"
+echo "==> [4] Flipping the facts-bridge profile LABEL to ephemeral (+ forced reconcile)"
 apply_facts_secret ephemeral
+poke_appsets
 
 echo "==> [5-assert] EPHEMERAL profile → both add-on Applications must DISAPPEAR"
-poll_until_absent "$ALB_APP" 90 || { echo "    FAIL: '$ALB_APP' still present under profile=ephemeral (selector did not exclude it)."; exit 1; }
-poll_until_absent "$EDNS_APP" 90 || { echo "    FAIL: '$EDNS_APP' still present under profile=ephemeral (selector did not exclude it)."; exit 1; }
+poll_until_absent "$ALB_APP" 150 || { echo "    FAIL: '$ALB_APP' still present under profile=ephemeral (selector did not exclude it)."; exit 1; }
+poll_until_absent "$EDNS_APP" 150 || { echo "    FAIL: '$EDNS_APP' still present under profile=ephemeral (selector did not exclude it)."; exit 1; }
 echo "    OK: profile=ephemeral removed both '$ALB_APP' and '$EDNS_APP'."
 
 # ── 6. teardown ──────────────────────────────────────────────────────────────
