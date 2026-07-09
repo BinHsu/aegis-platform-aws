@@ -43,6 +43,15 @@ resource "kubernetes_secret" "argocd_cluster_facts" {
     annotations = {
       "aegis.binhsu.org/cluster-name" = local.cluster_name
       "aegis.binhsu.org/region"       = var.region
+      # Account-bound fact (epic #167 A3 / #175). The Crossplane definitions
+      # ApplicationSet (gitops/platform-addons/addons/crossplane/
+      # applicationset-definitions.yaml) reads this to render the deterministic
+      # workload-bucket name "<prefix>-<name>-<account>-<region>" — the value MUST
+      # match the account Terraform ran in, because crossplane.tf's provider IAM
+      # policy is scoped to that exact prefix. Kept off git (cluster-agnostic
+      # manifests, the A1 facts-bridge rule); surfaced to the ApplicationSet
+      # template via the clusters generator.
+      "aegis.binhsu.org/account-id" = data.aws_caller_identity.current.account_id
       # Lifecycle profile fact (epic #167 decision #6). Inert in A1 — A6 will
       # select add-on scope on it; written now so the bridge carries it from
       # day one.

@@ -1,211 +1,74 @@
-# Crossplane v2 — RE-INTRODUCED fresh for NON-identity, workload-scoped cloud
-# resources (ADR-22, WS4 Axis A). This is NOT the retired v1 IRSA stack.
+# Crossplane v2 — install MIGRATED TO GITOPS; provider IAM stays (epic #167 A3 /
+# issue #175, ADR-25 ownership inversion).
 #
-# WHAT THIS IS / IS NOT
-# ---------------------
-# IS:  Crossplane v2 core + the upjet AWS provider family + provider-aws-s3, an
-#      explicit MRAP activating ONLY the S3 namespaced MRDs, function-patch-and-
-#      transform, fully-populated DeploymentRuntimeConfigs, a Pod-Identity-backed
-#      ClusterProviderConfig, and the platform XBucket XRD/Composition
-#      (charts/aegis-xrds-v2). The engine for workload buckets/queues/tables.
-# NOT: the identity provisioner. ADR-21 §A + PR #117 moved workload IAM to EKS
-#      Pod Identity + Terraform (pod-identity-engine.tf). Crossplane NEVER
-#      re-owns identity, NEVER creates an IAM role/policy. The S3 provider's OWN
-#      credentials come from a Terraform-owned Pod Identity role below — mirroring
-#      pod-identity-engine.tf exactly (region-suffixed name, standard path `/`,
-#      NOT /aegis-workload/). That standard-path + Terraform-owned-lifecycle is
-#      precisely what stops the orphan-at-teardown the v1 stack hit (ADR-22
-#      Context).
+# ─────────────────────────────────────────────────────────────────────────────
+# This file previously held the Crossplane INSTALL: three helm_release resources,
+# a time_sleep gate, and a namespace —
+#   - helm_release.crossplane                    (core controller + CRDs)
+#   - kubernetes_namespace.crossplane_system     (PSA=restricted namespace)
+#   - helm_release.aegis_xrds_v2_definitions     (providers, function, DRCs, MRAP,
+#                                                 XRD, Composition)
+#   - time_sleep.crossplane_providers_healthy    (300s wait for provider Healthy)
+#   - helm_release.aegis_xrds_v2_providerconfig  (ClusterProviderConfig)
+# ADR-25 ownership inversion moved ALL of that out of Terraform into ArgoCD, as
+# three app-of-apps children under gitops/platform-addons/addons/crossplane/
+# (unlike kyverno/argo-rollouts these are ApplicationSets — see WHAT MOVED WHERE):
+#   - applicationset-core.yaml            (sync-wave 0)
+#   - applicationset-definitions.yaml     (sync-wave 1)
+#   - applicationset-providerconfig.yaml  (sync-wave 2)
+# The app-of-apps root that delivers them: gitops/platform-addons/root-app.yaml,
+# seeded from Terraform in gitops-bootstrap.tf (the A1 #173 facts-bridge bootstrap;
+# this PR adds an account-id annotation there for the definitions stage).
 #
-# ⚠️ VALIDATION PENDING ON A CLUSTER (WS4): offline-validated only (crossplane
-# render + beta validate, terraform fmt/validate). NOT run against a live
-# cluster. The on-cluster checklist is in the PR body / ADR-22 §Open validation.
-
-# crossplane-system namespace with PSA=restricted ENFORCED from the start. This
-# is the namespace whose restricted profile rejects an empty-securityContext
-# provider/function pod — which is exactly why every DRC in the chart ships a
-# non-empty securityContext (charts/aegis-xrds-v2/templates/deploymentruntimeconfig.yaml).
-resource "kubernetes_namespace" "crossplane_system" {
-  # Wait for the EKS access-entry -> authorizer propagation (eks.tf) before the
-  # first cluster-scoped create — see kubernetes_namespace.argocd / run 27843245290.
-  depends_on = [terraform_data.eks_access_propagation]
-
-  metadata {
-    name = "crossplane-system"
-    labels = {
-      "pod-security.kubernetes.io/enforce" = "restricted"
-      "pod-security.kubernetes.io/audit"   = "restricted"
-      "pod-security.kubernetes.io/warn"    = "restricted"
-    }
-  }
-}
-
-# Crossplane v2 core — the abstraction engine. Pinned to a v2.3.x chart; v2.3 is
-# the current line (ADR-22 references). VERIFY the exact chart patch against
-# https://charts.crossplane.io before the bootstrap apply (same convention as
-# kyverno.tf / argo-rollouts.tf — a stale pin surfaces as a plan/install error,
-# not silent drift).
+# WHY: Terraform owning these in-cluster objects is exactly the ownership mismatch
+# epic #167 dissolves — `terraform destroy` no longer helm-uninstalls Crossplane
+# (the cluster delete reaps it), so the state-rm loop that unwound it is no longer
+# needed for this add-on. The old wait/teardown posture is preserved structurally
+# in the Applications (no resources-finalizer → no foreground cascade).
 #
-# Crossplane's OWN pods (the core controller + RBAC manager) also run under
-# crossplane-system's restricted PSA, so their podSecurityContext is set via
-# chart values here — the same split the v1 stack used (chart values for
-# Crossplane's pods; DRCs for the separately-deployed provider/function pods).
-resource "helm_release" "crossplane" {
-  name             = "crossplane"
-  namespace        = kubernetes_namespace.crossplane_system.metadata[0].name
-  create_namespace = false # created above with the PSA labels
-  repository       = "https://charts.crossplane.io/stable"
-  chart            = "crossplane"
-  version          = "2.3.1" # pinned — VERIFY at bootstrap (charts.crossplane.io)
-
-  # Restricted-PSA securityContext for Crossplane's own controller + RBAC-manager
-  # pods. (Provider/function pods are separate Deployments — their securityContext
-  # comes from the DRCs in the chart, not from here.)
-  values = [yamlencode({
-    securityContextCrossplane = {
-      runAsNonRoot             = true
-      runAsUser                = 65532
-      runAsGroup               = 65532
-      allowPrivilegeEscalation = false
-      readOnlyRootFilesystem   = true
-      seccompProfile           = { type = "RuntimeDefault" }
-      capabilities             = { drop = ["ALL"] }
-    }
-    securityContextRBACManager = {
-      runAsNonRoot             = true
-      runAsUser                = 65532
-      runAsGroup               = 65532
-      allowPrivilegeEscalation = false
-      readOnlyRootFilesystem   = true
-      seccompProfile           = { type = "RuntimeDefault" }
-      capabilities             = { drop = ["ALL"] }
-    }
-    # v2 ships MRDs Inactive by default; the MRAP in the chart activates only S3.
-    # No extra Helm flag needed for that — the MRAP object does the gating.
-  })]
-
-  # wait=true is LOAD-BEARING here (unlike kyverno.tf / argo-rollouts.tf, which
-  # wait=false): the downstream aegis-xrds-v2 releases apply CRs whose CRDs come
-  # from THIS chart — Provider/Function/DeploymentRuntimeConfig (pkg.crossplane.io),
-  # CompositeResourceDefinition/Composition/MRAP (apiextensions.crossplane.io).
-  # If core returns before those CRDs are established, the next helm apply fails
-  # with "resource mapping not found ... ensure CRDs are installed first" (run
-  # 27844622615, both regions). wait=true blocks until the core controller +
-  # RBAC-manager Deployments are Available and their CRDs registered — the exact
-  # `helm install --wait` step the kind-integration test does first
-  # (scripts/crossplane-kind-integration.sh step [2]). timeout bounds the wait.
-  #
-  # Teardown is still safe: the ephemeral-cluster teardown (infra-ops.yml)
-  # state-rm's every helm_release/kubernetes_ resource BEFORE `terraform destroy`,
-  # so the deadlock-prone helm uninstall is never attempted — wait=true only
-  # affects the apply path, which is where we need the CRD-establishment barrier.
-  wait    = true
-  timeout = 300
-
-  # The propagation gate (eks.tf terraform_data.eks_access_propagation) chains off
-  # module.eks AND performs (as a readiness poll, #185) the access-entry -> authorizer
-  # propagation wait that the WS4 dual-region burn proved necessary (run 27843245290).
-  depends_on = [terraform_data.eks_access_propagation]
-}
-
-# ── aegis-xrds-v2 — STAGED install (ADR-22 install-ordering fix) ─────────────
-# The chart was one helm_release applying providers + function + DRCs + MRAP +
-# XRD + Composition + ClusterProviderConfig in a SINGLE wave. That races: the
-# ClusterProviderConfig is `aws.m.upbound.io/v1beta1`, a CRD the family provider
-# registers ONLY after its package installs and reaches Healthy. Applying it in
-# the same wave failed with "resource mapping not found ... ensure CRDs are
-# installed first" (run 27844622615, both regions).
+# WHAT MOVED WHERE:
+#   - chart pin (crossplane 2.3.1)         → core app source.targetRevision
+#   - securityContextCrossplane/RBACManager → core app helm.valuesObject
+#   - crossplane-system ns + PSA=restricted → core app managedNamespaceMetadata +
+#     labels                                  syncOptions CreateNamespace=true
+#   - installStage=definitions + region/     → definitions ApplicationSet (region +
+#     accountId/bucketPrefix (were TF `set`)   accountId from the FACTS BRIDGE, so
+#                                              the git manifest stays cluster-agnostic;
+#                                              bucketPrefix static — A1 Alloy shape)
+#   - installStage=providerconfig            → providerconfig ApplicationSet
+#   - CRD-establishment barrier (core        → ArgoCD sync-waves 0 → 1 + ServerSideApply
+#     wait=true / depends_on)                  (the crossplane CRDs exceed 256 KB)
+#   - time_sleep 300s before ClusterProvider  → RETRY-UNTIL-HEALTHY on the wave-2 app:
+#     Config (blind wall-clock wait)           its sync fails until aws.m.upbound.io
+#                                              is established (provider Healthy), then
+#                                              a retry succeeds — condition-driven, no
+#                                              stopwatch (applicationset-providerconfig.yaml)
+#   - fan-out gating (keep Crossplane out of  → `clusters` generator on the facts-bridge
+#     the bare A2/B1 policy harness)           Secret — no cluster Secret, no Crossplane
+#                                              (same gate Alloy uses)
 #
-# The kind-integration test (scripts/crossplane-kind-integration.sh) already
-# proved the correct sequence. We replicate it here as TWO helm_releases gated by
-# a provider-Healthy wait, driven by the chart's `installStage` value:
+# WHAT STAYED IN TERRAFORM (this file, below): the S3-provider IAM — an EKS Pod
+# Identity role/policy/association. Unlike kyverno/argo-rollouts (which kept
+# nothing), Crossplane's provider pod calls AWS, so it needs an IAM role. That role
+# is ACCOUNT INFRASTRUCTURE, not cluster state (issue #175): region-suffixed,
+# standard path `/`, Terraform-owned, destroyed cleanly with the stack — NEVER a
+# Crossplane claim, NEVER /aegis-workload/, NO orphan-at-teardown (the v1 failure
+# mode, ADR-22 Context). Identity stays out of the no-`plan` engine (where a silent
+# delete is catastrophic). The cluster access-entries that let the pods run live in
+# eks.tf, unaffected.
 #
-#   wave 1 (definitions)    — providers, function, DRCs, MRAP, XRD, Composition.
-#                             CRDs all come from crossplane core (established by
-#                             the wait=true release above). Mirrors the kind
-#                             test's "wave 1" (apply everything but the
-#                             ClusterProviderConfig).
-#   gate                    — time_sleep: let provider-family-aws reach Healthy so
-#                             the aws.m.upbound.io CRDs register. The kind test
-#                             does `kubectl wait --for=condition=Healthy
-#                             provider/... --timeout=300s`; helm/kubernetes
-#                             providers cannot wait on a CR condition and the apply
-#                             runner has no kubectl, so we use a bounded sleep
-#                             sized to that proven 300s envelope (image pull + pod
-#                             start). Over-waiting is cheap; under-waiting re-races.
-#   wave 2 (providerconfig) — ClusterProviderConfig ONLY, after the gate. Mirrors
-#                             the kind test's "wave 2".
+# ⚠️ SA NAME `provider-aws-s3` IS LOAD-BEARING: the aws_eks_pod_identity_association
+# below binds the role to (crossplane-system, provider-aws-s3). That SA name is
+# fixed by the provider-aws-s3-runtime DeploymentRuntimeConfig
+# (charts/aegis-xrds-v2/templates/deploymentruntimeconfig.yaml). Rename either side
+# and the Pod Identity trust breaks SILENTLY — the provider gets no credentials and
+# every Bucket MR AccessDenies.
 #
-# Splitting into a tighter blast radius also keeps a vocabulary change from
-# reinstalling the engine (the original kyverno.tf aegis_policies vs kyverno split
-# reasoning still holds).
-
-# wave 1 — definitions. depends on core's CRDs being established (wait=true above).
-resource "helm_release" "aegis_xrds_v2_definitions" {
-  name      = "aegis-xrds-v2"
-  namespace = kubernetes_namespace.crossplane_system.metadata[0].name
-  chart     = "${path.module}/charts/aegis-xrds-v2"
-
-  set {
-    name  = "installStage"
-    value = "definitions"
-  }
-  set {
-    name  = "region"
-    value = var.region
-  }
-  set {
-    name  = "accountId"
-    value = data.aws_caller_identity.current.account_id
-  }
-  # Bucket-name prefix — short, DNS-1123, the workload family marker. The
-  # Composition builds "<prefix>-<spec.name>-<account>-<region>".
-  set {
-    name  = "bucketPrefix"
-    value = "aegis-wl"
-  }
-
-  # A4 teardown posture (same as kyverno aegis_policies): wait=false so a destroy
-  # never blocks on a helm uninstall. The CRD-establishment barrier we need is on
-  # CORE (the wait=true release above), not here — these CRs' CRDs already exist.
-  wait    = false
-  timeout = 300
-
-  # crossplane core's CRDs (Provider, Function, DeploymentRuntimeConfig, XRD,
-  # Composition, MRAP) must exist first — guaranteed by core's wait=true.
-  depends_on = [helm_release.crossplane]
-}
-
-# gate — wait for provider-family-aws to reach Healthy so its CRDs (notably
-# clusterproviderconfigs.aws.m.upbound.io) register before wave 2. Sized to the
-# kind test's proven 300s provider-Healthy envelope. See the block comment above
-# for why a fixed sleep (not a kubectl condition-wait) is the mechanism here.
-resource "time_sleep" "crossplane_providers_healthy" {
-  depends_on      = [helm_release.aegis_xrds_v2_definitions]
-  create_duration = "300s"
-}
-
-# wave 2 — ClusterProviderConfig ONLY, after the family provider is Healthy and
-# the aws.m.upbound.io CRD is established (the gate above). This is the resource
-# the single-wave install raced on (run 27844622615).
-resource "helm_release" "aegis_xrds_v2_providerconfig" {
-  name      = "aegis-xrds-v2-providerconfig"
-  namespace = kubernetes_namespace.crossplane_system.metadata[0].name
-  chart     = "${path.module}/charts/aegis-xrds-v2"
-
-  set {
-    name  = "installStage"
-    value = "providerconfig"
-  }
-  # region/accountId/bucketPrefix are unused by the ClusterProviderConfig render
-  # but the chart's values still declare them; leave them at defaults.
-
-  # A4 teardown posture.
-  wait    = false
-  timeout = 300
-
-  depends_on = [time_sleep.crossplane_providers_healthy]
-}
+# REVERT: `git revert` restores the 3 helm_release resources, the time_sleep, and
+# the crossplane_system namespace here (and the `time` provider in versions.tf +
+# the account-id annotation in gitops-bootstrap.tf), and removes the three GitOps
+# ApplicationSets. The provider IAM below is unchanged by the migration. Single
+# logical boundary.
 
 # ── Crossplane S3 provider IAM via EKS Pod Identity ─────────────────────────
 # Mirrors pod-identity-engine.tf EXACTLY: a Terraform-owned aws_iam_role
@@ -294,12 +157,17 @@ resource "aws_iam_role_policy_attachment" "crossplane_s3_provider" {
 # The association — binds the role to the provider's stable SA name in
 # crossplane-system. The SA name (provider-aws-s3) is fixed by the
 # provider-aws-s3-runtime DeploymentRuntimeConfig (chart). Let Crossplane
-# auto-name the SA and this binding no longer matches → the provider gets no
+# auto-name the SA and this binding no longer matches -> the provider gets no
 # credentials. Its lifecycle is the cluster + this stack — destroy deletes it
 # with the role, leaving zero orphan IAM.
+#
+# The namespace is a LITERAL "crossplane-system" (not a
+# kubernetes_namespace.crossplane_system reference) since A3 moved that namespace
+# to ArgoCD ownership (applicationset-core.yaml managedNamespaceMetadata). The name is
+# a stable contract shared by the Pod Identity association and the GitOps core app.
 resource "aws_eks_pod_identity_association" "crossplane_s3_provider" {
   cluster_name    = module.eks.cluster_name
-  namespace       = kubernetes_namespace.crossplane_system.metadata[0].name
+  namespace       = "crossplane-system"
   service_account = "provider-aws-s3"
   role_arn        = aws_iam_role.crossplane_s3_provider.arn
 

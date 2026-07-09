@@ -1,0 +1,138 @@
+# gitops/platform-addons/addons/crossplane/applicationset-core.yaml
+#
+# Crossplane v2 CORE — SYNC-WAVE 0 (epic #167 A3 / #175, ADR-25 ownership
+# inversion).
+#
+# Migrated OUT of terraform/modules/regional-stack/crossplane.tf
+# (helm_release.crossplane + kubernetes_namespace.crossplane_system). ArgoCD now
+# owns the Crossplane core controller + its CRDs, so `terraform destroy` no longer
+# helm-uninstalls it — the same teardown-ownership fix A1/A2 applied to Alloy and
+# Kyverno. The three crossplane waves are core (0) -> definitions (1) -> config (2).
+#
+# ── WHY AN ApplicationSet (the fan-out GATE), not a plain Application ─────────
+# Delivered as an ApplicationSet with a `clusters` generator selecting the
+# in-cluster facts-bridge Secret — the SAME shape as addons/alloy/application.yaml.
+# Core needs no per-cluster VALUES, but the generator is the fan-out GATE: it
+# emits an Application only where a `cluster`-type Secret exists (real EKS via
+# gitops-bootstrap.tf, and the crossplane kind harness which seeds a shape-only
+# one). On the bare A2/B1 policy harness — which registers NO cluster Secret — this
+# generates NOTHING, so the shared app-of-apps root (directory.recurse over
+# addons/) does NOT drag a full Crossplane install into a policy-only test. Same
+# reason alloy is an ApplicationSet, not a plain Application.
+#
+# ── WHY WAVE 0 ──────────────────────────────────────────────────────────────
+# This app installs the crossplane-core chart, which registers the
+# pkg.crossplane.io (Provider/Function/DeploymentRuntimeConfig) and
+# apiextensions.crossplane.io (CompositeResourceDefinition/Composition/MRAP) CRDs.
+# The wave-1 definitions app applies CRs of exactly those kinds, so core must be
+# Healthy first. Declarative replacement for the old `depends_on =
+# [helm_release.crossplane]` + `wait = true` CRD-establishment barrier. Because
+# the three stages are separate ApplicationSets, the enforced ordering guarantee
+# is retry-until-Healthy on the downstream apps (a definitions/config sync that
+# races ahead fails "resource mapping not found" and ArgoCD retries until this
+# wave is up); the sync-wave annotations are the best-effort ordering hint.
+#
+# ── NAMESPACE OWNERSHIP ──────────────────────────────────────────────────────
+# The crossplane-system namespace was Terraform-owned
+# (kubernetes_namespace.crossplane_system) precisely so its PSA=restricted labels
+# were enforced FROM THE START — the ADR-22 §4 / fix-B #2a lesson (a restricted
+# namespace rejects a provider/function pod with an empty securityContext). That
+# namespace resource is deleted from crossplane.tf in this PR; ArgoCD now creates
+# it via `managedNamespaceMetadata` (below) with the same three restricted labels,
+# applied at CreateNamespace time BEFORE the wave-1 provider pods land.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: crossplane-core
+  namespace: argocd
+  annotations:
+    # Order the ApplicationSet OBJECT's creation before definitions (1)/config (2).
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    # Facts bridge = the fan-out gate. No cluster Secret -> no Crossplane (keeps
+    # the bare A2/B1 policy harness Crossplane-free). Not gated on the
+    # observability label (unlike alloy): Crossplane is a core add-on on every
+    # cluster, so it fans out to ANY registered cluster Secret.
+    - clusters:
+        selector:
+          matchLabels:
+            argocd.argoproj.io/secret-type: cluster
+  template:
+    metadata:
+      name: "crossplane-{{.nameNormalized}}"
+      annotations:
+        argocd.argoproj.io/sync-wave: "0"
+    spec:
+      project: default
+      source:
+        # Same public chart + PINNED version the old helm_release.crossplane used
+        # (charts.crossplane.io/stable, 2.3.1). The kind harness
+        # (scripts/e2e/crossplane-gitops-golden-path.sh) + the direct reference
+        # test read this pin back out of THIS file for anti-drift; keep them in
+        # lock-step at every chart bump.
+        repoURL: https://charts.crossplane.io/stable
+        chart: crossplane
+        targetRevision: 2.3.1 # pinned — VERIFY at bootstrap (charts.crossplane.io)
+        helm:
+          # Restricted-PSA securityContext for Crossplane's OWN controller +
+          # RBAC-manager pods — MOVED verbatim from crossplane.tf's
+          # helm_release.crossplane values. (Provider/function pods are separate
+          # Deployments; their securityContext comes from the DRCs in the wave-1
+          # chart, not here.)
+          valuesObject:
+            securityContextCrossplane:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              seccompProfile:
+                type: RuntimeDefault
+              capabilities:
+                drop:
+                  - ALL
+            securityContextRBACManager:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              seccompProfile:
+                type: RuntimeDefault
+              capabilities:
+                drop:
+                  - ALL
+      destination:
+        server: "{{.server}}"
+        namespace: crossplane-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        # ArgoCD creates crossplane-system and stamps the restricted PSA labels
+        # the old Terraform-owned namespace carried. managedNamespaceMetadata
+        # applies to the namespace CreateNamespace auto-creates, so the labels
+        # land at creation time — before any provider/function pod is scheduled.
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/warn: restricted
+        syncOptions:
+          - CreateNamespace=true
+          # Crossplane's CRDs are large (the provider/XRD CRDs exceed the 256 KB
+          # client-side last-applied annotation limit); ServerSideApply avoids
+          # "metadata.annotations: Too long" — same reason the kyverno child uses it.
+          - ServerSideApply=true
+        retry:
+          # Wave 0 has no in-cluster dependency, but a modest retry rides out
+          # transient chart-pull / apiserver hiccups.
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 3m

@@ -1,0 +1,118 @@
+# gitops/platform-addons/addons/crossplane/applicationset-definitions.yaml
+#
+# Crossplane v2 DEFINITIONS — SYNC-WAVE 1 (epic #167 A3 / #175, ADR-25).
+#
+# Migrated OUT of terraform/modules/regional-stack/crossplane.tf
+# (helm_release.aegis_xrds_v2_definitions, installStage=definitions). Renders the
+# providers (family + s3), function-patch-and-transform, the 3
+# DeploymentRuntimeConfigs, the MRAP, the XBucket XRD, and its Composition — every
+# CR whose CRD comes from crossplane-core (wave 0). It does NOT render the
+# ClusterProviderConfig; that is wave 2 (config), because its CRD
+# (clusterproviderconfigs.aws.m.upbound.io) only registers after the family
+# provider reaches Healthy.
+#
+# ── WHY AN ApplicationSet, NOT A PLAIN Application (the facts bridge) ─────────
+# Two of the chart's install-time values are ACCOUNT/CLUSTER-BOUND and must NOT be
+# hardcoded in git (the same cluster-agnostic-manifest rule A1 set for Alloy):
+#   - region    — the AWS region the composed Bucket / BucketPublicAccessBlock is
+#                 created in AND part of the deterministic bucket name.
+#   - accountId — part of the deterministic, globally-unique bucket name
+#                 "<prefix>-<spec.name>-<accountId>-<region>". crossplane.tf's
+#                 provider IAM policy is scoped to that exact prefix, so the value
+#                 the Composition bakes in MUST match the account Terraform ran in.
+# Terraform writes both onto the in-cluster ArgoCD `cluster` Secret as annotations
+# (gitops-bootstrap.tf :: kubernetes_secret.argocd_cluster_facts — this PR adds
+# the aegis.binhsu.org/account-id annotation alongside the existing cluster-name
+# and region). The `clusters` generator below selects that Secret and surfaces its
+# annotations to the template, exactly as addons/alloy/application.yaml does. A
+# plain Application cannot read a Secret's annotations — only a generator can — so
+# the definitions stage is delivered as an ApplicationSet. bucketPrefix stays
+# static ("aegis-wl"); it is a platform constant, not account-bound.
+#
+# ── ORDERING (sync-waves + retry, the A3 mechanism) ──────────────────────────
+# The app-of-apps root creates this ApplicationSet in wave 1 (annotation below on
+# the OBJECT), so it lands after core (wave 0) and before the config app (wave 2).
+# ArgoCD has no health model for an ApplicationSet, so the object is "Healthy" the
+# instant it exists — the CORRECTNESS backstop for the generated Application's
+# ordering is retry-until-Healthy (retry block in the template): if this app syncs
+# before core's CRDs are Established, the apply fails "resource mapping not found"
+# and ArgoCD retries with backoff until wave 0 is up. Sync-waves optimize the
+# happy path; retry guarantees convergence. (This is the same native mechanism
+# that replaces the time_sleep in the wave-2 config app — see
+# applicationset-providerconfig.yaml.)
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: crossplane-xrds-definitions
+  namespace: argocd
+  annotations:
+    # Order the ApplicationSet OBJECT's creation after core (0), before config (2).
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    # Facts bridge: select the TF-written in-cluster `cluster` Secret. Its
+    # annotations (aegis.binhsu.org/region, /account-id) become template values
+    # below. Unlike the Alloy generator this is NOT gated on the observability
+    # label — Crossplane is a core platform add-on present on every cluster, so it
+    # fans out to any registered cluster Secret. On the kind harness the driver
+    # writes a shape-only facts Secret so this generates exactly one Application.
+    - clusters:
+        selector:
+          matchLabels:
+            argocd.argoproj.io/secret-type: cluster
+  template:
+    metadata:
+      name: "crossplane-xrds-definitions-{{.nameNormalized}}"
+      annotations:
+        # The GENERATED Application also carries wave 1 (belt-and-braces; the
+        # real ordering guarantee is the retry block below).
+        argocd.argoproj.io/sync-wave: "1"
+    spec:
+      project: default
+      source:
+        # In-repo chart (unchanged location — the B1/kind harness + crossplane
+        # render gate still read it here). repoURL/targetRevision are the
+        # production defaults; Terraform threads the real repo + revision through
+        # the app-of-apps root, and the kind harness rewrites them to the branch
+        # under test (scripts/e2e/crossplane-gitops-golden-path.sh).
+        repoURL: https://github.com/BinHsu/aegis-platform-aws
+        targetRevision: main
+        path: terraform/modules/regional-stack/charts/aegis-xrds-v2
+        helm:
+          parameters:
+            - name: installStage
+              value: definitions
+            # FACTS BRIDGE consumption — account-bound values from the cluster
+            # Secret annotations, never hardcoded in git.
+            - name: region
+              value: '{{index .metadata.annotations "aegis.binhsu.org/region"}}'
+            - name: accountId
+              value: '{{index .metadata.annotations "aegis.binhsu.org/account-id"}}'
+            # Platform constant (not account-bound); must match the crossplane.tf
+            # provider IAM policy prefix in lock-step if ever changed.
+            - name: bucketPrefix
+              value: aegis-wl
+      destination:
+        server: "{{.server}}"
+        namespace: crossplane-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          # crossplane-system is created + PSA-labelled by the wave-0 core app;
+          # do not let this app race-create it without the restricted labels.
+          - CreateNamespace=false
+          # Provider/XRD CRDs exceed the 256 KB last-applied annotation limit.
+          - ServerSideApply=true
+        retry:
+          # Convergence backstop if this app syncs before core (wave 0) has
+          # Established the pkg.crossplane.io / apiextensions.crossplane.io CRDs.
+          limit: 15
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 3m
