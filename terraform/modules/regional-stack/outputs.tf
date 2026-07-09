@@ -78,3 +78,23 @@ output "zone_id_in_use" {
   description = "The zone_id the module resolved (var.zone_id). On a cold start this is the Z-id placeholder from main.tf, not '' — the gate asserts the Route53 record never gets an empty zone_id (#107)."
   value       = var.zone_id
 }
+
+# ── Karpenter (ADR-27 / #182) ───────────────────────────────────────────────
+# Region-suffixed names — the ADR-21 §C global-IAM-name-collision class the
+# cold-start gate asserts on (envs/regional/tests/cold_start.tftest.hcl). null
+# when var.enable_karpenter = false (module.karpenter create=false).
+
+output "karpenter_node_iam_role_name" {
+  description = "Name of the Karpenter node IAM role (aegis-karpenter-node-<region>). Referenced by the EC2NodeClass role field; region-suffixed to avoid the dual-region EntityAlreadyExists class (ADR-21 §C)."
+  value       = module.karpenter.node_iam_role_name
+}
+
+output "karpenter_controller_iam_role_name" {
+  description = "Name of the Karpenter controller IAM role (aegis-karpenter-controller-<region>), bound to the karpenter ServiceAccount via EKS Pod Identity. Region-suffixed (ADR-21 §C)."
+  value       = module.karpenter.iam_role_name
+}
+
+output "karpenter_interruption_queue_name" {
+  description = "Name of the Karpenter SQS interruption queue (aegis-karpenter-<region>) that receives Spot 2-minute / rebalance / health events via EventBridge."
+  value       = module.karpenter.queue_name
+}

@@ -1,0 +1,52 @@
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # IAM role for Karpenter-launched nodes. Karpenter (>= 0.32) manages the
+  # instance profile itself from this role name, so no aws_iam_instance_profile
+  # is created in Terraform (create_instance_profile stays false in karpenter.tf).
+  role: {{ .Values.nodeRole | quote }}
+
+  # AL2023 arm64 (Graviton) — parity with the MNG (eks.tf uses
+  # AL2023_ARM_64_STANDARD). The `al2023@latest` alias resolves the correct
+  # AL2023 AMI; the arm64 variant is selected because the NodePool requires
+  # kubernetes.io/arch=arm64. `@latest` tracks the newest AL2023 release; pin to
+  # a dated alias (al2023@v20xx…) if reproducible AMI selection is needed.
+  amiSelectorTerms:
+    - alias: al2023@latest
+
+  # Private subnets of THIS cluster only. Selected by the tags the VPC module
+  # already sets (vpc.tf private_subnet_tags) — no extra subnet tagging needed.
+  # The two tags AND together, scoping to this cluster's internal-elb subnets.
+  subnetSelectorTerms:
+    - tags:
+        kubernetes.io/role/internal-elb: "1"
+        kubernetes.io/cluster/{{ .Values.clusterName }}: shared
+
+  # The cluster node security group, tagged karpenter.sh/discovery=<cluster> via
+  # the EKS module's node_security_group_tags (eks.tf). This is the SG that
+  # permits node<->control-plane and node<->node traffic.
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.clusterName | quote }}
+
+  # Encrypt the root volume; keep it modest (cost-driven cluster).
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+  # IMDSv2-only (require the hop-limited token) — CIS/AWS hardening baseline.
+  metadataOptions:
+    httpEndpoint: enabled
+    httpTokens: required
+    httpPutResponseHopLimit: 2
+
+  {{- with .Values.tags }}
+  tags:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}

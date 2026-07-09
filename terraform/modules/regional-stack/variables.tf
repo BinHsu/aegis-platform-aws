@@ -47,7 +47,15 @@ variable "node_min" {
 }
 
 variable "node_max" {
-  description = "Maximum node count for the managed (Spot) node group."
+  # NOTE (ADR-27 / #182): with Karpenter installed (karpenter.tf), the MNG is the
+  # STATIC BASE that hosts the Karpenter controller + system add-ons; elastic
+  # scaling flows through the Karpenter NodePool, not this ASG ceiling. node_max
+  # is therefore no longer the live scale knob — the Karpenter NodePool's
+  # limits.cpu (var.karpenter_cpu_limit) is. node_max is retained here because
+  # ADR-27 stages the MNG capacity cleanup (setting max_size = node_min, removing
+  # node_max) as a follow-up gated on Karpenter being verified on staging; it is
+  # still consumed by eks.tf until then (this PR does not re-shape the base).
+  description = "Maximum node count for the managed (Spot) node group. NOTE: with Karpenter (ADR-27) this bounds the static base only; elastic scaling uses the Karpenter NodePool. Cleanup to max_size=node_min is a staged follow-up."
   type        = number
 }
 
@@ -65,6 +73,29 @@ variable "node_ondemand_baseline" {
   validation {
     condition     = var.node_ondemand_baseline >= 0
     error_message = "node_ondemand_baseline must be >= 0."
+  }
+}
+
+# ---- ADR-27 / #182: Karpenter node autoscaling ----------------------------
+variable "enable_karpenter" {
+  description = "Install Karpenter (controller + default NodePool/EC2NodeClass + IAM via Pod Identity + SQS interruption queue). ADR-27 chose Karpenter to close the #182 pending-pods-never-scale gap. Default on (ADR-27: 'install ... behind a variable (default on)'); set false to fall back to the fixed-capacity MNG-only posture (e.g. an ephemeral kind/CI cluster that never scales)."
+  type        = bool
+  default     = true
+}
+
+variable "karpenter_cpu_limit" {
+  # The Karpenter NodePool spec.limits.cpu — the LIVE elastic-tier scale ceiling
+  # (total vCPUs Karpenter may provision across all its nodes). This is the real
+  # "max capacity" knob under ADR-27, replacing the MNG's dead node_max ceiling.
+  # A cost ceiling is this cluster's real constraint (ADR-27), so a bounded
+  # default is deliberate; raise it per environment when workloads grow.
+  description = "Karpenter NodePool scale ceiling, in total vCPUs (spec.limits.cpu). Bounds elastic spend; the live replacement for the MNG's node_max under ADR-27."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.karpenter_cpu_limit > 0
+    error_message = "karpenter_cpu_limit must be > 0 (total vCPUs the Karpenter NodePool may provision)."
   }
 }
 

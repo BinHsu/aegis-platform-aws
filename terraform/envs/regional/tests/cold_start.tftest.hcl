@@ -271,6 +271,20 @@ run "cold_start_empty_platform_state_plans_clean" {
     error_message = "model-write policy name is not the expected region-suffixed 'aegis-core-model-write-${var.region}' — the #108 collision class."
   }
 
+  # CLASS 3 (Karpenter, ADR-27 / #182): the Karpenter controller + node IAM roles
+  # are the newest account-global names in the §C region-suffix class. A bare name
+  # collides across two regions in one account (EntityAlreadyExists at apply),
+  # exactly like the engine/model roles. Guard both name shapes. (module.karpenter
+  # has create=var.enable_karpenter, default true, so these are non-null here.)
+  assert {
+    condition     = module.stack.karpenter_node_iam_role_name == "aegis-karpenter-node-${var.region}"
+    error_message = "Karpenter node IAM role name is not the expected region-suffixed 'aegis-karpenter-node-${var.region}' — dual-region EntityAlreadyExists hazard (ADR-21 §C)."
+  }
+  assert {
+    condition     = module.stack.karpenter_controller_iam_role_name == "aegis-karpenter-controller-${var.region}"
+    error_message = "Karpenter controller IAM role name is not the expected region-suffixed 'aegis-karpenter-controller-${var.region}' — dual-region EntityAlreadyExists hazard (ADR-21 §C)."
+  }
+
   # CLASS 2 — provider-rejected shape: ACM cert SAN. On a cold start the zone_name
   # falls back to the syntactically-valid placeholder "placeholder.example.com"
   # (main.tf), NOT "". An empty zone_name would build SAN ["*."] which the real

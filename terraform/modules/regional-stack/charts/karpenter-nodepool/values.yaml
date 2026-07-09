@@ -1,0 +1,18 @@
+# Values are supplied by helm_release.karpenter_nodepool (karpenter.tf). The
+# defaults below let `helm template`/`helm lint` render the chart standalone in
+# CI without Terraform; a real apply overrides every one of them.
+
+# EKS cluster name — used by the subnet/security-group discovery selectors.
+clusterName: REPLACE_CLUSTER_NAME
+
+# The Karpenter node IAM role name (aegis-karpenter-node-<region>). Must match
+# the role created by module.karpenter — referenced by EC2NodeClass.spec.role.
+nodeRole: REPLACE_NODE_ROLE
+
+# NodePool scale ceiling, in total vCPUs Karpenter may provision (spec.limits.cpu).
+# This is the LIVE elastic-tier ceiling — distinct from the static MNG's
+# node_max (eks.tf), which bounds the fixed base, not the Karpenter tier.
+cpuLimit: 100
+
+# Tags applied to Karpenter-launched instances (merged from local.common_tags).
+tags: {}

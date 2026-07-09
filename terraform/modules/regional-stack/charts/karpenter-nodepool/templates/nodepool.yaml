@@ -1,0 +1,55 @@
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+
+      # Requirements (ADR-27): Graviton arm64, Spot-preferred with On-Demand
+      # fallback, sane instance families.
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        # Both capacity types listed => Karpenter picks the cheapest satisfiable
+        # (Spot) and falls back to On-Demand when no Spot pool can serve the pod.
+        # This is the spot-with-on-demand-fallback policy ADR-27 uses to subsume
+        # the #183 static On-Demand baseline once verified on staging.
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        # General-purpose + burstable Graviton families; generation > 3 keeps to
+        # current Graviton2/3/4 (t4g/m6g/m7g/c7g/r7g…), matching the MNG's t4g.
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r", "t"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["3"]
+
+      # Recycle nodes on a rolling basis (patching hygiene) and give pods room to
+      # drain on interruption/consolidation.
+      expireAfter: 720h
+      terminationGracePeriod: 24h
+
+  # Consolidation ON (ADR-27) — the cost lever: Karpenter removes empty nodes and
+  # repacks underutilized ones (including spot->spot / cheaper-type moves).
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+
+  # Elastic-tier scale ceiling (total vCPUs). Bounds spend — the cost ceiling is
+  # this cluster's real constraint (ADR-27). Distinct from the MNG's node_max.
+  limits:
+    cpu: {{ .Values.cpuLimit }}
+
+  # Higher weight than an (absent) fallback pool — this is the default pool.
+  weight: 10

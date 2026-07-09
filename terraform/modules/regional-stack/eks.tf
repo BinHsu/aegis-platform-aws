@@ -46,6 +46,15 @@ module "eks" {
   subnet_ids               = module.vpc.private_subnets
   control_plane_subnet_ids = module.vpc.private_subnets
 
+  # Karpenter (ADR-27 / karpenter.tf) discovers the node security group by this
+  # tag — the EC2NodeClass securityGroupSelectorTerms match karpenter.sh/discovery
+  # = <cluster>. Empty when Karpenter is off (a plain tag is harmless either way).
+  # Subnets are discovered via the tags vpc.tf already sets, so only the node SG
+  # needs this extra tag.
+  node_security_group_tags = var.enable_karpenter ? {
+    "karpenter.sh/discovery" = local.cluster_name
+  } : {}
+
   # Managed node group on Spot — significant cost reduction; acceptable for
   # take-home + stateless workload (greeter has no in-flight session state).
   #
