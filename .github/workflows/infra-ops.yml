@@ -236,61 +236,77 @@ jobs:
           # REGISTRIES_JSON repo variable (same as infra-apply / infra-plan).
           printf '%s' '${{ vars.REGISTRIES_JSON }}' > "$GITHUB_WORKSPACE/registries.auto.tfvars.json"
 
-          # ─── Ephemeral-cluster teardown (root-fix for the kyverno + ALB
-          # teardown deadlocks; supersedes the inert A4 webhook null_resource).
-          # For a disposable cluster you do NOT graceful-uninstall the in-cluster
-          # charts — you delete the cluster and let it reap them. The helm
-          # uninstall path deadlocks on kyverno's fail-closed admission webhooks +
-          # finalizers (2026-06-06 incident; A4's predestroy cleanup never ran —
-          # the runner has no kubectl). Industry norm for ephemeral clusters:
-          # delete the cluster, skip the graceful uninstall. So:
-          #   1. kubectl (the destroy role has an EKS access entry since the
-          #      cluster-admin-principals change) — best-effort.
-          #   2. pre-destroy.sh: drop the greeter Ingress so a HEALTHY ALB
-          #      controller deletes its ALB (ENIs/EIPs that would DependencyViolation
-          #      the VPC destroy).
-          #   3. AWS-API ALB backstop scoped to the cluster's VPC — for a WEDGED
-          #      controller where step 2 cannot trigger cleanup.
-          #   4. state rm every helm_release / kubernetes_ resource so terraform
-          #      NEVER attempts a graceful uninstall (the kyverno deadlock) —
-          #      the cluster deletion reaps them instead.
-          #   5. terraform destroy the AWS infra.
+          # ─── A6 (#178): PROFILE-GATED teardown ───────────────────────────────
+          # The ownership inversion (epic #167) moved every add-on to ArgoCD, and
+          # A6 gated the two AWS-object-creating add-ons — the ALB controller +
+          # external-dns — to profile=full. So teardown now BRANCHES on the
+          # cluster's lifecycle profile, read from state:
+          #
+          #   ephemeral → the cluster ran NEITHER add-on, so it created no ALBs, no
+          #     controller SGs, and no Route53 records. Teardown collapses to a
+          #     plain `terraform destroy` — no pre-destroy.sh, no ALB backstop, no
+          #     SG reaper, no orphan verification. This is the epic's payoff.
+          #   full → the cluster ran the ALB controller + external-dns, which create
+          #     AWS objects OUTSIDE Terraform state that outlive a cluster delete and
+          #     DependencyViolation-block the VPC destroy. Keep the thin backstop:
+          #     drain ALBs while the controller is live (pre-destroy.sh), an AWS-API
+          #     ALB backstop for a WEDGED controller, a concurrent SG reaper, and
+          #     post-destroy orphan verification.
+          #
+          # The old in-cluster `state rm` loop is GONE (both paths): post-inversion
+          # NO deadlock-prone helm_release remains in regional state (kyverno /
+          # crossplane / rollouts / alb / external-dns are all GitOps now; the
+          # bootstrap ArgoCD + root-app uninstall cleanly, or are reaped by the
+          # cluster delete). There is nothing left to strip from state.
+          #
           # Use the env-provided region (TF_VAR_region) and validate its shape —
           # never splice a workflow_dispatch input straight into the shell.
           r="$TF_VAR_region"
           if ! printf '%s' "$r" | grep -qE '^[a-z]{2}-[a-z]+-[0-9]+$'; then
             echo "::error::region '${r}' is not a valid AWS region"; exit 1
           fi
-          # Derive the cluster name from the already-initialised terraform state
-          # (destroy-region init ran in the preceding step with working-directory
-          # terraform/envs/regional). Fall back to the canonical convention so the
-          # script stays runnable even when state is empty.
+          # Derive cluster name + lifecycle profile from the already-initialised
+          # state (destroy-region init ran in the preceding step). Fall back to the
+          # canonical name, and DEFAULT the profile to `full` when it cannot be read
+          # (empty / legacy state) — the fail-safe direction: running the backstop on
+          # an ephemeral cluster only wastes a few no-op API calls, whereas SKIPPING
+          # it on a full cluster would strand billable ALBs/SGs.
           CLUSTER="$(terraform -chdir=terraform/envs/regional output -raw cluster_name 2>/dev/null || echo "aegis-platform-${r}")"
-          curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy will be skipped"
-          bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" "$CLUSTER" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
-          VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
-          if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
-            for arn in $(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null); do
-              echo "teardown backstop: deleting orphaned ALB ${arn} in ${VPC}"
-              aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$r" 2>/dev/null || true
-            done
-            # delete-load-balancer is async; a fixed sleep races the ELB-owned ENI
-            # cleanup → DependencyViolation on the VPC destroy. Poll until no ELBv2
-            # remains in the VPC (then a short ENI-settle), up to 5 min.
-            deadline=$(( $(date +%s) + 300 ))
-            while [ -n "$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)" ]; do
-              if [ "$(date +%s)" -ge "$deadline" ]; then
-                echo "::warning::ELBv2 still present in ${VPC} after 5 min — terraform destroy may retry on DependencyViolation"; break
-              fi
-              sleep 15
-            done
-            sleep 20  # ENIs detach a beat after the LB record disappears
-            # The controller-owned backend SG (k8s-traffic-<cluster>-*, tag
-            # elbv2.k8s.aws/cluster) is NOT swept here: a one-shot pre-destroy sweep
-            # runs too early (the SG is still attached to node ENIs). It is reaped by
-            # the background loop that runs CONCURRENTLY with `terraform destroy` below,
-            # behind the enableBackendSecurityGroup=false source fix in
-            # modules/regional-stack/alb-controller.tf (2026-06-17).
+          PROFILE="$(terraform -chdir=terraform/envs/regional output -raw cluster_profile 2>/dev/null || echo full)"
+          [ "$PROFILE" = "ephemeral" ] || [ "$PROFILE" = "full" ] || PROFILE=full
+          echo "::notice::destroy-region profile=${PROFILE} cluster=${CLUSTER} region=${r}"
+
+          VPC=''
+          if [ "$PROFILE" = "full" ]; then
+            echo "::notice::full profile — running the ALB/SG teardown backstop before terraform destroy (A6 #178)."
+            curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy will be skipped"
+            bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" "$CLUSTER" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
+            VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
+            if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
+              for arn in $(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null); do
+                echo "teardown backstop: deleting orphaned ALB ${arn} in ${VPC}"
+                aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$r" 2>/dev/null || true
+              done
+              # delete-load-balancer is async; a fixed sleep races the ELB-owned ENI
+              # cleanup → DependencyViolation on the VPC destroy. Poll until no ELBv2
+              # remains in the VPC (then a short ENI-settle), up to 5 min.
+              deadline=$(( $(date +%s) + 300 ))
+              while [ -n "$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)" ]; do
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "::warning::ELBv2 still present in ${VPC} after 5 min — terraform destroy may retry on DependencyViolation"; break
+                fi
+                sleep 15
+              done
+              sleep 20  # ENIs detach a beat after the LB record disappears
+              # The controller-owned backend SG (k8s-traffic-<cluster>-*, tag
+              # elbv2.k8s.aws/cluster) is NOT swept here: a one-shot pre-destroy sweep
+              # runs too early (the SG is still attached to node ENIs). It is reaped by
+              # the background loop that runs CONCURRENTLY with `terraform destroy` below,
+              # behind the enableBackendSecurityGroup=false source fix in the ALB
+              # controller ApplicationSet (gitops/platform-addons/addons/alb-controller).
+            fi
+          else
+            echo "::notice::ephemeral profile — the ALB controller + external-dns never ran on this cluster, so no ALB / controller-SG / Route53 objects exist. Skipping pre-destroy.sh + ALB backstop; teardown is a plain terraform destroy (A6 #178)."
           fi
 
           cd terraform/envs/regional
@@ -298,8 +314,8 @@ jobs:
           # via its concurrency group (infra-<account>-<region>), so any <key>.tflock
           # here is orphaned by a dead predecessor run (cancelled / OOM / timeout), never
           # a live peer — clear it so an interrupted run self-heals instead of wedging
-          # the next on a stale lock. (2026-06-18: a cancelled destroy left a state-rm
-          # lock that failed the next run. The state-rm loop below is the first lock
+          # the next on a stale lock. (2026-06-18: a cancelled destroy left a stale
+          # lock that failed the next run. `terraform destroy` below is the first lock
           # acquisition — unlock before it.)
           BKT="aegis-platform-aws-tfstate-${{ inputs.account_id }}"
           LOCK="s3://${BKT}/regional/${r}/terraform.tfstate.tflock"
@@ -307,19 +323,24 @@ jobs:
             echo "::warning::clearing orphaned terraform lock ${LOCK}"
             aws s3 rm "$LOCK"
           fi
-          # state rm the in-cluster layer (idempotent: no-op if already gone) so
-          # `terraform destroy` skips the deadlock-prone graceful helm uninstall.
-          terraform state list 2>/dev/null | grep -E 'helm_release\.|kubernetes_' | while read -r addr; do
-            echo "teardown: state rm ${addr} (cluster deletion will reap it)"
-            terraform state rm "$addr" || true
-          done
-          # A (2026-06-17 root-fix): reap controller-orphaned SGs CONCURRENTLY with
-          # terraform destroy. terraform's aws_vpc delete retries DependencyViolation
-          # internally and does NOT give up (staging spun 30+ min on a k8s-traffic-* SG
-          # still attached to node ENIs). The SG becomes deletable only once the
-          # nodegroup ENIs detach DURING this destroy, so we reap in the background
-          # every 20s; the instant the SG is free it is deleted and the in-flight VPC
-          # delete completes. The reaper is killed once destroy returns.
+          # NOTE (A6 #178): the in-cluster `state rm` loop was REMOVED here. Before
+          # the ownership inversion it stripped every helm_release / kubernetes_
+          # resource from state so `terraform destroy` never attempted the deadlock-
+          # prone graceful helm uninstall (kyverno's fail-closed webhook). Post-
+          # inversion those add-ons are all ArgoCD-owned — no such helm_release
+          # remains in regional state — so there is nothing to strip. The bootstrap
+          # ArgoCD + root-app uninstall cleanly (no finalizer cascade) or are reaped
+          # by the cluster delete. Do NOT re-add a state-rm loop.
+
+          # A (2026-06-17 root-fix, A6-gated to profile=full): reap controller-
+          # orphaned SGs CONCURRENTLY with terraform destroy. terraform's aws_vpc
+          # delete retries DependencyViolation internally and does NOT give up
+          # (staging spun 30+ min on a k8s-traffic-* SG still attached to node ENIs).
+          # The SG becomes deletable only once the nodegroup ENIs detach DURING this
+          # destroy, so we reap in the background every 20s; the instant the SG is
+          # free it is deleted and the in-flight VPC delete completes. The reaper is
+          # killed once destroy returns. Only a full cluster ran the ALB controller,
+          # so an ephemeral teardown never launches it (no such SG can exist).
           reap_orphan_sgs() {
             while sleep 20; do
               for sg in $(aws ec2 describe-security-groups --region "$r" \
@@ -332,25 +353,32 @@ jobs:
               done
             done
           }
-          reap_orphan_sgs & REAPER_PID=$!
+          REAPER_PID=""
+          if [ "$PROFILE" = "full" ]; then
+            reap_orphan_sgs & REAPER_PID=$!
+          fi
           DESTROY_RC=0
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" || DESTROY_RC=$?
-          kill "$REAPER_PID" 2>/dev/null || true; wait "$REAPER_PID" 2>/dev/null || true
-          # (b)+(c) Verified teardown. A green destroy can still be wrong if the VPC
-          # delete actually failed on a lingering ALB SG and terraform was about to
-          # spin (or did spin and gave up). After destroy returns, assert that NO
-          # orphan ALB and NO controller-owned SG remain — if any do, fail LOUD with
-          # an actionable message rather than reporting a clean teardown while the
-          # account still bills (a stuck VPC keeps NAT/EIP/ENI charges live).
-          if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
-            if ! REMAIN_LB="$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: ELBv2 query error"; REMAIN_LB=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
-          else
-            REMAIN_LB=''
-          fi
-          if ! REMAIN_SG="$(aws ec2 describe-security-groups --region "$r" --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" --query 'SecurityGroups[].GroupId' --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: SG query error"; REMAIN_SG=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
-          if [ -n "$REMAIN_LB" ] || [ -n "$REMAIN_SG" ]; then
-            echo "::error::teardown left orphan AWS objects — VPC ${VPC} may be stuck (still billing). ALB(s): [${REMAIN_LB:-none}] · controller SG(s): [${REMAIN_SG:-none}]. Delete them (aws elbv2 delete-load-balancer / aws ec2 delete-security-group --group-id <id>) then re-dispatch infra-ops destroy-region for account ${{ inputs.account_id }} ${r}."
-            [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1
+          [ -n "$REAPER_PID" ] && { kill "$REAPER_PID" 2>/dev/null || true; wait "$REAPER_PID" 2>/dev/null || true; }
+          # (b)+(c) Verified teardown — FULL profile only (A6 #178). A green destroy
+          # can still be wrong if the VPC delete actually failed on a lingering ALB
+          # SG and terraform was about to spin (or did spin and gave up). After
+          # destroy returns, assert that NO orphan ALB and NO controller-owned SG
+          # remain — if any do, fail LOUD with an actionable message rather than
+          # reporting a clean teardown while the account still bills (a stuck VPC
+          # keeps NAT/EIP/ENI charges live). An EPHEMERAL cluster created no ALB and
+          # no controller SG, so there is nothing to verify — skip it entirely.
+          if [ "$PROFILE" = "full" ]; then
+            if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
+              if ! REMAIN_LB="$(aws elbv2 describe-load-balancers --region "$r" --query "LoadBalancers[?VpcId=='${VPC}'].LoadBalancerArn" --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: ELBv2 query error"; REMAIN_LB=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
+            else
+              REMAIN_LB=''
+            fi
+            if ! REMAIN_SG="$(aws ec2 describe-security-groups --region "$r" --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${CLUSTER}" --query 'SecurityGroups[].GroupId' --output text 2>/dev/null)"; then echo "::error::post-destroy verification failed: SG query error"; REMAIN_SG=''; [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1; fi
+            if [ -n "$REMAIN_LB" ] || [ -n "$REMAIN_SG" ]; then
+              echo "::error::teardown left orphan AWS objects — VPC ${VPC} may be stuck (still billing). ALB(s): [${REMAIN_LB:-none}] · controller SG(s): [${REMAIN_SG:-none}]. Delete them (aws elbv2 delete-load-balancer / aws ec2 delete-security-group --group-id <id>) then re-dispatch infra-ops destroy-region for account ${{ inputs.account_id }} ${r}."
+              [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1
+            fi
           fi
           if [ "$DESTROY_RC" -ne 0 ]; then
             echo "::error::destroy-region did NOT complete cleanly (rc=${DESTROY_RC}) — resources may STILL BE BILLING. Re-dispatch infra-ops destroy-region (account ${{ inputs.account_id }}, ${r}); ttl-reaper + budget are only backstops."
@@ -437,10 +465,17 @@ jobs:
           # were removed deliberately; do not re-add them.
 
           # ── #148 pre-destroy: sweep external-dns orphan records from the zone.
-          # external-dns (modules/regional-stack/external-dns.tf) runs in the
-          # regional clusters, which destroy-region has already deleted — so it
-          # never reconciled its records away (policy=sync cleans on a live
-          # Ingress delete, not on an abrupt cluster teardown). The aegis-api
+          # A6 (#178): external-dns is now a GitOps ApplicationSet gated to
+          # profile=full (gitops/platform-addons/addons/external-dns), so ONLY full
+          # regional clusters ever write records into this shared zone. This sweep
+          # is therefore inherently a profile==full backstop: on an all-ephemeral
+          # account it finds ZERO orphans and no-ops (the "nothing to sweep" branch
+          # below). It stays because destroy-platform must still clean orphans left
+          # by any full cluster that ran external-dns.
+          # external-dns runs in the regional clusters, which destroy-region has
+          # already deleted — so it never reconciled its records away (policy=sync
+          # cleans on a live Ingress delete, not on an abrupt cluster teardown).
+          # The aegis-api
           # A/AAAA latency records and their `edns-` TXT registry entries are left
           # behind, and `aws_route53_zone.main` cannot delete a non-empty zone
           # (HostedZoneNotEmpty) — the sole cause of destroy-platform failures

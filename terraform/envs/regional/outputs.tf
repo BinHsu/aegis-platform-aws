@@ -18,3 +18,8 @@ output "vpc_id" {
   description = "VPC ID for this region's stack."
   value       = module.stack.vpc_id
 }
+
+output "cluster_profile" {
+  description = "Lifecycle profile this region was applied with (ephemeral|full). A6 (#178): infra-ops destroy-region reads `terraform output -raw cluster_profile` to select the teardown path (ephemeral = plain destroy; full = ALB/SG/orphan backstops)."
+  value       = module.stack.cluster_profile
+}

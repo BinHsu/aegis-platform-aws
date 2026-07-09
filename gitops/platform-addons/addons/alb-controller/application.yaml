@@ -1,0 +1,115 @@
+# gitops/platform-addons/addons/alb-controller/application.yaml
+#
+# AWS Load Balancer Controller — PROFILE-GATED (epic #167 A6 / issue #178,
+# ADR-25 ownership inversion). SYNC-WAVE 0.
+#
+# Migrated OUT of terraform/modules/regional-stack/alb-controller.tf
+# (helm_release.alb_controller, now deleted). ArgoCD owns the controller; the
+# IRSA role STAYS in Terraform (irsa-alb.tf) — account infrastructure, not
+# cluster state (issue #178).
+#
+# ── WHY AN ApplicationSet (not a plain Application) — the FACTS BRIDGE ─────────
+# The old helm_release carried five account/cluster-bound `set` values
+# (clusterName, region, vpcId, the IRSA role-arn, plus two webhook toggles).
+# Those must NOT be hardcoded in this PUBLIC git manifest (the cluster-agnostic
+# rule A1 set for Alloy). So Terraform writes them as annotations onto the
+# in-cluster ArgoCD `cluster` Secret (gitops-bootstrap.tf :: kubernetes_secret
+# .argocd_cluster_facts) and the clusters generator below surfaces them into the
+# chart values — a byte-for-byte port of the deleted `set` blocks.
+#
+# ── WHY PROFILE-GATED — this is the payoff of the epic ────────────────────────
+# The selector requires aegis.binhsu.org/profile == "full". The ALB controller
+# is one of the only two add-ons (external-dns is the other) that create AWS
+# objects OUTSIDE Terraform state — ALBs, their ENIs/EIPs, and the controller-
+# owned backend SGs — which outlive a cluster delete and DependencyViolation-
+# block the VPC destroy. That is the entire reason infra-ops.yml grew its ALB
+# backstop + SG reaper + orphan verification. Gating this add-on to full clusters
+# means an EPHEMERAL cluster never creates any of those objects, so its teardown
+# collapses to a plain `terraform destroy` with no backstop (issue #178). A
+# durable (full) cluster still gets the controller AND keeps the thin
+# profile==full teardown backstop in infra-ops.yml.
+#
+# On an ephemeral cluster the facts Secret carries profile=ephemeral, the
+# selector does not match, and this ApplicationSet generates ZERO Applications —
+# the same "generate nothing" mechanism the Alloy observability label uses.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+  annotations:
+    # Controller + its webhooks must be up before any Ingress-shaped workload
+    # (aegis-core) is synced — same wave-0 rationale as argo-rollouts.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    # Facts bridge: select the TF-written in-cluster `cluster` Secret, but ONLY
+    # when its profile LABEL is "full". secret-type=cluster surfaces its
+    # annotations to the template; profile=full is the A6 gate. An ephemeral
+    # cluster's Secret carries profile=ephemeral → no match → no Application.
+    - clusters:
+        selector:
+          matchLabels:
+            argocd.argoproj.io/secret-type: cluster
+            aegis.binhsu.org/profile: full
+  template:
+    metadata:
+      name: "aws-load-balancer-controller-{{.nameNormalized}}"
+      annotations:
+        argocd.argoproj.io/sync-wave: "0"
+      # ── TEARDOWN SAFETY — no resources-finalizer (same posture as the kyverno /
+      # argo-rollouts children and the app-of-apps root). Deleting this
+      # Application must not trigger a foreground cascade; ephemeral teardown
+      # deletes the whole cluster and reaps the controller with it. (On a full
+      # cluster, pre-destroy.sh drains the ALBs before terraform destroy — see
+      # infra-ops.yml.)
+    spec:
+      project: default
+      source:
+        # Same public chart + PINNED version the old helm_release used. Chart
+        # 1.8.1 → controller v2.8.x. VERIFY against https://aws.github.io/eks-charts
+        # before a bootstrap apply (same convention as the other pinned add-ons).
+        repoURL: https://aws.github.io/eks-charts
+        chart: aws-load-balancer-controller
+        targetRevision: 1.8.1 # pinned — verify at bootstrap
+        helm:
+          valuesObject:
+            # Cluster identity + VPC — injected from the facts bridge annotations
+            # (a verbatim port of the deleted alb-controller.tf `set` blocks).
+            clusterName: '{{index .metadata.annotations "aegis.binhsu.org/cluster-name"}}'
+            region: '{{index .metadata.annotations "aegis.binhsu.org/region"}}'
+            vpcId: '{{index .metadata.annotations "aegis.binhsu.org/vpc-id"}}'
+            serviceAccount:
+              create: true
+              name: aws-load-balancer-controller
+              annotations:
+                # IRSA role — STAYS Terraform-owned (irsa-alb.tf); its ARN is
+                # surfaced through the facts bridge, never hardcoded in git.
+                eks.amazonaws.com/role-arn: '{{index .metadata.annotations "aegis.binhsu.org/alb-role-arn"}}'
+            # ROOT-CAUSE FIX carried from alb-controller.tf (2026-06-11): the
+            # Service mutating webhook (mservice.elbv2.k8s.aws, failurePolicy=Fail)
+            # is registered before the controller pods are Ready and then fails
+            # EVERY Service create cluster-wide ("no endpoints available"). This
+            # stack exposes nothing as type=LoadBalancer (Ingress/ALB + ClusterIP
+            # only), so disabling the mutator removes the deadlock at its source.
+            enableServiceMutatorWebhook: false
+            # ROOT-CAUSE FIX carried from alb-controller.tf (2026-06-17): keep the
+            # controller off its standalone `k8s-traffic-<cluster>-*` backend SG
+            # (created OUTSIDE any state, orphans and DependencyViolation-blocks
+            # the VPC delete). false = manage backend rules on the Terraform-owned
+            # node SG instead, so terraform deletes them and nothing orphans. On a
+            # full cluster the infra-ops SG reaper remains the defense-in-depth net.
+            enableBackendSecurityGroup: false
+      destination:
+        server: "{{.server}}"
+        namespace: kube-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          # kube-system always exists — never let ArgoCD try to create it.
+          - CreateNamespace=false

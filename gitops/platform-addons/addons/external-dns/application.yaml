@@ -1,0 +1,99 @@
+# gitops/platform-addons/addons/external-dns/application.yaml
+#
+# external-dns — PROFILE-GATED (epic #167 A6 / issue #178, ADR-25). SYNC-WAVE 0.
+#
+# Migrated OUT of terraform/modules/regional-stack/external-dns.tf
+# (helm_release.external_dns, now deleted). ArgoCD owns external-dns; the IRSA
+# role STAYS in Terraform (irsa-external-dns.tf, zone-scoped) — account
+# infrastructure, not cluster state (issue #178).
+#
+# The sibling of the ALB controller: one turns an Ingress into an ALB, the other
+# turns it into a Route 53 record under the platform-owned zone. txtOwnerId is
+# the per-region cluster name, so each region's instance owns only its own
+# records via the TXT registry — the basis for cross-region latency + failover
+# routing once more than one region runs.
+#
+# ── PROFILE-GATED (see addons/alb-controller for the full rationale) ──────────
+# external-dns is the second of the two add-ons that create AWS objects OUTSIDE
+# Terraform state: A/AAAA + `edns-` TXT records in the shared platform zone.
+# Because policy=sync only reconciles a record AWAY on a live Ingress delete
+# (never on an abrupt cluster teardown), those records orphan and
+# HostedZoneNotEmpty-block the zone delete at destroy-platform — the reason
+# infra-ops.yml grew its Route53 orphan sweep. Gating external-dns to
+# profile=full means an EPHEMERAL cluster writes NO records, so an all-ephemeral
+# account leaves nothing for the sweep to find (it self-no-ops). On an ephemeral
+# cluster the facts Secret carries profile=ephemeral, the selector below does not
+# match, and this ApplicationSet generates ZERO Applications.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: external-dns
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    # Facts bridge + A6 profile gate — identical selector to the ALB controller:
+    # surface the cluster Secret's annotations, but only for a full cluster.
+    - clusters:
+        selector:
+          matchLabels:
+            argocd.argoproj.io/secret-type: cluster
+            aegis.binhsu.org/profile: full
+  template:
+    metadata:
+      name: "external-dns-{{.nameNormalized}}"
+      annotations:
+        argocd.argoproj.io/sync-wave: "0"
+      # TEARDOWN SAFETY — no resources-finalizer (same posture as the other
+      # add-ons + the root). Deleting this Application must not trigger a
+      # foreground cascade; teardown reaps external-dns with the cluster.
+    spec:
+      project: default
+      source:
+        # Same public chart + PINNED version the old helm_release used. Chart
+        # 1.21.1. VERIFY against https://kubernetes-sigs.github.io/external-dns/
+        # before a bootstrap apply.
+        repoURL: https://kubernetes-sigs.github.io/external-dns/
+        chart: external-dns
+        targetRevision: 1.21.1 # pinned — verify at bootstrap
+        helm:
+          # Verbatim port of the deleted external-dns.tf `set` blocks. The only
+          # account/cluster-bound values (the zone domainFilter, the per-region
+          # txtOwnerId, and the IRSA role-arn) come from the facts bridge.
+          valuesObject:
+            provider:
+              name: aws
+            # Only ever touch the platform-owned zone (facts bridge, trailing dot
+            # already trimmed by gitops-bootstrap.tf).
+            domainFilters:
+              - '{{index .metadata.annotations "aegis.binhsu.org/zone-name"}}'
+            # Source records from Ingresses (the workload ALB Ingress), not Services.
+            sources:
+              - ingress
+            policy: sync
+            # TXT ownership registry — txtOwnerId scoped per region (the cluster
+            # name) so instances do not clobber each other's records in the shared
+            # zone; txtPrefix matches the infra-ops Route53 sweep's `edns-` filter.
+            registry: txt
+            txtOwnerId: '{{index .metadata.annotations "aegis.binhsu.org/cluster-name"}}'
+            txtPrefix: edns-
+            serviceAccount:
+              create: true
+              name: external-dns
+              annotations:
+                # IRSA role — STAYS Terraform-owned (irsa-external-dns.tf,
+                # zone-scoped); its ARN surfaced through the facts bridge.
+                eks.amazonaws.com/role-arn: '{{index .metadata.annotations "aegis.binhsu.org/external-dns-role-arn"}}'
+      destination:
+        server: "{{.server}}"
+        namespace: kube-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false

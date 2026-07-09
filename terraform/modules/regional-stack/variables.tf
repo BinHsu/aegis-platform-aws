@@ -214,7 +214,7 @@ variable "gitops_revision" {
 }
 
 variable "cluster_profile" {
-  description = "Cluster lifecycle profile, surfaced as the aegis.binhsu.org/profile annotation on the in-cluster ArgoCD `cluster` Secret (facts bridge, ADR-25 / gitops-bootstrap.tf). ephemeral = CI/kind + throwaway EKS; full = long-lived. A6 will select add-on scope on this via an ApplicationSet selector; in A1 it is written as an inert fact. Default ephemeral (safe); the regional env can override."
+  description = "Cluster lifecycle profile, surfaced as the aegis.binhsu.org/profile LABEL + annotation on the in-cluster ArgoCD `cluster` Secret (facts bridge, ADR-25 / gitops-bootstrap.tf). ephemeral = CI/kind + throwaway EKS; full = long-lived. A6 (#178): the ALB controller + external-dns ApplicationSets select on the LABEL, so ONLY full clusters install them — an ephemeral cluster creates no ALB/SG/Route53 objects and its teardown collapses to a plain `terraform destroy`. Default ephemeral (safe); the regional env can override."
   type        = string
   default     = "ephemeral"
 

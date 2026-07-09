@@ -9,6 +9,34 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Inversion A6 — ephemeral profile + teardown collapse (epic #167 final stage, #178, ADR-25).**
+  The ALB controller and external-dns are now GitOps-owned, PROFILE-GATED
+  ApplicationSets (`gitops/platform-addons/addons/{alb-controller,external-dns}/`)
+  selected only on `profile=full` clusters via the facts-bridge `aegis.binhsu.org/profile`
+  LABEL. Their IRSA roles STAY in Terraform (account infra). The facts bridge
+  (`gitops-bootstrap.tf`) gained the `profile` selector label plus the
+  `vpc-id` / `alb-role-arn` / `external-dns-role-arn` / `zone-name` annotations the
+  two charts need, and a `cluster_profile` output. New hermetic kind assertion
+  `scripts/e2e/assert-ephemeral-profile.sh` proves the gate (full → both add-ons
+  generated; ephemeral → both excluded), wired into `e2e-golden-path.yml`.
+
+### Changed
+- **infra-ops `destroy-region` teardown collapsed to a profile-gated backstop (#178).**
+  An **ephemeral** cluster ran neither ALB controller nor external-dns, so it
+  created no ALB / controller-SG / Route53 objects — its teardown is now a plain
+  `terraform destroy` with no pre-destroy.sh, ALB backstop, SG reaper, or orphan
+  verification. A **full** cluster keeps that thin backstop. The Route53 orphan
+  sweep in `destroy-platform` is now inherently a `profile==full` concern
+  (external-dns is full-gated) and self-no-ops on all-ephemeral accounts.
+
+### Removed
+- `terraform/modules/regional-stack/alb-controller.tf` and `external-dns.tf`
+  (`helm_release.alb_controller` / `helm_release.external_dns`) — migrated to the
+  two GitOps ApplicationSets above (#178). IRSA roles (`irsa-alb.tf`,
+  `irsa-external-dns.tf`) retained.
+- The in-cluster `state rm` loop in infra-ops `destroy-region` — post-inversion no
+  deadlock-prone `helm_release` remains in regional state, so there is nothing to
+  strip before `terraform destroy` (#178).
 - Community health files: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   issue templates, PR template, `CODEOWNERS`.
 - `CHANGELOG.md` (this file).

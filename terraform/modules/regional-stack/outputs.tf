@@ -23,6 +23,11 @@ output "vpc_id" {
   value       = module.vpc.vpc_id
 }
 
+output "cluster_profile" {
+  description = "Lifecycle profile this stack was applied with (ephemeral|full). A6 (#178): infra-ops destroy-region reads it from state to choose the teardown path — ephemeral collapses to a plain `terraform destroy`; full runs the ALB/SG/orphan backstops because a full cluster ran the ALB controller + external-dns (the add-ons that create out-of-band AWS objects)."
+  value       = var.cluster_profile
+}
+
 # Intentionally NO alb_dns_name / alb_zone_id outputs. The greeter ALB is
 # provisioned by the ALB controller from the Ingress manifest synced by
 # ArgoCD, which happens AFTER this TF apply completes. Route 53 records
