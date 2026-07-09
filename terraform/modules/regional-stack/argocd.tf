@@ -1,6 +1,19 @@
 # ArgoCD per cluster — NOT hub-spoke. Each EKS cluster runs its own ArgoCD,
 # eliminating the GitOps-layer SPOF (per locked decision: per-cluster ArgoCD).
 #
+# A5 (epic #167 / issue #177, ADR-25): the workload ApplicationSet + AppProject
+# that USED to live here (helm_release.argocd_apps) MOVED TO GITOPS —
+# gitops/platform-addons/addons/workloads/{appproject,applicationset}.yaml, applied
+# by the app-of-apps root (directory.recurse) like every other add-on. What stays
+# in Terraform: (1) the bootstrap ArgoCD install (helm_release.argocd, below —
+# per the epic target end-state, Terraform owns the cluster + a bootstrap ArgoCD),
+# and (2) local.workload_list_elements — Terraform still builds the per-workload
+# catalog from registries.auto.tfvars.json + AWS resources (the registry facts stay
+# TF-owned, epic decision #4), but now WRITES it as the aegis.binhsu.org/workloads
+# facts-bridge annotation (gitops-bootstrap.tf) for the git ApplicationSet to read,
+# instead of interpolating it into an inline Helm List generator. See the MIGRATION
+# tombstone at the bottom of this file for WHAT MOVED WHERE / REVERT.
+#
 # Self-ownership model (ADR-07 D-discovery amended; see PR #24's rationale):
 # the workload catalog is driven by the REGISTRIES (var.workload_registries),
 # not by GitHub SCM topic-discovery. The github SCM-provider generator uses the
@@ -101,6 +114,17 @@ resource "helm_release" "argocd" {
 # ApplicationSet template's `missingkey=error` stays safe while the
 # `{{- if ... }}` guards key off empty strings. engine_irsa / ingress_cert are
 # opt-in: greeter declares neither.
+#
+# A5 (issue #177): these elements are NO LONGER interpolated into an inline Helm
+# List generator here. Terraform now writes jsonencode(local.workload_list_elements)
+# as the aegis.binhsu.org/workloads annotation on the facts-bridge cluster Secret
+# (gitops-bootstrap.tf), and the git ApplicationSet
+# (gitops/platform-addons/addons/workloads/applicationset.yaml) reads it back via a
+# Matrix(clusters × list.elementsYaml) generator. The element SHAPE is unchanged
+# except two keys that used to be template-level TF interpolations and now ride the
+# element so the git template stays cluster-agnostic AND identical to the harness
+# copy: `path` (was the fixed k8s/overlays/${var.environment}) and `region` (was
+# var.region inlined into commonAnnotations).
 locals {
   workload_list_elements = [
     for repo, cfg in var.workload_registries : {
@@ -109,10 +133,18 @@ locals {
       # The List generator now carries them so the ApplicationSet template can
       # set repoURL / targetRevision without the SCM generator (which 404s on a
       # personal GitHub account — see the file header comment).
-      url          = "https://github.com/${var.github_owner}/${repo}"
-      branch       = "HEAD"
+      url    = "https://github.com/${var.github_owner}/${repo}"
+      branch = "HEAD"
+      # Deploy-repo overlay path. Was a fixed k8s/overlays/${var.environment} in the
+      # ApplicationSet template; element-carried now (A5) so the git template is a
+      # single {{.path}} shared by the platform and the kind harness.
+      path         = "k8s/overlays/${var.environment}"
       ecrAccountId = cfg.ecr_account_id
       ecrRegion    = cfg.ecr_region
+      # D3 region injection value. Was var.region inlined into the template's
+      # commonAnnotations; element-carried now (A5) for the same single-template
+      # reason as `path`.
+      region = var.region
       # engineServiceAccount stays as the GATE for the per-engine ConfigMap
       # injections below (model-store, gateway-oidc). The role-arn annotation and
       # the WorkloadIdentity policyArns it used to also drive are GONE (ADR-21 §A):
@@ -142,206 +174,61 @@ locals {
   ]
 }
 
-# ApplicationSet + AppProject ship via the argocd-apps subchart (same reason as
-# before: declarative app-spec, separate blast radius from the controller; and
-# it sidesteps kubernetes_manifest's CRD-at-plan-time problem).
-resource "helm_release" "argocd_apps" {
-  # B1 (2026-06-11): the heavy platform controllers install in parallel and
-  # deadline on the default 300s helm timeout during a busy cluster bring-up
-  # ("context deadline exceeded"). 600s gives them room.
-  timeout    = 600
-  name       = "aegis-apps"
-  namespace  = kubernetes_namespace.argocd.metadata[0].name
-  repository = "https://argoproj.github.io/argo-helm"
-  chart      = "argocd-apps"
-  version    = "2.0.2" # pinned
-
-  values = [
-    yamlencode({
-      # ── ENFORCEMENT FOUR-PACK #1 — namespace-squatting defense ──────────
-      # ONE shared AppProject, not one per workload. ArgoCD cannot GENERATE an
-      # AppProject from an ApplicationSet, so per-workload projects would
-      # re-introduce a platform PR per onboard — defeating self-service. The
-      # squatting wall is instead: (a) the ApplicationSet DERIVES each app's
-      # destination namespace from the repo name (a deploy repo cannot pick
-      # its own namespace — the value comes from the discovered repo, not from
-      # anything inside it), backed by (b) this project's destination allowlist
-      # (`aegis-*` only) and (c) sourceRepos pinned to the BinHsu org. Decision
-      # flagged for review.
-      projects = {
-        aegis-workloads = {
-          namespace   = "argocd"
-          description = "All aegis-workload-tagged deploy repos. Destinations locked to aegis-* namespaces; sources locked to the org. ADR-07 enforcement #1. E2E PENDING bootstrap."
-          sourceRepos = ["https://github.com/${var.github_owner}/*"]
-          destinations = [{
-            server    = "https://kubernetes.default.svc"
-            namespace = "aegis-*"
-          }]
-          # Namespace is the ONLY cluster-scoped kind a deploy repo may ship:
-          # CreateNamespace=true makes the (cluster-scoped) workload namespace.
-          # Everything else a workload ships is namespaced — ACK Role/Policy CRDs,
-          # and aegis-core's audio-isolation policy, which is a namespaced kyverno
-          # `Policy` (in ns aegis-core), NOT a `ClusterPolicy`. A namespaced Policy
-          # is the correct least-privilege kind: its rules only ever match Pods in
-          # aegis-core, so it never needed cluster scope. Keeping cluster-scoped
-          # kinds to {Namespace} closes the hole where any aegis-workloads repo
-          # could otherwise ship cluster-wide kyverno ClusterPolicy — the
-          # destination allowlist (`aegis-*`) does NOT constrain cluster-scoped
-          # resources, so the whitelist is the only wall. namespaceResourceWhitelist
-          # (* / *) covers the namespaced Policy.
-          clusterResourceWhitelist = [
-            { group = "", kind = "Namespace" },
-          ]
-          namespaceResourceWhitelist = [{ group = "*", kind = "*" }]
-        }
-      }
-
-      applicationsets = {
-        aegis-workloads = {
-          namespace         = "argocd"
-          goTemplate        = true
-          goTemplateOptions = ["missingkey=error"]
-
-          # REGISTRIES-DRIVEN: workloads are enumerated from var.workload_registries
-          # via the List generator. A workload enrols by getting a registries entry;
-          # the `aegis-workload` GitHub topic + `argocd/application.yaml` marker are
-          # out-of-band conventions (no pathsExist gate — that gate lived on the
-          # SCM generator which is dropped here). The SCM-provider generator used
-          # GET /orgs/<owner>/repos → 404 for a personal account (BinHsu is a user,
-          # not an org); caught live on the 2026-06-12 prod proof cluster.
-          # To regain GitHub topic auto-discovery, move to a GitHub org and
-          # re-add a merge generator with scmProvider here.
-          generators = [{
-            list = {
-              elements = local.workload_list_elements
-            }
-          }]
-
-          template = {
-            metadata = {
-              name = "{{trimSuffix \"-deploy\" .repository}}"
-            }
-            spec = {
-              project = "aegis-workloads"
-              source = {
-                repoURL        = "{{.url}}"
-                targetRevision = "{{.branch}}"
-                path           = "k8s/overlays/${var.environment}"
-                kustomize = {
-                  # NO kustomize.images here — that field belongs EXCLUSIVELY
-                  # to the deploy repo (its overlay pins the image by digest,
-                  # ADR-10). Empirically (kustomize v5.8.1): ArgoCD applies an
-                  # images override via `kustomize edit set image`, and a
-                  # newName-only entry REPLACES the overlay's digest-only
-                  # entry — digest deleted, image renders `:latest`,
-                  # ImagePullBackOff. See ADR-12.
-                  #
-                  # Both injections below are annotations — one generic
-                  # channel the cluster knows; the deploy repo's own kustomize
-                  # replacements consume them. The platform never learns any
-                  # workload's internal deployment/container names.
-                  commonAnnotations = {
-                    # D3 region injection — workload INTENT, region-aware
-                    # workloads (greeter) read it via replacements.
-                    "aegis.binhsu.org/region" = var.region
-                    # Elements come exclusively from var.workload_registries
-                    # (the List generator above), so ecrAccountId/ecrRegion are
-                    # never absent — a repo with no registry entry is never
-                    # enumerated, it cannot reach this template with empties.
-                    # D4 account-ID hide — full ECR repository URL, NO
-                    # tag/digest. The deploy repo replaces the registry half
-                    # of its image ref (replacement delimiter `@`, index 0)
-                    # and keeps its own digest. ADR-12.
-                    "aegis.binhsu.org/ecr-repository" = "{{.ecrAccountId}}.dkr.ecr.{{.ecrRegion}}.amazonaws.com/{{trimSuffix \"-deploy\" .repository}}"
-                  }
-                }
-              }
-              destination = {
-                server    = "https://kubernetes.default.svc"
-                namespace = "{{trimSuffix \"-deploy\" .repository}}"
-              }
-              syncPolicy = {
-                automated   = { prune = true, selfHeal = true }
-                syncOptions = ["CreateNamespace=true"]
-              }
-            }
-          }
-
-          # Conditional, account-bound injections (each keyed off an empty
-          # string so a workload that declares neither — e.g. greeter — renders
-          # nothing): the gateway Ingress's ACM cert-arn (⑥ account-ID hide) and
-          # the per-engine ConfigMap values (model bucket, Cognito OIDC). Region
-          # and the ECR repository are NOT here — both ride the commonAnnotations
-          # channel above and are workload-owned via the deploy repo's kustomize
-          # replacements.
-          #
-          # The engine SA role-arn annotation and the WorkloadIdentity policyArns
-          # patch are GONE (ADR-21 §A): the engine's IAM is now an EKS Pod
-          # Identity association (pod-identity-engine.tf), not a Crossplane-
-          # composed IRSA role injected onto a bare SA here. The gate keys off
-          # engineServiceAccount (the ConfigMap injections still need it) and
-          # certArn.
-          templatePatch = <<-EOT
-            {{- if or .engineServiceAccount .certArn }}
-            spec:
-              source:
-                kustomize:
-                  patches:
-                  {{- if .certArn }}
-                    - target:
-                        kind: Ingress
-                        name: {{ .ingressName }}
-                      patch: |-
-                        - op: add
-                          path: /metadata/annotations/alb.ingress.kubernetes.io~1certificate-arn
-                          value: {{ .certArn }}
-                  {{- end }}
-                  {{- if and .engineServiceAccount .modelBucket }}
-                    - target:
-                        kind: ConfigMap
-                        name: {{ trimSuffix "-deploy" .repository }}-model-store
-                      patch: |-
-                        - op: replace
-                          path: /data/bucket
-                          value: {{ .modelBucket }}
-                  {{- end }}
-                  {{- if and .engineServiceAccount .cognitoIssuer .cognitoAudience .cognitoJwks }}
-                    - target:
-                        kind: ConfigMap
-                        name: {{ trimSuffix "-deploy" .repository }}-gateway-oidc
-                      patch: |-
-                        - op: replace
-                          path: /data/issuer
-                          value: {{ .cognitoIssuer }}
-                        - op: replace
-                          path: /data/audience
-                          value: {{ .cognitoAudience }}
-                        - op: replace
-                          path: /data/jwksUrl
-                          value: {{ .cognitoJwks }}
-                  {{- end }}
-            {{- end }}
-          EOT
-        }
-      }
-    })
-  ]
-
-  # ArgoCD must exist before this ApplicationSet lands.
-  #
-  # A4 (epic #167 / #176, ADR-25): the Argo Rollouts controller is no longer a
-  # Terraform helm_release — it moved to GitOps as an app-of-apps child
-  # (gitops/platform-addons/addons/argo-rollouts, sync-wave 0). So the old
-  # `helm_release.argo_rollouts` gate that forced the Rollout CRD to exist BEFORE
-  # this ApplicationSet was created is gone with the resource. aegis-core's
-  # gateway/engine are argoproj.io Rollouts, so on first bring-up aegis-core can
-  # now briefly sync ahead of the CRD and hit a TRANSIENT
-  # `Rollout.argoproj.io "" not found`; ArgoCD's automated retry + selfHeal
-  # converges once wave 0 lands the CRD. The hard pre-CRD ordering returns when
-  # A5 (AWAITING BIN — epic #167 open-decision 5) moves THIS ApplicationSet under
-  # the app-of-apps root at a wave after argo-rollouts. See addons/argo-rollouts/
-  # application.yaml for the full ordering note.
-  depends_on = [
-    helm_release.argocd,
-  ]
-}
+# ── MIGRATION TOMBSTONE — workload ApplicationSet + AppProject → GITOPS (A5) ──
+# (epic #167 A5 / issue #177, ADR-25 ownership inversion)
+#
+# This file previously held helm_release.argocd_apps: the aegis-workloads
+# AppProject + the workload ApplicationSet (the List generator, template, and the
+# per-workload/per-account templatePatch — the values-passing CRUX of the epic),
+# shipped via the argocd-apps subchart. A5 moved ALL of that out of Terraform into
+# ArgoCD, as two app-of-apps children under gitops/platform-addons/addons/workloads/:
+#   - appproject.yaml       (AppProject aegis-workloads; sync-wave 2)
+#   - applicationset.yaml   (ApplicationSet aegis-workloads; object sync-wave 2,
+#                            generated Applications sync-wave 3)
+# The app-of-apps root that delivers them: gitops/platform-addons/root-app.yaml,
+# seeded from Terraform in gitops-bootstrap.tf.
+#
+# WHY: Terraform owning these in-cluster objects is the ownership mismatch epic
+# #167 dissolves — `terraform destroy` no longer helm-uninstalls the argocd-apps
+# release (the cluster delete reaps it), removing the last add-on off Terraform
+# state. This is the epic's final A-stage: the workload ApplicationSet is the ONE
+# place per-workload, per-account config is injected, so it was the deliberate last
+# move (a valid A4 stopping point existed — Bin chose MIGRATE, 2026-07-06, #177).
+#
+# WHAT MOVED WHERE:
+#   - AppProject aegis-workloads (squatting wall)  → addons/workloads/appproject.yaml
+#     sourceRepos = github.com/${github_owner}/*     (git-static; owner is a PUBLIC
+#                                                      handle, hardcoded like root-app
+#                                                      .yaml — a fork edits one line)
+#   - ApplicationSet template + templatePatch      → addons/workloads/applicationset.yaml
+#     (per-workload/per-account injections)          (VERBATIM — no rendered-Application
+#                                                      regression, #177's must-pass gate)
+#   - List generator elements                      → the FACTS BRIDGE: Terraform writes
+#     (local.workload_list_elements, still built     jsonencode(local.workload_list_elements)
+#      from registries.auto.tfvars.json + AWS         as the aegis.binhsu.org/workloads
+#      resources, above)                              annotation on the cluster Secret
+#                                                      (gitops-bootstrap.tf); the git
+#                                                      ApplicationSet reads it back with a
+#                                                      Matrix(clusters × list.elementsYaml).
+#                                                      registries.auto.tfvars.json stays the
+#                                                      source of truth (epic decision #4).
+#   - depends_on = [helm_release.argocd]           → ArgoCD is a Terraform-owned bootstrap
+#     (ApplicationSet after ArgoCD)                  install (helm_release.argocd, above); the
+#                                                      root app seeds only after ArgoCD exists
+#                                                      (gitops-bootstrap.tf depends_on).
+#   - A4 residual (no hard Rollout-CRD gate)        → sync-wave ordering (workloads wave 3,
+#                                                      after argo-rollouts wave 0) + a retry
+#                                                      block on the generated Application.
+#                                                      Closes the transient
+#                                                      `Rollout.argoproj.io "" not found`
+#                                                      window. See applicationset.yaml ORDERING.
+#
+# WHAT STAYED IN TERRAFORM (this file, above): the bootstrap ArgoCD install
+# (helm_release.argocd + its namespace) and local.workload_list_elements (the
+# workload catalog Terraform feeds to the facts-bridge annotation). No workload
+# ApplicationSet, no AppProject.
+#
+# REVERT: `git revert` restores helm_release.argocd_apps here (the AppProject +
+# ApplicationSet + its depends_on), removes the two GitOps files under
+# addons/workloads/, and removes the aegis.binhsu.org/workloads annotation in
+# gitops-bootstrap.tf. Single logical boundary.

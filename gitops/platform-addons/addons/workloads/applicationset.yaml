@@ -1,0 +1,202 @@
+# gitops/platform-addons/addons/workloads/applicationset.yaml
+#
+# Workload ApplicationSet — MIGRATED FROM TERRAFORM (epic #167 A5 / issue #177,
+# ADR-25 ownership inversion). Was terraform/modules/regional-stack/argocd.tf ::
+# helm_release.argocd_apps (applicationsets.aegis-workloads); now a git-resident
+# manifest the app-of-apps root applies via directory.recurse. This is the
+# values-passing CRUX of the epic — the one place per-workload, per-account config
+# is injected — so it is the last add-on to move and the one that closes A4's
+# residual ordering window (see ORDERING, below).
+#
+# ── WHY AN ApplicationSet + HOW THE VALUES FLOW (the facts bridge) ────────────
+# The old TF form rendered a List generator inline, whose elements
+# (local.workload_list_elements) Terraform built from registries.auto.tfvars.json
+# + AWS resources (the model bucket, the gateway ACM cert, Cognito outputs). Those
+# elements are ACCOUNT-BOUND (ECR account id, cert ARN embed an account id) and
+# MUST NOT be hardcoded in this public git manifest — the same cluster-agnostic
+# rule A1 set for Alloy and A3 set for Crossplane.
+#
+# So Terraform no longer interpolates the elements into a Helm value. It keeps
+# building local.workload_list_elements EXACTLY as before (registries.auto.tfvars
+# .json stays the source of truth for the registry facts — epic decision #4) and
+# writes them as ONE JSON annotation, aegis.binhsu.org/workloads, onto the
+# in-cluster ArgoCD `cluster` Secret — the facts bridge (epic decision #3;
+# gitops-bootstrap.tf :: kubernetes_secret.argocd_cluster_facts). This manifest
+# then reads them back with a Matrix generator:
+#   - clusters generator  → selects that Secret (label secret-type: cluster) and
+#                           surfaces its annotations, exactly as the A3 Crossplane
+#                           ApplicationSets do.
+#   - list generator      → elementsYaml expands the workloads JSON annotation the
+#                           clusters generator surfaced into one element per
+#                           workload (the documented Matrix + elementsYaml pattern,
+#                           Generators-List docs). Each element carries every key
+#                           (empty string when absent) so goTemplate
+#                           missingkey=error stays safe — the same discipline the
+#                           TF List generator kept.
+# The Matrix yields one Application per (cluster × workload). The template +
+# templatePatch below are a VERBATIM port of argocd.tf — the rendered Application
+# is byte-for-byte the shape the TF-templated version produced (no functional
+# regression, issue #177's must-pass gate). Only the DELIVERY changed: bridge
+# annotation instead of TF template interpolation.
+#
+# The B2 kind harness proves this end to end (scripts/e2e/b2/
+# assert-workload-onboarding.sh): it seeds the same facts-bridge annotation from
+# sample-registries.json and asserts the injections land on the rendered workload.
+#
+# ── ORDERING — closes A4's residual window (issue #177, addons/argo-rollouts) ─
+# A4 removed helm_release.argo_rollouts, and with it the
+# `depends_on = [helm_release.argo_rollouts]` that HARD-GATED the Rollout CRD to
+# exist before any aegis-core Rollout synced. While the workload ApplicationSet
+# was still TF-owned it lived in a SEPARATE ArgoCD app tree, so cross-Application
+# sync-waves did not span it and aegis-core could briefly race ahead of the CRD
+# (transient `Rollout.argoproj.io "" not found`). A5 restores the ordering by
+# moving THIS ApplicationSet under the SAME app-of-apps root at a LATER wave:
+#   - the ApplicationSet OBJECT + the AppProject ride wave 2 (created after the
+#     wave-0/1 add-ons — argo-rollouts is wave 0, so its Rollout CRD lands first);
+#   - each GENERATED workload Application rides wave 3 (annotation in the template)
+#     so on the happy path a Rollout-shaped workload (aegis-core) is not synced
+#     until argo-rollouts (wave 0) and the Crossplane XRDs (waves 0-2) are up.
+# Sync-waves optimize the happy path; the CORRECTNESS backstop is the retry block
+# on the generated Application (same mechanism A3 used to replace time_sleep): if a
+# workload still syncs before the Rollout CRD is Established, its sync fails and
+# ArgoCD retries with backoff until wave 0 lands the CRD. Ordering + retry together
+# close the residual window A4 flagged.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: aegis-workloads
+  namespace: argocd
+  annotations:
+    # Create the ApplicationSet OBJECT after the wave-0/1 platform add-ons
+    # (argo-rollouts wave 0 lands the Rollout CRD; Crossplane core/definitions).
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    # Facts bridge: clusters generator surfaces the in-cluster `cluster` Secret's
+    # annotations; the list generator's elementsYaml expands the workloads JSON
+    # annotation Terraform wrote onto it into per-workload elements. On the kind
+    # harness the driver seeds a shape-only facts Secret carrying the same
+    # annotation, so this generates exactly the workloads under test.
+    - matrix:
+        generators:
+          - clusters:
+              selector:
+                matchLabels:
+                  argocd.argoproj.io/secret-type: cluster
+          - list:
+              # The parent clusters generator surfaced the Secret's annotations;
+              # expand the workloads JSON array (Terraform-written bridge material)
+              # into one element per workload. index handles the slashed key.
+              elementsYaml: '{{ index .metadata.annotations "aegis.binhsu.org/workloads" }}'
+  template:
+    metadata:
+      name: "{{trimSuffix \"-deploy\" .repository}}"
+      annotations:
+        # Generated workload Application rides a wave AFTER the platform add-ons
+        # (argo-rollouts wave 0, Crossplane waves 0-2) — the happy-path half of the
+        # A4 ordering fix. The retry block below is the convergence guarantee.
+        argocd.argoproj.io/sync-wave: "3"
+    spec:
+      project: aegis-workloads
+      source:
+        repoURL: "{{.url}}"
+        targetRevision: "{{.branch}}"
+        # Path rides the element (Terraform sets it to k8s/overlays/<environment>;
+        # the harness points it at the co-located fixture). Was a fixed
+        # k8s/overlays/${var.environment} in the TF form — element-carried now so
+        # this one manifest serves both the platform and the harness with no
+        # template fork.
+        path: "{{.path}}"
+        kustomize:
+          # NO kustomize.images here — that field belongs EXCLUSIVELY to the deploy
+          # repo (its overlay pins the image by digest, ADR-10). A newName-only
+          # images override REPLACES the overlay's digest-only entry (kustomize
+          # v5.8.1): digest deleted, image renders :latest, ImagePullBackOff. ADR-12.
+          #
+          # Both injections below are annotations — one generic channel the cluster
+          # knows; the deploy repo's own kustomize replacements consume them. The
+          # platform never learns any workload's internal deployment/container names.
+          commonAnnotations:
+            # D3 region injection — workload INTENT, region-aware workloads
+            # (greeter) read it via replacements.
+            "aegis.binhsu.org/region": "{{.region}}"
+            # D4 account-ID hide — full ECR repository URL, NO tag/digest. The
+            # deploy repo replaces the registry half of its image ref (replacement
+            # delimiter `@`, index 0) and keeps its own digest. ADR-12.
+            "aegis.binhsu.org/ecr-repository": "{{.ecrAccountId}}.dkr.ecr.{{.ecrRegion}}.amazonaws.com/{{trimSuffix \"-deploy\" .repository}}"
+      destination:
+        # The in-cluster server (the facts Secret's data.server). Hardcoded — same
+        # as the TF form — so the rendered Application does not depend on the
+        # clusters generator field and the harness copy renders identically.
+        server: https://kubernetes.default.svc
+        namespace: "{{trimSuffix \"-deploy\" .repository}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        # A4 residual backstop: if a Rollout-shaped workload (aegis-core) syncs
+        # before argo-rollouts (wave 0) has Established the Rollout CRD, the sync
+        # fails `Rollout.argoproj.io "" not found` and ArgoCD retries with backoff
+        # until the CRD lands. The same condition-driven convergence A3 used to
+        # replace time_sleep. Ordering (waves above) makes this rare; retry makes
+        # it correct.
+        retry:
+          limit: 15
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 3m
+  # Conditional, account-bound injections (each keyed off an empty string so a
+  # workload that declares neither — e.g. greeter — renders nothing): the gateway
+  # Ingress's ACM cert-arn (account-ID hide) and the per-engine ConfigMap values
+  # (model bucket, Cognito OIDC). Region + the ECR repository are NOT here — both
+  # ride the commonAnnotations channel above and are workload-owned via the deploy
+  # repo's kustomize replacements. VERBATIM from argocd.tf (the engine SA role-arn
+  # annotation + WorkloadIdentity policyArns patch are GONE — ADR-21 §A moved
+  # engine IAM to an EKS Pod Identity association; the gate keys off
+  # engineServiceAccount, which the ConfigMap injections still need, and certArn).
+  templatePatch: |
+    {{- if or .engineServiceAccount .certArn }}
+    spec:
+      source:
+        kustomize:
+          patches:
+          {{- if .certArn }}
+            - target:
+                kind: Ingress
+                name: {{ .ingressName }}
+              patch: |-
+                - op: add
+                  path: /metadata/annotations/alb.ingress.kubernetes.io~1certificate-arn
+                  value: {{ .certArn }}
+          {{- end }}
+          {{- if and .engineServiceAccount .modelBucket }}
+            - target:
+                kind: ConfigMap
+                name: {{ trimSuffix "-deploy" .repository }}-model-store
+              patch: |-
+                - op: replace
+                  path: /data/bucket
+                  value: {{ .modelBucket }}
+          {{- end }}
+          {{- if and .engineServiceAccount .cognitoIssuer .cognitoAudience .cognitoJwks }}
+            - target:
+                kind: ConfigMap
+                name: {{ trimSuffix "-deploy" .repository }}-gateway-oidc
+              patch: |-
+                - op: replace
+                  path: /data/issuer
+                  value: {{ .cognitoIssuer }}
+                - op: replace
+                  path: /data/audience
+                  value: {{ .cognitoAudience }}
+                - op: replace
+                  path: /data/jwksUrl
+                  value: {{ .cognitoJwks }}
+          {{- end }}
+    {{- end }}

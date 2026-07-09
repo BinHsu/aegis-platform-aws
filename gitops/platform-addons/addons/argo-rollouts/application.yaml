@@ -18,17 +18,19 @@
 #
 # WAVE ORDER: sync-wave 0 — the Rollout CRD must be Established before any
 # Rollout-shaped workload is synced. Within this app-of-apps, wave 0 brings the
-# controller + CRDs Healthy before later waves. The workload ApplicationSet
-# (aegis-apps) is still Terraform-owned in the A4 stopping point (A5 is
-# AWAITING BIN — epic #167 open-decision 5), so it lives in a SEPARATE ArgoCD
-# app tree and ArgoCD's cross-Application sync-waves do NOT span it. On first
-# bring-up aegis-core can therefore briefly race ahead of this CRD; that surfaces
-# as a TRANSIENT `Rollout.argoproj.io "" not found` sync error that ArgoCD
-# self-heals once wave 0 lands the CRD (automated retry + selfHeal). The old TF
-# `depends_on = [helm_release.argo_rollouts]` on the ApplicationSet gave a hard
-# pre-CRD gate; removing that resource necessarily drops the gate. A5 closes the
-# residual window by moving the workload ApplicationSet under THIS root at a
-# later wave. See the PR for the note carried to A5.
+# controller + CRDs Healthy before later waves.
+#
+# A5 (epic #167 / issue #177) CLOSED the residual window this note used to flag:
+# the workload ApplicationSet is no longer Terraform-owned in a separate app tree —
+# it moved under THIS same app-of-apps root
+# (gitops/platform-addons/addons/workloads/applicationset.yaml) at a LATER wave
+# (object wave 2, generated Applications wave 3), so a Rollout-shaped workload
+# (aegis-core) is not synced until this wave-0 CRD is up. The old TF
+# `depends_on = [helm_release.argo_rollouts]` hard gate (dropped when A4 removed the
+# release) is now replaced by that sync-wave ordering PLUS a retry block on the
+# generated workload Application: if a workload still races ahead of the CRD, its
+# sync fails `Rollout.argoproj.io "" not found` and ArgoCD retries with backoff
+# until wave 0 lands the CRD. See addons/workloads/applicationset.yaml ORDERING.
 #
 # NO FACTS BRIDGE: unlike Alloy (addons/alloy), this controller takes NO
 # account-bound values — the pre-migration helm_release carried zero `set`

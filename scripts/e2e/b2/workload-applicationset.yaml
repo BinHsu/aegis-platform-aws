@@ -1,47 +1,57 @@
 # scripts/e2e/b2/workload-applicationset.yaml
 #
-# B2 (epic #167 / ADR-26) — the workload AppProject + ApplicationSet the kind
-# lane exercises. This is a FAITHFUL PORT of the production spec in
-# terraform/modules/regional-stack/argocd.tf (helm_release.argocd_apps ::
-# projects.aegis-workloads + applicationsets.aegis-workloads): same List
-# generator, same goTemplate template, same per-workload/per-account
-# templatePatch conditionals. Onboarding a sample workload through THIS is the
-# acceptance gate A5 (migrate the workload ApplicationSet to GitOps) must pass.
+# B2 (epic #167 / ADR-26) — the workload AppProject + ApplicationSet the kind lane
+# exercises. It is a FAITHFUL PORT of the now-GITOPS-RESIDENT production spec
+# (gitops/platform-addons/addons/workloads/{appproject,applicationset}.yaml, which
+# A5/#177 moved out of terraform/modules/regional-stack/argocd.tf): SAME template,
+# SAME per-workload/per-account templatePatch conditionals, SAME sync-wave 3 +
+# retry on the generated Application. Onboarding a sample workload through THIS is
+# the acceptance gate A5 (migrate the workload ApplicationSet) must pass.
 #
-# ┌─ OPEN DECISION B2-a (issue #171) — AWAITING BIN ───────────────────────────┐
-# │ The issue recommends factoring this ApplicationSet/AppProject into a SINGLE │
-# │ source of truth that BOTH Terraform (argocd.tf, today) and this harness     │
-# │ read, instead of the two copies that exist now (argocd.tf + this file).     │
-# │ NOT done here on purpose: rewiring argocd.tf to yamldecode an external file │
-# │ changes a PRODUCTION Terraform resource whose rendered output can only be   │
-# │ proven equivalent with `terraform plan` against AWS (local.workload_list_   │
-# │ elements references aws_s3_bucket / aws_acm_certificate_validation) — out of │
-# │ scope for this $0 kind-only harness, and entangled with the still-open A5   │
-# │ decision (#177). So this file is an additive, revert-safe harness copy; the │
-# │ single-source refactor is recommended as an A5-adjacent follow-up. Keep the │
-# │ template/templatePatch below in lock-step with argocd.tf until B2-a lands.  │
+# ┌─ WHY A SEPARATE HARNESS COPY (was OPEN DECISION B2-a; A5 resolves it) ───────┐
+# │ Production A5 delivers the workload ApplicationSet as a Matrix               │
+# │ (clusters × list.elementsYaml) generator: Terraform writes the per-workload  │
+# │ element list as the aegis.binhsu.org/workloads annotation on the in-cluster  │
+# │ ArgoCD `cluster` Secret (facts bridge), and the git ApplicationSet reads it   │
+# │ back. Driving the PRODUCTION manifest on kind would require seeding a         │
+# │ secret-type=cluster Secret — which the app-of-apps root (already up in this   │
+# │ golden path) would ALSO feed to the Crossplane ApplicationSets, waking a full │
+# │ Crossplane install inside the fast B2 policy lane (out of B2's scope; that is │
+# │ crossplane-kind-integration.yml's job). So this harness copy keeps a PLAIN    │
+# │ list generator with the elements INJECTED by the driver                       │
+# │ (assert-workload-onboarding.sh), exercising the identical template +          │
+# │ templatePatch WITHOUT a facts Secret — the render is proven equivalent; the   │
+# │ Matrix+elementsYaml DELIVERY is proven separately (see the A5 PR: local       │
+# │ isolated render + rendered-Application diff). Keep template/templatePatch/     │
+# │ sync-wave/retry below in EXACT lock-step with the production applicationset.   │
+# │ NAMES are suffixed `-e2e` so this copy never collides with the production      │
+# │ aegis-workloads objects the root creates (idle, no facts Secret) in this lane. │
+# │ FOLLOW-UP for #145: a CI lane that drives the production Matrix+elementsYaml   │
+# │ manifest end to end needs the B2 golden-path root to either exclude Crossplane │
+# │ or accept its bring-up. Flagged in the A5 PR.                                  │
 # └────────────────────────────────────────────────────────────────────────────┘
 #
-# HARNESS DEVIATIONS from argocd.tf (kept minimal, marked HARNESS below):
-#   - generators[0].list.elements is a placeholder []; the driver
-#     (assert-workload-onboarding.sh) injects elements built from
-#     sample-registries.json via the same transform as local.workload_list_elements.
-#   - source.path is per-element ({{.path}}) — the harness co-locates every
-#     sample workload in THIS repo under fixtures/, whereas each real deploy repo
-#     has its own repo + a fixed k8s/overlays/<env> path.
-#   - AppProject.sourceRepos is "*" (the harness serves the fixture from a local
-#     git mirror / the repo's own PR commit, not github.com/<owner>/*).
-#   - region + modelBucket ride the element (the driver sets them) rather than a
-#     TF var / aws_s3_bucket output.
+# HARNESS DEVIATIONS from the production manifest (kept minimal, marked HARNESS):
+#   - generators is a plain list with elements a placeholder []; the driver injects
+#     elements built from sample-registries.json via the same transform as
+#     local.workload_list_elements. Production uses Matrix(clusters × elementsYaml).
+#   - names carry an `-e2e` suffix (AppProject / ApplicationSet / project) so they
+#     do not collide with the root-created production aegis-workloads objects.
+#   - AppProject.sourceRepos is "*" (the harness serves the fixture from a local git
+#     mirror / the repo's own PR commit, not github.com/<owner>/*).
+#   - source.path + region + modelBucket ride the element (the driver sets them),
+#     matching how Terraform now element-carries path/region into the bridge.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
-  name: aegis-workloads
+  name: aegis-workloads-e2e
   namespace: argocd
 spec:
   description: >-
-    HARNESS copy of the aegis-workloads AppProject (argocd.tf). Destinations
-    locked to aegis-* namespaces; cluster-scoped kinds limited to Namespace.
+    HARNESS copy of the aegis-workloads AppProject (addons/workloads/appproject
+    .yaml). Destinations locked to aegis-* namespaces; cluster-scoped kinds limited
+    to Namespace. Named -e2e so it never collides with the root-created production
+    project.
   # HARNESS: production pins sourceRepos to https://github.com/<owner>/*; the
   # harness reads the fixture from a local git mirror / the PR commit, so "*".
   sourceRepos:
@@ -50,7 +60,7 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: "aegis-*"
   # Namespace is the ONLY cluster-scoped kind a deploy repo may ship (matches
-  # argocd.tf: the destination allowlist does not constrain cluster-scoped
+  # production: the destination allowlist does not constrain cluster-scoped
   # resources, so this whitelist is the wall).
   clusterResourceWhitelist:
     - group: ""
@@ -62,7 +72,7 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
-  name: aegis-workloads
+  name: aegis-workloads-e2e
   namespace: argocd
 spec:
   goTemplate: true
@@ -71,21 +81,28 @@ spec:
   generators:
     # HARNESS: elements injected by assert-workload-onboarding.sh from
     # sample-registries.json (same transform as local.workload_list_elements).
+    # Production uses a Matrix(clusters × list.elementsYaml) reading the facts
+    # bridge; the resulting elements — and thus the rendered Application — are
+    # identical.
     - list:
         elements: []
   template:
     metadata:
       name: "{{trimSuffix \"-deploy\" .repository}}"
+      annotations:
+        # A4 ordering fix (identical to production): the generated workload
+        # Application rides a wave after the platform add-ons (argo-rollouts wave 0).
+        argocd.argoproj.io/sync-wave: "3"
     spec:
-      project: aegis-workloads
+      project: aegis-workloads-e2e
       source:
         repoURL: "{{.url}}"
         targetRevision: "{{.branch}}"
         # HARNESS: per-element path (fixtures co-located in one repo). Production
-        # argocd.tf uses a fixed path = k8s/overlays/<var.environment>.
+        # element-carries path too (Terraform sets it to k8s/overlays/<environment>).
         path: "{{.path}}"
         kustomize:
-          # Always-on, per-workload/per-account injections (identical to argocd.tf).
+          # Always-on, per-workload/per-account injections (identical to production).
           commonAnnotations:
             # region injection — workload INTENT (region-aware workloads read it).
             "aegis.binhsu.org/region": "{{.region}}"
@@ -100,8 +117,18 @@ spec:
           selfHeal: true
         syncOptions:
           - CreateNamespace=true
+        # A4 residual backstop (identical to production): retry until the Rollout
+        # CRD (argo-rollouts wave 0) is Established if a Rollout-shaped workload
+        # races ahead of it.
+        retry:
+          limit: 15
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 3m
   # Conditional, account-bound injections — each keyed off an empty string so a
-  # workload that declares neither renders nothing (verbatim from argocd.tf).
+  # workload that declares neither renders nothing (verbatim from the production
+  # applicationset.yaml / the old argocd.tf).
   templatePatch: |
     {{- if or .engineServiceAccount .certArn }}
     spec:
