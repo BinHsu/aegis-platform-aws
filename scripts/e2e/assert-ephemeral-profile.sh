@@ -14,21 +14,26 @@
 # objects outside Terraform state (ALBs, controller SGs, Route53 records), so its
 # teardown collapses to a plain `terraform destroy` (see infra-ops.yml).
 #
-# HOW (hermetic, $0, no AWS): we register a SYNTHETIC ArgoCD `cluster` Secret
-# that mimics the Terraform facts bridge (gitops-bootstrap.tf) — same
-# secret-type=cluster label + the same annotations the two ApplicationSets read —
-# and flip its aegis.binhsu.org/profile LABEL between "full" and "ephemeral",
-# asserting the generated Application appears / disappears in lock-step.
+# HOW (hermetic, deterministic, $0, no AWS): we register TWO synthetic ArgoCD
+# `cluster` Secrets that mimic the Terraform facts bridge (gitops-bootstrap.tf) —
+# one labelled profile=full, one profile=ephemeral — SIMULTANEOUSLY, then assert
+# the ALB / external-dns Application is generated for the FULL cluster and NOT for
+# the EPHEMERAL one.
 #
-#   * The synthetic cluster's data.server points at a BOGUS unreachable URL on
-#     purpose: ArgoCD can GENERATE the child Application (selector + template are
-#     evaluated against the Secret's labels/annotations, no connectivity needed)
-#     but can never SYNC the real Helm chart onto this kind cluster. So this test
-#     proves the SELECTOR, with zero risk of the ALB controller's webhooks landing
-#     on the shared golden-path cluster.
-#   * We assert the FULL case first (apps must APPEAR) then the EPHEMERAL case
-#     (apps must DISAPPEAR): both are controller-driven transitions, more reliable
-#     than asserting a pre-reconcile absence.
+#   * Both secrets carry the same annotations the two ApplicationSets read
+#     (missingkey=error) plus the annotations OTHER clusters-generator appsets on
+#     this cluster read (workloads, account-id), so seeding them errors nothing;
+#     observability is left unset so the Alloy appset stays inert.
+#   * data.server on both points at a BOGUS unreachable URL on purpose: ArgoCD can
+#     GENERATE the child Application (selector + template are evaluated against the
+#     Secret's labels/annotations, no connectivity needed) but can never SYNC the
+#     real Helm chart onto this kind cluster. So this proves the SELECTOR with zero
+#     risk of the ALB controller's webhooks landing on the shared golden-path cluster.
+#   * The test is a pure GENERATION check, not a transition/removal one: because
+#     the FULL app APPEARING is itself proof the clusters generator reconciled
+#     against BOTH secrets, the EPHEMERAL app's ABSENCE in that same generated set
+#     is definitive (not merely "not reconciled yet"). No dependency on ArgoCD's
+#     slow delete-on-fall-out.
 #
 # Usage: KUBECONFIG=... ./scripts/e2e/assert-ephemeral-profile.sh
 #   Requires: kubectl.
@@ -40,13 +45,17 @@ ALB_APPSET="$ADDONS/alb-controller/application.yaml"
 EDNS_APPSET="$ADDONS/external-dns/application.yaml"
 ARGOCD_NS="argocd"
 
-# Synthetic facts-bridge cluster Secret (mimics gitops-bootstrap.tf). The server
-# is deliberately unreachable so generated apps can never sync a real chart here.
-FACTS_SECRET="aegis-a6-profile-probe"
-PROBE_CLUSTER_NAME="aegis-a6-profile-probe"
+# Two synthetic facts-bridge cluster Secrets (mimic gitops-bootstrap.tf). Servers
+# are deliberately unreachable so generated apps can never sync a real chart here.
+FULL_SECRET="aegis-a6-full"
+EPH_SECRET="aegis-a6-eph"
+FULL_CLUSTER="a6full"
+EPH_CLUSTER="a6eph"
 # The ApplicationSet template names the app "<addon>-<nameNormalized>".
-ALB_APP="aws-load-balancer-controller-${PROBE_CLUSTER_NAME}"
-EDNS_APP="external-dns-${PROBE_CLUSTER_NAME}"
+ALB_FULL_APP="aws-load-balancer-controller-${FULL_CLUSTER}"
+ALB_EPH_APP="aws-load-balancer-controller-${EPH_CLUSTER}"
+EDNS_FULL_APP="external-dns-${FULL_CLUSTER}"
+EDNS_EPH_APP="external-dns-${EPH_CLUSTER}"
 
 dump_on_failure() {
   local rc=$?
@@ -57,8 +66,7 @@ dump_on_failure() {
     echo "########################################################################"
     echo "--- applicationsets -n argocd ---"; kubectl get applicationset -n "$ARGOCD_NS" -o wide 2>/dev/null || true
     echo "--- applications -n argocd ---";     kubectl get applications -n "$ARGOCD_NS" 2>/dev/null || true
-    echo "--- facts secret labels ---";        kubectl get secret "$FACTS_SECRET" -n "$ARGOCD_NS" --show-labels 2>/dev/null || true
-    echo "--- alb appset status ---";          kubectl get applicationset aws-load-balancer-controller -n "$ARGOCD_NS" -o jsonpath='{.status.conditions}' 2>/dev/null || true; echo
+    echo "--- probe cluster secrets ---";      kubectl get secret "$FULL_SECRET" "$EPH_SECRET" -n "$ARGOCD_NS" --show-labels 2>/dev/null || true
     echo "########################################################################"
   fi
   # Best-effort teardown so a failed run leaves no synthetic cluster / dangling apps.
@@ -67,37 +75,46 @@ dump_on_failure() {
 }
 
 cleanup() {
+  kubectl delete secret "$FULL_SECRET" "$EPH_SECRET" -n "$ARGOCD_NS" --ignore-not-found >/dev/null 2>&1 || true
   kubectl delete -f "$ALB_APPSET"  --ignore-not-found --timeout=60s >/dev/null 2>&1 || true
   kubectl delete -f "$EDNS_APPSET" --ignore-not-found --timeout=60s >/dev/null 2>&1 || true
-  kubectl delete secret "$FACTS_SECRET" -n "$ARGOCD_NS" --ignore-not-found >/dev/null 2>&1 || true
 }
 trap dump_on_failure EXIT
 
-# Force the ApplicationSet controller to re-run its clusters generator NOW.
-# The generator only re-evaluates cluster Secret label changes on its slow
-# requeue interval (~3 min), so bumping an annotation on the ApplicationSet
-# object triggers an immediate reconcile → the child Application is created /
-# deleted to match the current selector without waiting out the requeue.
-poke_appsets() {
-  kubectl annotate applicationset aws-load-balancer-controller external-dns \
-    -n "$ARGOCD_NS" "e2e.aegis.binhsu.org/poke=$(date +%s%N)" --overwrite >/dev/null
+# apply_facts_secret <secret-name> <cluster-name> <profile>
+apply_facts_secret() {
+  local secret="$1" cluster="$2" profile="$3"
+  kubectl apply -f - <<YAML
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $secret
+  namespace: $ARGOCD_NS
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+    aegis.binhsu.org/profile: "$profile"
+  annotations:
+    aegis.binhsu.org/cluster-name: "$cluster"
+    aegis.binhsu.org/region: "eu-central-1"
+    aegis.binhsu.org/account-id: "000000000000"
+    aegis.binhsu.org/vpc-id: "vpc-0a6profileprobe000"
+    aegis.binhsu.org/alb-role-arn: "arn:aws:iam::000000000000:role/aegis-a6-alb-probe"
+    aegis.binhsu.org/external-dns-role-arn: "arn:aws:iam::000000000000:role/aegis-a6-edns-probe"
+    aegis.binhsu.org/zone-name: "a6-probe.example.com"
+    aegis.binhsu.org/workloads: "[]"
+type: Opaque
+stringData:
+  name: "$cluster"
+  server: "https://${cluster}.aegis-a6-probe.invalid:6443"
+  config: '{"tlsClientConfig":{"insecure":false}}'
+YAML
 }
 
 # poll_until_present <app-name> <timeout-s>
 poll_until_present() {
-  local app="$1" timeout="${2:-60}" t=0
+  local app="$1" timeout="${2:-120}" t=0
   while [ "$t" -lt "$timeout" ]; do
     kubectl get application "$app" -n "$ARGOCD_NS" >/dev/null 2>&1 && return 0
-    sleep 3; t=$((t + 3))
-  done
-  return 1
-}
-
-# poll_until_absent <app-name> <timeout-s>
-poll_until_absent() {
-  local app="$1" timeout="${2:-60}" t=0
-  while [ "$t" -lt "$timeout" ]; do
-    kubectl get application "$app" -n "$ARGOCD_NS" >/dev/null 2>&1 || return 0
     sleep 3; t=$((t + 3))
   done
   return 1
@@ -112,59 +129,34 @@ echo "==> [1] Applying the ALB controller + external-dns ApplicationSets"
 kubectl apply -f "$ALB_APPSET"
 kubectl apply -f "$EDNS_APPSET"
 
-# ── 2. seed the synthetic facts bridge, profile=FULL ─────────────────────────
-# Carries every annotation the two appsets read (missingkey=error) PLUS the
-# annotations OTHER clusters-generator appsets on this cluster read (workloads,
-# account-id) so seeding this Secret does not error them. observability is left
-# unset so the Alloy appset stays inert. data.server is unreachable on purpose.
-echo "==> [2] Seeding synthetic facts-bridge cluster Secret (profile=full)"
-apply_facts_secret() {
-  local profile="$1"
-  kubectl apply -f - <<YAML
-apiVersion: v1
-kind: Secret
-metadata:
-  name: $FACTS_SECRET
-  namespace: $ARGOCD_NS
-  labels:
-    argocd.argoproj.io/secret-type: cluster
-    aegis.binhsu.org/profile: "$profile"
-  annotations:
-    aegis.binhsu.org/cluster-name: "$PROBE_CLUSTER_NAME"
-    aegis.binhsu.org/region: "eu-central-1"
-    aegis.binhsu.org/account-id: "000000000000"
-    aegis.binhsu.org/vpc-id: "vpc-0a6profileprobe000"
-    aegis.binhsu.org/alb-role-arn: "arn:aws:iam::000000000000:role/aegis-a6-alb-probe"
-    aegis.binhsu.org/external-dns-role-arn: "arn:aws:iam::000000000000:role/aegis-a6-edns-probe"
-    aegis.binhsu.org/zone-name: "a6-probe.example.com"
-    aegis.binhsu.org/workloads: "[]"
-type: Opaque
-stringData:
-  name: "$PROBE_CLUSTER_NAME"
-  server: "https://aegis-a6-profile-probe.invalid:6443"
-  config: '{"tlsClientConfig":{"insecure":false}}'
-YAML
-}
-apply_facts_secret full
-poke_appsets
+# ── 2. register BOTH synthetic clusters at once (full + ephemeral) ───────────
+echo "==> [2] Registering synthetic clusters: '$FULL_CLUSTER' (profile=full) + '$EPH_CLUSTER' (profile=ephemeral)"
+apply_facts_secret "$FULL_SECRET" "$FULL_CLUSTER" full
+apply_facts_secret "$EPH_SECRET"  "$EPH_CLUSTER"  ephemeral
 
-echo "==> [3-assert] FULL profile → both add-on Applications must be GENERATED"
-poll_until_present "$ALB_APP" 120 || { echo "    FAIL: '$ALB_APP' was not generated under profile=full."; exit 1; }
-poll_until_present "$EDNS_APP" 120 || { echo "    FAIL: '$EDNS_APP' was not generated under profile=full."; exit 1; }
-echo "    OK: profile=full generated both '$ALB_APP' and '$EDNS_APP'."
+# ── 3. FULL cluster must generate BOTH add-on Applications ────────────────────
+# (Their presence is also the signal that the clusters generator has reconciled
+# against both Secrets — which makes the ephemeral-absence check below definitive.)
+echo "==> [3-assert] profile=full cluster → ALB controller + external-dns generated"
+poll_until_present "$ALB_FULL_APP"  120 || { echo "    FAIL: '$ALB_FULL_APP' not generated for the full cluster."; exit 1; }
+poll_until_present "$EDNS_FULL_APP" 120 || { echo "    FAIL: '$EDNS_FULL_APP' not generated for the full cluster."; exit 1; }
+echo "    OK: full cluster generated '$ALB_FULL_APP' + '$EDNS_FULL_APP' (generator has reconciled both clusters)."
 
-# ── 4. flip the profile LABEL to ephemeral ───────────────────────────────────
-echo "==> [4] Flipping the facts-bridge profile LABEL to ephemeral (+ forced reconcile)"
-apply_facts_secret ephemeral
-poke_appsets
+# ── 4. EPHEMERAL cluster must generate NEITHER ───────────────────────────────
+# The generator has demonstrably reconciled (step 3), so if the ephemeral apps do
+# not exist NOW, the selector excluded them — not a race. Re-check after a short
+# settle to be safe.
+echo "==> [4-assert] profile=ephemeral cluster → NEITHER add-on generated"
+sleep 10
+for app in "$ALB_EPH_APP" "$EDNS_EPH_APP"; do
+  if kubectl get application "$app" -n "$ARGOCD_NS" >/dev/null 2>&1; then
+    echo "    FAIL: '$app' was generated for the ephemeral cluster (selector did not exclude profile=ephemeral)."; exit 1
+  fi
+done
+echo "    OK: ephemeral cluster generated NEITHER '$ALB_EPH_APP' nor '$EDNS_EPH_APP'."
 
-echo "==> [5-assert] EPHEMERAL profile → both add-on Applications must DISAPPEAR"
-poll_until_absent "$ALB_APP" 150 || { echo "    FAIL: '$ALB_APP' still present under profile=ephemeral (selector did not exclude it)."; exit 1; }
-poll_until_absent "$EDNS_APP" 150 || { echo "    FAIL: '$EDNS_APP' still present under profile=ephemeral (selector did not exclude it)."; exit 1; }
-echo "    OK: profile=ephemeral removed both '$ALB_APP' and '$EDNS_APP'."
-
-# ── 6. teardown ──────────────────────────────────────────────────────────────
-echo "==> [6] Teardown: removing synthetic cluster Secret + the two ApplicationSets"
+# ── 5. teardown ──────────────────────────────────────────────────────────────
+echo "==> [5] Teardown: removing synthetic cluster Secrets + the two ApplicationSets"
 cleanup
 trap - EXIT
 
