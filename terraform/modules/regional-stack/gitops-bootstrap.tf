@@ -56,6 +56,20 @@ resource "kubernetes_secret" "argocd_cluster_facts" {
       # select add-on scope on it; written now so the bridge carries it from
       # day one.
       "aegis.binhsu.org/profile" = var.cluster_profile
+      # Workload catalog (epic #167 A5 / issue #177). Terraform still builds the
+      # per-workload element list from registries.auto.tfvars.json + AWS resources
+      # (argocd.tf :: local.workload_list_elements — registries.auto.tfvars.json
+      # stays the source of truth, epic decision #4), but instead of interpolating
+      # it into an inline Helm List generator it writes it HERE as one JSON
+      # annotation. The git workload ApplicationSet
+      # (gitops/platform-addons/addons/workloads/applicationset.yaml) reads it back
+      # with a Matrix(clusters × list.elementsYaml) generator, so the git manifest
+      # stays cluster-agnostic (no account IDs / cert ARNs in the public repo — the
+      # D4 account-ID-hide rule) and the rendered Application is byte-identical to
+      # the old TF-templated form. Empty map => "[]" (no workloads) is valid and
+      # generates zero Applications. Well under the 256 KB per-object annotation
+      # limit for any realistic catalog.
+      "aegis.binhsu.org/workloads" = jsonencode(local.workload_list_elements)
     }
   }
   data = {

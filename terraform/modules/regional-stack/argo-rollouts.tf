@@ -28,18 +28,15 @@
 #   - ordering (Rollout CRD before the      → sync-wave 0, ahead of later waves in
 #     workload sync)                          the app-of-apps. See ORDERING NOTE.
 #
-# ORDERING NOTE (the one behavioural change): the old release was in the
-# `depends_on` of the workload ApplicationSet (argocd.tf :: helm_release
-# .argocd_apps), which HARD-GATED the Rollout CRD to exist before any aegis-core
-# Rollout was synced. That resource is gone, so that gate is gone. The workload
-# ApplicationSet is still Terraform-owned in this A4 stopping point (A5 —
-# migrating it to GitOps — is AWAITING BIN, epic #167 open-decision 5), and lives
-# in a SEPARATE ArgoCD app tree, so cross-Application sync-waves do NOT span it.
-# On first bring-up aegis-core can therefore briefly race ahead of the CRD and
-# hit a TRANSIENT `Rollout.argoproj.io "" not found`; ArgoCD's automated retry +
-# selfHeal converges once wave 0 lands the CRD. A5 restores the hard ordering by
-# moving the workload ApplicationSet under the app-of-apps root at a wave after
-# argo-rollouts. Tracked in the A4 PR (#176) as the note carried to A5.
+# ORDERING NOTE: the old release was in the `depends_on` of the workload
+# ApplicationSet (argocd.tf :: helm_release.argocd_apps), which HARD-GATED the
+# Rollout CRD to exist before any aegis-core Rollout was synced. A4 removed that
+# resource, dropping the gate and opening a transient race window
+# (`Rollout.argoproj.io "" not found`). A5 (epic #167 / issue #177) CLOSED it: the
+# workload ApplicationSet moved to GitOps under the SAME app-of-apps root
+# (gitops/platform-addons/addons/workloads/) at a wave AFTER argo-rollouts (wave 0),
+# with a retry block on the generated Application as the convergence backstop. The
+# cross-tree gap this note used to describe no longer exists.
 #
 # WHAT STAYED IN TERRAFORM: NOTHING from this file. Argo Rollouts uses no IRSA /
 # EKS Pod Identity role in this module (contrast alb-controller / external-dns /

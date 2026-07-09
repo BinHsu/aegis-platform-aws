@@ -11,9 +11,11 @@
 #
 # WHAT IT PROVES (the A5 acceptance gate — migrate the workload ApplicationSet):
 #   1. A sample workload described by a registries entry (sample-registries.json)
-#      is fanned out through the SAME List-generator + templatePatch ApplicationSet
-#      the platform runs (scripts/e2e/b2/workload-applicationset.yaml, a faithful
-#      port of argocd.tf), producing an Application that reaches Synced + Healthy.
+#      is fanned out through the SAME template + templatePatch ApplicationSet the
+#      platform runs (scripts/e2e/b2/workload-applicationset.yaml, a faithful port
+#      of the GitOps-resident gitops/platform-addons/addons/workloads/), producing
+#      an Application that reaches Synced + Healthy AND carries the A5/A4 ordering
+#      shape (sync-wave 3 + retry) on the generated Application.
 #   2. The per-workload / per-account injections land on the rendered resources:
 #      the always-on commonAnnotations (region + ecr-repository) AND the
 #      conditional model-store ConfigMap injection (fires because the workload
@@ -141,6 +143,21 @@ done
   echo "    FAIL: Application/$APP_NAME did not reach Synced+Healthy (sync=$sync health=$health)."; exit 1; }
 echo "    OK: Application/$APP_NAME is Synced + Healthy."
 
+# ── 3b. A5 ORDERING FIX (issue #177 / A4 residual): the generated Application ──
+# carries the sync-wave that orders it AFTER the platform add-ons (argo-rollouts
+# wave 0 lands the Rollout CRD) AND a retry block so a Rollout-shaped workload that
+# races ahead of the CRD converges instead of stranding. The sample workload is a
+# plain Deployment, so it does not itself hit the Rollout race — this asserts the
+# ORDERING SHAPE is wired onto every generated workload Application (the closure of
+# the residual window A4 flagged; the CRD-first delivery itself is proven by
+# scripts/e2e/assert-argo-rollouts.sh, wave 0, in the same lane).
+echo "==> [3b-assert] generated Application carries the A4 ordering shape (sync-wave + retry)"
+WAVE="$(kubectl get application "$APP_NAME" -n "$ARGOCD_NS" -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/sync-wave}' 2>/dev/null || true)"
+RETRY_LIMIT="$(kubectl get application "$APP_NAME" -n "$ARGOCD_NS" -o jsonpath='{.spec.syncPolicy.retry.limit}' 2>/dev/null || true)"
+[ "$WAVE" = "3" ] || { echo "    FAIL: generated Application sync-wave='$WAVE' (want 3 — A4 ordering after wave-0 add-ons)."; exit 1; }
+[ -n "$RETRY_LIMIT" ] && [ "$RETRY_LIMIT" != "0" ] || { echo "    FAIL: generated Application has no syncPolicy.retry (A4 convergence backstop missing)."; exit 1; }
+echo "    OK: sync-wave=$WAVE, retry.limit=$RETRY_LIMIT (Rollout-CRD ordering + convergence backstop wired)."
+
 # ── 4. positive: digest-pinned workload pod is admitted + running ────────────
 echo "==> [4-assert] digest-pinned workload Deployment is available (admitted)"
 kubectl rollout status deploy/sample-app -n "$APP_NS" --timeout=120s
@@ -220,6 +237,7 @@ fi
 echo ""
 echo "==> B2 WORKLOAD ONBOARDING PASSED (zero AWS spend):"
 echo "    [3] ApplicationSet List-generator fan-out → Application/$APP_NAME Synced + Healthy"
+echo "    [3b] generated Application carries the A5/A4 ordering shape (sync-wave 3 + retry)"
 echo "    [4] digest-pinned workload admitted + running (local registry:2 image source)"
 echo "    [5] commonAnnotations (region + ecr-repository) + model-store injection landed"
 echo "    [6] tag-only workload variant DENIED by require-image-digest"
