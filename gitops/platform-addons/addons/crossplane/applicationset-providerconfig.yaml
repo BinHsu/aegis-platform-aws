@@ -1,0 +1,89 @@
+# gitops/platform-addons/addons/crossplane/applicationset-providerconfig.yaml
+#
+# Crossplane v2 CONFIG (ClusterProviderConfig) — SYNC-WAVE 2 (epic #167 A3 /
+# #175, ADR-25).
+#
+# Migrated OUT of terraform/modules/regional-stack/crossplane.tf
+# (helm_release.aegis_xrds_v2_providerconfig, installStage=providerconfig). Renders
+# ONLY the ClusterProviderConfig — the object the old single-wave install raced on
+# (run 27844622615, both regions): it is `aws.m.upbound.io/v1beta1`, a CRD the
+# family provider registers ONLY after its package installs and reaches Healthy.
+#
+# Delivered as an ApplicationSet gated on the facts-bridge cluster Secret — same
+# fan-out gate as the core + definitions siblings, so the whole Crossplane stack
+# stays absent from the bare A2/B1 policy harness (no cluster Secret registered).
+# It consumes no per-cluster VALUES (the ClusterProviderConfig render needs no
+# region/accountId — crossplane.tf documented those .Values as unused here); the
+# generator is purely the gate.
+#
+# ── THIS IS WHERE THE time_sleep 300s DIES (the #175 headline) ───────────────
+# crossplane.tf gated wave 2 behind `resource "time_sleep"
+# "crossplane_providers_healthy" { create_duration = "300s" }` — a FIXED, blind
+# wall-clock wait, because the Terraform helm/kubernetes providers cannot wait on
+# a CR condition and the apply runner has no kubectl. 300s was a guess sized to
+# "image pull + pod start"; it over-waits on a warm cluster and under-waits
+# (re-races) on a cold one.
+#
+# ArgoCD replaces that guess with a native CONDITION-driven loop. This app has no
+# time gate at all: it just tries to apply the ClusterProviderConfig. If the
+# family provider is not yet Healthy, the aws.m.upbound.io CRD does not exist, the
+# server-side apply fails "resource mapping not found ... ensure CRDs are
+# installed first", ArgoCD marks the sync Failed and RETRIES with exponential
+# backoff (retry block below). The moment provider-family-aws reaches Healthy and
+# establishes the CRD, the next retry succeeds. Convergence is driven by the
+# actual readiness signal, not a stopwatch — it settles as fast as the cluster
+# allows and never re-races. Same guarantee, zero fixed sleep. The retry envelope
+# (limit 20, 3m backoff cap) comfortably exceeds the old 300s window on a cold
+# start while converging in seconds on a warm one.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: crossplane-providerconfig
+  namespace: argocd
+  annotations:
+    # ClusterProviderConfig depends on the family provider (delivered by the
+    # wave-1 definitions app) being Healthy — wave 2 is last.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            argocd.argoproj.io/secret-type: cluster
+  template:
+    metadata:
+      name: "crossplane-providerconfig-{{.nameNormalized}}"
+      annotations:
+        argocd.argoproj.io/sync-wave: "2"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/BinHsu/aegis-platform-aws
+        targetRevision: main
+        path: terraform/modules/regional-stack/charts/aegis-xrds-v2
+        helm:
+          parameters:
+            - name: installStage
+              value: providerconfig
+      destination:
+        server: "{{.server}}"
+        namespace: crossplane-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+        retry:
+          # THE time_sleep 300s REPLACEMENT. Retry-until-the-CRD-exists (i.e.
+          # until provider-family-aws is Healthy). Horizon > the old 300s
+          # wall-clock wait; converges as fast as the provider comes up, never on
+          # a blind timer.
+          limit: 20
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 3m

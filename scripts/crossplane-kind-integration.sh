@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # scripts/crossplane-kind-integration.sh
 #
-# NON-BILLABLE kind-in-CI integration test for the WS4 Axis A XBucket v2 stack
+# NON-BILLABLE kind integration test for the WS4 Axis A XBucket v2 stack
 # (ADR-22). This is the "run the seam cheaply before the billable one" gate from
 # RETRO §7A / §8 P1: a kind cluster (real Kubernetes API server) installs the
-# SAME Crossplane v2 stack crossplane.tf installs — but via helm/kubectl, with
+# SAME Crossplane v2 stack the platform ships — but via helm/kubectl, with
 # ZERO AWS creds, ZERO AWS calls, ZERO billable resources.
+#
+# DELIVERY NOTE (A3 / #175): the PLATFORM now installs this stack through ArgoCD
+# (gitops/platform-addons/addons/crossplane/), not Terraform helm_releases. The
+# CI gate that exercises the real GitOps delivery is
+# scripts/e2e/crossplane-gitops-golden-path.sh (run by crossplane-kind-integration.yml).
+# THIS script stays as the DIRECT-HELM REFERENCE LANE: it proves the aegis-xrds-v2
+# CHART itself renders + admits under PSA=restricted, independent of ArgoCD. Its
+# version pins are read from the GitOps core app / chart so it cannot drift.
 #
 # WHAT THIS CATCHES THAT THE OFFLINE crossplane-validate GATE CANNOT (RETRO §7F):
 #   `crossplane render`/`validate` exercise the RENDERING path only. The prod
@@ -34,7 +42,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART="$REPO_ROOT/terraform/modules/regional-stack/charts/aegis-xrds-v2"
-CROSSPLANE_TF="$REPO_ROOT/terraform/modules/regional-stack/crossplane.tf"
+# A3 (#175) moved the crossplane-core install out of crossplane.tf into the GitOps
+# core Application; the chart version now lives there. Read it from that manifest
+# so this direct-helm reference test cannot drift from the GitOps-delivered pin.
+CORE_APP="$REPO_ROOT/gitops/platform-addons/addons/crossplane/applicationset-core.yaml"
 NS=crossplane-system
 KIND_CLUSTER="${KIND_CLUSTER:-aegis-xbucket-v2}"
 
@@ -44,9 +55,9 @@ HELM_ACCOUNT=123456789012
 HELM_PREFIX=aegis-wl
 
 # ── pinned versions, READ FROM SOURCE so this test cannot drift ─────────────
-# crossplane core chart version — the `version = "X"` in crossplane.tf's
-# helm_release.crossplane block.
-CROSSPLANE_CHART_VERSION="$(grep -oE 'version[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' "$CROSSPLANE_TF" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+# crossplane core chart version — the `targetRevision:` in the GitOps core app
+# (was crossplane.tf's helm_release.crossplane `version` before A3 / #175).
+CROSSPLANE_CHART_VERSION="$(grep -oE 'targetRevision:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$CORE_APP" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
 # provider / function package refs — read from the chart templates (single SoT).
 PROVIDER_FAMILY_PKG="$(grep -oE 'xpkg\.upbound\.io/upbound/provider-family-aws:v[0-9.]+' "$CHART/templates/providers.yaml" | head -1)"
 PROVIDER_S3_PKG="$(grep -oE 'xpkg\.upbound\.io/upbound/provider-aws-s3:v[0-9.]+' "$CHART/templates/providers.yaml" | head -1)"
@@ -54,7 +65,7 @@ FUNCTION_PKG="$(grep -oE 'xpkg\.crossplane\.io/crossplane-contrib/function-patch
 
 if [ -z "$CROSSPLANE_CHART_VERSION" ] || [ -z "$PROVIDER_FAMILY_PKG" ] || \
    [ -z "$PROVIDER_S3_PKG" ] || [ -z "$FUNCTION_PKG" ]; then
-  echo "FATAL: could not read pinned versions from source (crossplane.tf / chart)." >&2
+  echo "FATAL: could not read pinned versions from source (GitOps core app / chart)." >&2
   echo "  crossplane chart : '${CROSSPLANE_CHART_VERSION}'" >&2
   echo "  family provider  : '${PROVIDER_FAMILY_PKG}'" >&2
   echo "  s3 provider      : '${PROVIDER_S3_PKG}'" >&2

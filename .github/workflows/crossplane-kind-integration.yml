@@ -4,27 +4,38 @@ name: crossplane-kind-integration
 # (ADR-22). The "run the seam cheaply before the billable one" discipline from
 # RETRO §7A / §8 P1.
 #
-# This is SEPARATE from infra-plan.yml's offline `crossplane-validate` job (which
-# only RENDERS the composition). This one stands up a real Kubernetes API server
-# (kind) and installs the SAME Crossplane v2 stack crossplane.tf installs — with
-# ZERO AWS creds, ZERO AWS calls, ZERO billable resources. Its whole point is to
-# catch the RUNTIME admission class the offline gate cannot see (RETRO §7F): the
-# prod 2026-06-18 / fix-B #2(a) failure where a PSA=restricted namespace REJECTS a
-# provider/function pod whose DRC securityContext is empty.
+# TWO JOBS, one stack, zero AWS:
+#   - direct-chart  : installs the aegis-xrds-v2 chart via helm/kubectl (the
+#                     reference lane) and proves it renders + ADMITS under
+#                     PSA=restricted — the RUNTIME admission class the offline
+#                     crossplane-validate gate cannot see (RETRO §7F): the prod
+#                     2026-06-18 / fix-B #2(a) failure where a restricted namespace
+#                     REJECTS a provider/function pod with an empty DRC
+#                     securityContext.
+#   - gitops-delivery (A3 / #175, ADR-25): brings the SAME stack up THROUGH ArgoCD
+#                     (app-of-apps children core wave 0 -> definitions wave 1 ->
+#                     config wave 2), proving the ownership inversion — the
+#                     Crossplane install is GitOps-owned now, the time_sleep 300s
+#                     is replaced by retry-until-Healthy, and the definitions stage
+#                     reads region/accountId from the facts bridge. This is the A3
+#                     acceptance gate (the ArgoCD-synced install, not the
+#                     Terraform-installed one).
 #
 # No AWS: this workflow declares NO id-token permission and assumes NO AWS role.
-# The S3 provider pod runs without credentials BY DESIGN; the test asserts up to
+# The S3 provider pod runs without credentials BY DESIGN; both jobs assert up to
 # managed-resource (Bucket) OBJECT creation, never a real S3 reconcile.
 
 on:
   pull_request:
     branches: [main]
     paths:
-      # Only run when the Crossplane v2 stack or this test changes — the kind
-      # spin-up + image pulls take a few minutes, so scope it.
+      # Run when the Crossplane v2 stack, its GitOps children, or either test
+      # changes — the kind spin-up + image pulls take a few minutes, so scope it.
       - "terraform/modules/regional-stack/crossplane.tf"
       - "terraform/modules/regional-stack/charts/aegis-xrds-v2/**"
+      - "gitops/platform-addons/addons/crossplane/**"
       - "scripts/crossplane-kind-integration.sh"
+      - "scripts/e2e/crossplane-gitops-golden-path.sh"
       - ".github/workflows/crossplane-kind-integration.yml"
   workflow_dispatch: {}
 
@@ -33,8 +44,8 @@ permissions:
   contents: read
 
 jobs:
-  kind-integration:
-    name: kind-xbucket-v2-integration
+  direct-chart:
+    name: kind-xbucket-v2-direct-chart
     runs-on: ubuntu-latest
     # Hard overall ceiling so a stuck image-pull / wait can never hang a runner.
     timeout-minutes: 25
@@ -60,3 +71,51 @@ jobs:
         env:
           KIND_CLUSTER: aegis-xbucket-v2
         run: ./scripts/crossplane-kind-integration.sh
+
+  gitops-delivery:
+    name: kind-xbucket-v2-gitops-delivery
+    runs-on: ubuntu-latest
+    # ArgoCD install + core/provider image pulls + retry convergence — give it
+    # headroom over the direct job.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same pinned kind node image + digest as the direct job. Crossplane needs
+      # no NetworkPolicy CNI, so the default kindnet is fine here.
+      - name: create kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: aegis-a3-xp
+          node_image: kindest/node:v1.32.11@sha256:5fc52d52a7b9574015299724bd68f183702956aa4a2116ae75a63cb574b35af8
+          wait: 120s
+
+      - name: install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # yq (mikefarah v4) — crossplane-gitops-golden-path.sh uses it to rewrite the
+      # in-repo child apps' repoURL/targetRevision at seed time and to read the
+      # core chart pin. Pinned for determinism.
+      - name: install yq
+        run: |
+          ver=v4.44.3
+          sudo curl -sSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${ver}/yq_linux_amd64"
+          sudo chmod 0755 /usr/local/bin/yq
+          yq --version
+
+      # Bring the Crossplane stack up VIA GITOPS (the A3 ownership inversion): seed
+      # the three crossplane child apps and let ArgoCD sync core -> definitions ->
+      # providerconfig, converging the wave-2 ClusterProviderConfig via
+      # retry-until-Healthy (no time_sleep). Point ArgoCD at THIS PR's commit so it
+      # reads gitops/platform-addons/addons/crossplane + the in-repo chart from the
+      # branch under test (gitops path does not exist on main until this merges).
+      - name: crossplane via ArgoCD — core/definitions/providerconfig (GitOps)
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          # PR head commit (pushed + clonable); fall back to the run's own sha for
+          # workflow_dispatch. NOT github.sha on a PR (that is the merge ref).
+          TARGET_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/e2e/crossplane-gitops-golden-path.sh
