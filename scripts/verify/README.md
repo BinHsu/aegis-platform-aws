@@ -70,10 +70,16 @@ This touches live Route 53 state — do not run against prod without intent.
 
 ---
 
-## Tier 2 — In-cluster verifier Job (`run-incluster-verify.sh`)
+## Tier 2 — In-cluster verifier Job (`run-incluster-verify.sh`) — **DEFAULT**
 
-The centerpiece: eliminates `kubectl port-forward` and `pkill` entirely. Deploys a
-Job inside the `aegis-core` namespace that reaches services over cluster DNS.
+**This is the default verification path for unattended/headless runs (#145).** It
+runs grpcurl/BVA/PKCE from a Job *inside* the cluster over service DNS — zero
+`kubectl port-forward`, zero `kill`/`pkill`. The laptop port-forward path below is
+now the explicitly-requested **interactive fallback**, not the default: its
+cleanup needs a `kill` (macOS has no `timeout`), and the kill-guard PreToolUse
+hook prompts on any kill/pkill — so it cannot run headless.
+
+Deploys a Job inside the `aegis-core` namespace that reaches services over cluster DNS.
 
 | Face | What |
 |------|------|
@@ -87,23 +93,27 @@ Job inside the `aegis-core` namespace that reaches services over cluster DNS.
 PROFILE=aegis-staging-admin \
 PRIMARY_CTX=eu-central-1 SECONDARY_CTX=eu-west-1 \
 PLATFORM_TF_DIR=/path/to/terraform/envs/platform \
-VERIFY_IMAGE=<registry>/aegis-verify:latest \
-PROTO_CONFIGMAP=aegis-proto \
-PCM_CONFIGMAP=aegis-pcm-fixture \
 ./scripts/verify/run-incluster-verify.sh
 ```
 
-The driver applies the Job (`k8s/verifier-job.yaml`) per region via `kubectl`,
-waits for `condition=complete`, fetches logs, and deletes the Job.
+`VERIFY_IMAGE` now **defaults** to the pre-built published image
+`ghcr.io/binhsu/aegis-verify:latest` — an unattended run never builds an image ad
+hoc. Override it only for a private registry (e.g. deployment ECR) or to pin a
+digest. The driver applies the Job (`k8s/verifier-job.yaml`) per region via
+`kubectl`, waits for `condition=complete`, fetches logs, and deletes the Job.
 
-**Build the verifier image:**
-```bash
-docker build -f scripts/verify/Dockerfile.verifier \
-  -t <registry>/aegis-verify:latest scripts/verify/
-```
+**The verifier image is pre-built and published — you do not build it locally.**
+`.github/workflows/verifier-image.yml` builds `Dockerfile.verifier` and pushes to
+GHCR (`ghcr.io/<owner>/aegis-verify`, tags `latest` + `sha-<short>`) on every push
+to `main` that touches the image; on a PR it does a **build-without-push** so the
+PR proves the image still builds. The push job writes the image **digest** to its
+run summary — pin `VERIFY_IMAGE` to `…@sha256:<digest>` once `require-image-digest`
+moves from Audit to Enforce (today it is Audit, so the `:latest` tag is admitted).
 
-**ConfigMaps** (`aegis-proto` and `aegis-pcm-fixture`) must exist in the `aegis-core`
-namespace before the Job runs. Create them once:
+**ConfigMaps** (`aegis-proto`, `aegis-pcm-fixture`) are seeded into `aegis-core`
+as part of bring-up so the Job is always ready (#145). The driver also seeds them
+idempotently if you pass `PROTO=/path/to/aegis.proto` and `PCM_FIXTURE=/tmp/x.pcm`
+— it never overwrites an existing ConfigMap. To seed manually instead:
 ```bash
 kubectl create configmap aegis-proto \
   --from-file=aegis.proto=/path/to/aegis.proto -n aegis-core
@@ -111,12 +121,24 @@ kubectl create configmap aegis-pcm-fixture \
   --from-file=fixture.pcm=/tmp/x.pcm -n aegis-core
 ```
 
+**Local kind smoke** (`local/kind-verifier-smoke.sh`) exercises the unattended
+plumbing end-to-end on a throwaway kind cluster — build → `kind load` → seed
+ConfigMaps → apply the real Job → assert the entrypoint runs to its summary table
+in-cluster, with no port-forward and no kill. It does **not** run the F2–F8 faces
+(those need a live aegis-core + Cognito — the real-cluster lane); it gates the
+plumbing that replaces the laptop path.
+```bash
+./scripts/verify/local/kind-verifier-smoke.sh
+```
+
 ---
 
-## Laptop port-forward tier (`ws4-app-functional-e2e.sh`)
+## Laptop port-forward tier (`ws4-app-functional-e2e.sh`) — interactive fallback only
 
-Retained for interactive debugging and one-shot validation from a developer laptop.
-Use Tier 2 for CI and automated verification.
+**Explicitly-requested fallback, not the default (#145).** Retained for interactive
+debugging and one-shot validation from a developer laptop. It uses `kubectl
+port-forward` whose cleanup needs `kill`, so it is **unusable unattended/headless**
+— use Tier 2 (above) for CI and all automated verification.
 
 Changes vs. the original harness:
 
@@ -153,9 +175,10 @@ These steps cannot be scripted and must be performed by a human operator:
    Environment which requires manual approval. CI cannot self-approve.
 4. **Model population** — the model bucket in each region must be seeded by the operator
    (`aegis-core-model-populator` Job) before F7 (populator-done) can pass.
-5. **Verifier image push** — the `aegis-verify` image built from `Dockerfile.verifier` must
-   be pushed to a registry the cluster's node IAM role can pull from before the Tier 2 Job
-   can run.
+5. ~~**Verifier image push**~~ — **now automated (#145).** `.github/workflows/verifier-image.yml`
+   builds and publishes `aegis-verify` to GHCR on push to `main`; nodes pull the public image
+   with no cloud creds. Only needed manually if you target a private registry the workflow does
+   not publish to (e.g. a locked-down deployment ECR) — then push it there and set `VERIFY_IMAGE`.
 
 ---
 

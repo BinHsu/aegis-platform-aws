@@ -29,7 +29,8 @@ metadata:
   namespace: aegis-core
   labels:
     app.kubernetes.io/name: aegis-verify
-    app.kubernetes.io/managed-by: scripts/verify/run-incluster-verify.sh
+    # Label VALUES cannot contain '/', so this is the script basename, not its path.
+    app.kubernetes.io/managed-by: run-incluster-verify.sh
 spec:
   # Single attempt; the driver retries at the harness level, not the Job level.
   backoffLimit: 0

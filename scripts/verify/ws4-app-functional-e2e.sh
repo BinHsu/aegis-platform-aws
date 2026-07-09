@@ -25,9 +25,13 @@
 # NOT native gRPC and NOT Connect — grpcurl and plain JSON both 404. This harness
 # hand-frames grpc-web requests and reads the grpc-status trailer (helper: grpcweb.py).
 #
-# PORT-FORWARD NOTE: This script uses laptop kubectl port-forwards. For a fully
-# hands-off alternative that needs no port-forwards at all, use the Tier 2
-# in-cluster verifier Job: scripts/verify/run-incluster-verify.sh.
+# FALLBACK PATH (#145): This is the explicitly-requested INTERACTIVE fallback, not
+# the default. It uses laptop kubectl port-forwards whose cleanup needs `kill`
+# (macOS has no `timeout`), and the global kill-guard PreToolUse hook prompts on
+# any kill/pkill — so this path is UNUSABLE unattended/headless. The DEFAULT
+# verification path is the Tier 2 in-cluster verifier Job, which needs no
+# port-forward and no kill: scripts/verify/run-incluster-verify.sh. Use this
+# script only for interactive debugging from a developer laptop.
 #
 # Requirements: kubectl (contexts configured), grpcurl, python3, jq, aws CLI (SSO).
 # A raw s16le 16 kHz mono PCM fixture and the aegis.proto are passed via env.

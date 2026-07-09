@@ -1,28 +1,38 @@
 # Dockerfile.verifier — build the aegis in-cluster verification image.
 #
-# Bundles: grpcurl, python3, grpcweb.py, cognito_pkce.py, and the PCM fixture
-# placeholder path. The resulting image runs as the verifier-job.yaml Job; it
-# reaches aegis-core-engine and aegis-core-gateway over in-cluster DNS —
-# NO kubectl port-forward required.
+# Bundles: grpcurl, the AWS CLI v2, python3, grpcweb.py, cognito_pkce.py. The Job
+# mounts the proto + PCM fixture as ConfigMaps. The resulting image runs as the
+# verifier-job.yaml Job; it reaches aegis-core-engine and aegis-core-gateway over
+# in-cluster DNS — NO kubectl port-forward required.
 #
 # Build:
 #   docker build -f scripts/verify/Dockerfile.verifier \
 #     -t <registry>/aegis-verify:latest scripts/verify/
 #
-# The image is intentionally small (debian-slim base + grpcurl static binary +
-# python3). It carries no model weights, no cloud credentials, and no secrets.
-# Credentials (Cognito POOL, CLIENT_ID, COGNITO_DOMAIN) are injected via env
-# from the Job manifest.
+# This image is PRE-BUILT and published by .github/workflows/verifier-image.yml
+# (#145) so unattended runs never build it ad hoc. It carries no model weights, no
+# cloud credentials, and no secrets. Cognito config (POOL, CLIENT_ID,
+# COGNITO_DOMAIN) is injected via env from the Job manifest; AWS access for F7/F8
+# comes from the Job ServiceAccount's Pod Identity (no baked creds).
+#
+# The AWS CLI is REQUIRED, not optional: in-cluster-verify.py shells out to `aws`
+# for F3-valid / F7 (s3api) / F8. Without it those faces cannot run — the image
+# must ship it so the unattended run is complete.
 #
 # grpcurl version — keep in sync with scripts/install-tools.sh if present.
 ARG GRPCURL_VERSION=1.9.1
+# AWS CLI v2 — pinned for supply-chain reproducibility (versioned S3 URL).
+ARG AWSCLI_VERSION=2.22.0
 
 FROM debian:bookworm-slim AS grpcurl-dl
 ARG GRPCURL_VERSION
+# grpcurl's Linux x86 release asset is named linux_x86_64, NOT linux_amd64
+# (linux_amd64 404s — caught by the PR build gate 2026-07-09; the image had only
+# ever been built on arm64 machines before, where linux_arm64 is correct).
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     ARCH="$(dpkg --print-architecture)"; \
     case "$ARCH" in \
-      amd64) GR_ARCH="linux_amd64" ;; \
+      amd64) GR_ARCH="linux_x86_64" ;; \
       arm64) GR_ARCH="linux_arm64" ;; \
       *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac && \
@@ -31,13 +41,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
       | tar -xz -C /usr/local/bin grpcurl && \
     chmod +x /usr/local/bin/grpcurl
 
+# AWS CLI v2 self-contained install — copied wholesale into the final image. v2
+# bundles its own python runtime, so the final image needs no pip deps for it.
+FROM debian:bookworm-slim AS aws-dl
+ARG AWSCLI_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip && \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "$ARCH" in \
+      amd64) AWS_ARCH="x86_64" ;; \
+      arm64) AWS_ARCH="aarch64" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/awscliv2.zip \
+      "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}-${AWSCLI_VERSION}.zip" && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install --bin-dir /aws-cli-bin --install-dir /usr/local/aws-cli && \
+    rm -rf /tmp/awscliv2.zip /tmp/aws
+
 FROM debian:bookworm-slim
+# OCI provenance — the image is published by .github/workflows/verifier-image.yml.
+LABEL org.opencontainers.image.title="aegis-verify" \
+      org.opencontainers.image.description="Tier-2 in-cluster verifier (grpcurl + aws-cli + python + BVA/PKCE)" \
+      org.opencontainers.image.source="https://github.com/BinHsu/aegis-platform-aws"
 # python3 (stdlib only — no pip deps; grpcweb.py uses socket+struct) and jq.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends python3 jq ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=grpcurl-dl /usr/local/bin/grpcurl /usr/local/bin/grpcurl
+# AWS CLI v2: the install dir + its bin symlinks (aws, aws_completer).
+COPY --from=aws-dl /usr/local/aws-cli /usr/local/aws-cli
+COPY --from=aws-dl /aws-cli-bin/ /usr/local/bin/
 
 # Copy the verify helpers. The Job mounts or bakes the proto + PCM fixture.
 COPY grpcweb.py     /opt/aegis-verify/grpcweb.py

@@ -1,0 +1,139 @@
+name: verifier-image
+
+# Build and publish the Tier-2 in-cluster verifier image (scripts/verify/
+# Dockerfile.verifier). #145: the verifier Job is the DEFAULT verification path
+# for unattended runs, so its image must be pre-built and pullable — never built
+# ad hoc at verification time.
+#
+# TWO MODES, one Dockerfile, zero AWS:
+#   - pull_request  : BUILD-ONLY (push=false). Proves the Dockerfile still builds
+#                     on the PR before merge. Nothing is published.
+#   - push to main  : BUILD + PUSH to GHCR (ghcr.io/<owner>/aegis-verify), tagged
+#     / workflow_    `latest` + `sha-<short>`, and the image DIGEST is written to
+#       dispatch       the job summary. That digest is what a digest-pinned
+#                      VERIFY_IMAGE / verifier-job.yaml should reference once
+#                      require-image-digest flips from Audit to Enforce (ADR/#145).
+#
+# No AWS: this workflow uses GHCR (GITHUB_TOKEN), declares NO id-token permission,
+# and assumes NO AWS role. GHCR is public and node-pullable without cloud creds —
+# the reason #145 prefers it over the deployment ECR for the unattended path.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # The image contents + this workflow. Build is a few minutes, so scope it.
+      - "scripts/verify/Dockerfile.verifier"
+      - "scripts/verify/grpcweb.py"
+      - "scripts/verify/cognito_pkce.py"
+      - "scripts/verify/in-cluster-verify.py"
+      - ".github/workflows/verifier-image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/verify/Dockerfile.verifier"
+      - "scripts/verify/grpcweb.py"
+      - "scripts/verify/cognito_pkce.py"
+      - "scripts/verify/in-cluster-verify.py"
+      - ".github/workflows/verifier-image.yml"
+  workflow_dispatch: {}
+
+# contents: read to checkout; packages: write to push to GHCR. No id-token (no AWS).
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: verifier-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build-and-maybe-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      # GHCR image path must be lowercase; github.repository_owner keeps its case
+      # ("BinHsu"). Lowercase it once and reuse.
+      - name: derive lowercase image ref
+        id: img
+        run: |
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "ref=ghcr.io/${owner}/aegis-verify" >> "$GITHUB_OUTPUT"
+
+      # PUSH only outside pull_request (main push / workflow_dispatch). A PR from a
+      # fork has no packages:write anyway; build-only is the correct PR gate.
+      - name: decide push
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=true"  >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Log in only when we intend to push. Build-only PR runs need no registry.
+      - name: log in to GHCR
+        if: steps.mode.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.img.outputs.ref }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+
+      - name: build (and push on main / dispatch)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: scripts/verify
+          file: scripts/verify/Dockerfile.verifier
+          push: ${{ steps.mode.outputs.push }}
+          load: ${{ steps.mode.outputs.push == 'false' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # amd64 only for the PR build-load (buildx cannot --load a multi-arch
+          # index). Published (push) images cover both node architectures.
+          platforms: ${{ steps.mode.outputs.push == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Outputs go through env, NOT inline ${{ }} interpolation in the script:
+      # meta's `tags` is MULTILINE — textual substitution inside a quoted echo
+      # would splice raw newlines (and backticks) into the shell source and break
+      # only on the push run, which the PR gate never exercises.
+      - name: report result
+        env:
+          PUSH: ${{ steps.mode.outputs.push }}
+          IMG_REF: ${{ steps.img.outputs.ref }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### verifier-image"
+            echo ""
+            if [ "$PUSH" = "true" ]; then
+              echo "**Published** to \`${IMG_REF}\`"
+              echo ""
+              echo "$TAGS" | sed 's/^/- tag: `/; s/$/`/'
+              echo "- digest: \`${DIGEST}\`"
+              echo ""
+              echo "Pin \`VERIFY_IMAGE\` to \`${IMG_REF}@${DIGEST}\`"
+              echo "when require-image-digest is in Enforce mode (#145)."
+            else
+              echo "**Build-only** (pull_request) — image built, not published. Merge to main to publish."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
