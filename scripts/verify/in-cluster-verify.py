@@ -130,7 +130,15 @@ def aws_cmd(*args: str) -> tuple[int, str, str]:
     cmd = ["aws"] + list(args)
     if AWS_PROFILE:
         cmd = ["aws", "--profile", AWS_PROFILE] + list(args)
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    # A missing `aws` binary must NOT crash the whole verifier with an unhandled
+    # FileNotFoundError — it must degrade to a clean non-zero result so the
+    # dependent face records a FAIL/SKIP and the summary table still prints.
+    # The published image ships the AWS CLI (Dockerfile.verifier); this guard
+    # covers a hand-run against an incomplete environment.
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        return 127, "", "aws CLI not found on PATH"
     return r.returncode, r.stdout, r.stderr
 
 
