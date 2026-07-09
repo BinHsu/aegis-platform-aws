@@ -26,10 +26,13 @@ ARG AWSCLI_VERSION=2.22.0
 
 FROM debian:bookworm-slim AS grpcurl-dl
 ARG GRPCURL_VERSION
+# grpcurl's Linux x86 release asset is named linux_x86_64, NOT linux_amd64
+# (linux_amd64 404s — caught by the PR build gate 2026-07-09; the image had only
+# ever been built on arm64 machines before, where linux_arm64 is correct).
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     ARCH="$(dpkg --print-architecture)"; \
     case "$ARCH" in \
-      amd64) GR_ARCH="linux_amd64" ;; \
+      amd64) GR_ARCH="linux_x86_64" ;; \
       arm64) GR_ARCH="linux_arm64" ;; \
       *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac && \
