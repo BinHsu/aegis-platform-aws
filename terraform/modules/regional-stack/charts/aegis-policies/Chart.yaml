@@ -3,9 +3,11 @@ name: aegis-policies
 description: >-
   Platform enforcement policies: ACK Role trust-subject↔namespace match and a
   default-deny NetworkPolicy baseline (ADR-07 four-pack #2 + #4), a
-  WorkloadIdentity-claim namespace restriction (ADR-09 5th layer), and a
-  require-image-digest admission policy (ADR-10, default Audit). implemented,
-  E2E PENDING bootstrap.
+  WorkloadIdentity-claim namespace restriction (ADR-09 5th layer), a
+  require-image-digest admission policy (ADR-10, default Audit), and a
+  verify-aegis-core-images Cosign keyless admission policy (LDZ#96, default
+  Audit — producer-side signing not yet live, see the policy header).
+  implemented, E2E PENDING bootstrap.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"

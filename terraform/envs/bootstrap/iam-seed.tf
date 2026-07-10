@@ -365,8 +365,11 @@ resource "aws_iam_role_policy_attachment" "infra_destroy_admin" {
 # Trust identical to Role E — pinned to refs/heads/main on aegis-core, but via
 # the release-staging-frontend.yml workflow file. IAM does not enforce
 # job_workflow_ref without an explicit condition; the sub pin to
-# refs/heads/main is already the tightest usable scope at this layer (the
-# additional job_workflow_ref check lives in the LZ trust policy per ldz #79).
+# refs/heads/main is already the tightest usable scope at this layer (an
+# additional job_workflow_ref check, if ever added, belongs in the landing-
+# zone fabric repo's own trust policy, not here — historical discussion in
+# aegis-landing-zone-aws#79 Q4, closed; treat that repo's current IAM/OIDC
+# definitions as the source of truth, not this comment).
 data "aws_iam_policy_document" "core_frontend_trust" {
   statement {
     effect  = "Allow"
