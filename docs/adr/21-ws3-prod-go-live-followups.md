@@ -2,9 +2,29 @@
 
 ## Status
 
-**Proposed** (2026-06-18). Bin reviews before any section lands. This ADR records
-decisions surfaced by the WS3 prod dual-region go-live (2026-06-18); it changes
-**no code** by itself. Each section is independently adoptable.
+**Mixed — §A Accepted-as-implemented (2026-07-10); §§B–D remain Proposed
+(2026-06-18), Bin reviews before either section lands.**
+
+- **§A (Pod Identity)** is live: merged in
+  [#117](https://github.com/BinHsu/aegis-platform-aws/pull/117)
+  ("feat(ws3): migrate engine IAM to EKS Pod Identity (ADR-21 §A, platform
+  side)"), realized in `terraform/modules/regional-stack/pod-identity-engine.tf`
+  and `pod-identity-model-populator.tf`. [ADR-09](09-platform-as-product-xrd.md)'s
+  status header records the identity-specific WorkloadIdentity→IAM composition
+  as superseded by this section; [ADR-27](27-node-autoscaling.md)'s Karpenter
+  install reuses the same Pod Identity mechanism for its own IAM role. This
+  status line only catches ADR-21's own header up to that already-settled
+  reality — no new code ships with this docs change.
+- **§§B–D (deploy-enable split, prod release + ECR, cold-start safety net)**
+  stay **Proposed**, unimplemented, Bin reviews before either lands. This ADR
+  originally recorded all four sections as one undifferentiated Proposed block;
+  that was accurate in 2026-06-18 but has drifted from the repo as §A shipped
+  three weeks later — this line splits the status by section instead of
+  blanket-marking the whole ADR Accepted.
+
+This ADR records decisions surfaced by the WS3 prod dual-region go-live
+(2026-06-18); §A has since shipped, §§B–D by themselves change **no code**.
+Each section is independently adoptable.
 
 Extends [ADR-10](10-release-model-build-once-promote-by-digest.md) (build once,
 promote by digest), [ADR-11](11-account-dimension-single-source-of-truth.md)
