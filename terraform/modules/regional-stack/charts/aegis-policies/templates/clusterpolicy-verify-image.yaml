@@ -1,0 +1,129 @@
+# Cosign keyless image-signature verification for aegis-core workload images
+# (LDZ#96 Phase 4c, cross-repo request from aegis-core ADR-0028 "Cosign keyless
+# image signing via Sigstore + OIDC": https://github.com/BinHsu/aegis-core/blob/main/docs/adr/0028-cosign-keyless-image-signing.md).
+#
+# ── STATUS AS OF 2026-07-10 — THE PRODUCER SIDE IS NOT LIVE. READ BEFORE
+#    TOUCHING validationFailureAction ──────────────────────────────────────────
+# ADR-0028 opens with "Producer side is live now" (Cosign signing every image
+# pushed via aegis-core's release-staging-image.yml). That workflow was DELETED
+# (aegis-core PR #170, 2026-06-21) when aegis-core retired the shared-ECR
+# release path for public GHCR — this repo's own ADR-23
+# (docs/adr/23-image-distribution-public-ghcr-graviton.md). The workflow that
+# replaced it, release-onprem-image.yml, does NOT sign images: verified against
+# aegis-core@origin/main 2026-07-10 (`git grep cosign -- '*.yml'` on the
+# workflow tree returns nothing live — the only surviving hit is a forward-
+# looking comment in ci-baseline.yml, not a working step). ADR-0028's signing
+# mechanism is currently orphaned.
+#
+# Practical consequence: today, every aegis-core Pod FAILS image verification
+# (there is no signature to check), so this Audit-mode policy will report every
+# aegis-core admission as a PolicyReport violation. That is an accurate signal,
+# not a bug in this policy — it is surfacing the real gap. Shipping it now
+# (Audit, per the Phase 4c ask) puts the admission plumbing and the
+# subject/issuer contract in place and reviewed, so re-wiring producer-side
+# signing is a same-day flip rather than a fresh cross-repo round trip.
+#
+# ── SUBJECT — DELIBERATELY DEVIATES FROM ADR-0028'S LITERAL TEXT ────────────
+# ADR-0028's cross-repo trail cites the now-deleted release-staging-image.yml
+# as the signing workflow in its job_workflow_ref-derived subject. Hardcoding
+# that dead filename would make the subject permanently unmatchable even after
+# signing is revived, unless whoever revives it also remembers to edit this
+# policy in lockstep — fragile, and the two repos have already drifted once.
+# This policy instead points the subject at release-onprem-image.yml, the
+# ACTUAL live release workflow today, so the identity binding is correct for
+# whichever workflow does the real signing right now.
+# OPEN QUESTION FOR BIN: confirm this substitution (or record an ADR-0028
+# addendum noting the workflow rename) before any Audit->Enforce flip — a
+# wrong workflow name here fails exactly like "not signed yet" in the audit
+# log, so the two states are indistinguishable without checking by hand.
+#
+# ── IMAGE SCOPE — GHCR, not ECR ──────────────────────────────────────────────
+# ADR-23 (this repo) superseded ADR-10's shared-ECR model for aegis-core only
+# (greeter is unaffected and stays on ECR under ADR-10/12). imageReferences
+# below match ONLY the two aegis-core GHCR repos (confirmed from ADR-23 +
+# aegis-core's packaging/{engine,gateway}/BUILD.bazel oci_push rules), so this
+# rule never fires against any other workload's image — including every
+# busybox-based fixture in this chart's own kind E2E harness. No new
+# flakiness risk for the existing golden-path gate.
+#
+# ── NAMESPACE SCOPE ───────────────────────────────────────────────────────────
+# Mirrors the require-image-digest / default-deny siblings:
+# {{ .Values.workloadNamespaceGlob }} (default "aegis-*") — every per-workload
+# namespace the workload ApplicationSet creates (aegis-core, aegis-greeter,
+# aegis-sample, …). NOT the aegis-staging/aegis-prod pair LDZ#96's sketch
+# guessed — those namespace names don't exist here: staging and prod are
+# separate EKS clusters in separate AWS accounts (accounts.json), not two
+# namespaces sharing one cluster. System namespaces (kube-system, kyverno,
+# argocd, …) are outside the glob, same reasoning as the digest policy.
+#
+# ── VALIDATION LIMITATION (stated per this issue's ask, not glossed over) ───
+# This rule is NOT exercised by `kyverno test` (see tests/kyverno-test.yaml) —
+# keyless Cosign verification always attempts a live Rekor/Fulcio/registry
+# lookup, even to conclude "no signature". There is no real signed aegis-core
+# image to point at, so any offline unit-test result would be either
+# non-deterministic (network-dependent) or fake (a manufactured pass that
+# proves nothing). Syntax/shape was instead validated via `helm template`
+# render + kubeconform against the kyverno.io/v1 ClusterPolicy schema (see PR
+# description). Real end-to-end verification (a genuinely signed image
+# admitted, an unsigned one denied) is deferred to window #199 or later, once
+# aegis-core's producer side is live again.
+#
+# ── ENFORCE-FLIP CRITERIA (mirrors require-image-digest's Audit->Enforce gate)
+#   1. aegis-core re-adds Cosign keyless signing to its live release workflow.
+#   2. The subject regex above is confirmed against the ACTUAL OIDC identity
+#      the revived signing step's ephemeral Fulcio cert carries (workflow
+#      filename + branch ref) — check this BEFORE trusting a clean Audit run,
+#      not after, since a mismatch here fails silently as "unsigned".
+#   3. An Audit run in staging shows zero verification failures for real
+#      traffic over a full deploy cycle.
+#   4. Bin makes the Enforce call explicitly (this is a decision point, not a
+#      default — a false positive here blocks every aegis-core pod from
+#      starting, unlike require-image-digest's Enforce flip which only
+#      penalizes un-migrated tag-only workloads).
+#   5. mutateDigest flips to true alongside Enforce (Kyverno forbids true under
+#      Audit — see the rule comment below); confirm the deploy overlays are
+#      still digest-pinned before relying on it (ADR-10/ADR-23 already require
+#      this, so it should be a no-op mutation, not a live rewrite).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-aegis-core-images
+  annotations:
+    aegis.binhsu.org/enforcement: "ldz-96-cosign-verify-image"
+    aegis.binhsu.org/status: "implemented, default Audit, PRODUCER SIGNING NOT YET LIVE (aegis-core PR #170 retired it under ADR-23) — see header before flipping Enforce"
+spec:
+  # Audit by default; flip to Enforce only after the header's four-point gate
+  # is satisfied. Same chart-value plumbing as requireDigestAction.
+  validationFailureAction: {{ .Values.verifyImageAction | default "Audit" }}
+  background: true
+  rules:
+    - name: verify-aegis-core-cosign-keyless
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - {{ .Values.workloadNamespaceGlob | quote }}
+      verifyImages:
+        # mutateDigest MUST be false while validationFailureAction is Audit —
+        # Kyverno's own policy-validation webhook rejects the ClusterPolicy
+        # object outright otherwise ("mutateDigest must be set to false for
+        # 'Audit' failure action"), caught locally via `kyverno apply` against
+        # this rendered policy before this PR. Rewriting a Pod's image to a
+        # resolved digest is a mutation, not an audit-only observation — it
+        # cannot be advisory the way a failed validate check can, so Kyverno
+        # refuses to pair it with Audit. Revisit when/if this rule moves to
+        # Enforce (mutateDigest: true then becomes legal, and desirable: it is
+        # what pins the running Pod to the exact digest Cosign verified).
+        - mutateDigest: false
+          imageReferences:
+            - "ghcr.io/binhsu/aegis-core-engine*"
+            - "ghcr.io/binhsu/aegis-core-gateway*"
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/BinHsu/aegis-core/.github/workflows/release-onprem-image.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: "https://rekor.sigstore.dev"

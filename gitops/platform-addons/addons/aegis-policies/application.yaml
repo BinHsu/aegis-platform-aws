@@ -4,7 +4,11 @@
 #
 # Migrated OUT of terraform/modules/regional-stack/kyverno.tf
 # (helm_release.aegis_policies). Ships the ADR-07 four-pack #4 default-deny
-# NetworkPolicy baseline + the ADR-10 require-image-digest ClusterPolicy.
+# NetworkPolicy baseline, the ADR-10 require-image-digest ClusterPolicy, and
+# (LDZ#96) the verify-aegis-core-images Cosign keyless verify-image
+# ClusterPolicy — default Audit, producer-side signing not yet live (see the
+# policy's own header in charts/aegis-policies/templates/
+# clusterpolicy-verify-image.yaml before touching verifyImageAction).
 #
 # WAVE 1: syncs only AFTER the kyverno Application (wave 0) is Healthy, so the
 # kyverno.io ClusterPolicy CRD is Established before these CRs apply. Declarative
@@ -46,9 +50,16 @@ spec:
       #     Audit run shows zero violations. The B1 E2E harness overrides this to
       #     Enforce at render time (harness-local, epic decision #8) to exercise
       #     the negative test — it does NOT change this production default.
+      #   - verifyImageAction: "Audit" (LDZ#96) — Cosign keyless verify-image for
+      #     aegis-core's GHCR images. Audit for the same reason as above, PLUS the
+      #     producer side (aegis-core Cosign signing) is not currently live — see
+      #     clusterpolicy-verify-image.yaml's header before ever flipping this to
+      #     Enforce; it needs aegis-core to re-add signing first, not just a
+      #     clean Audit run.
       values: |
         workloadNamespaceGlob: "aegis-*"
         requireDigestAction: "Audit"
+        verifyImageAction: "Audit"
   destination:
     server: https://kubernetes.default.svc
     namespace: kyverno
