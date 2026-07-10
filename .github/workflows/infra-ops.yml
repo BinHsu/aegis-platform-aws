@@ -259,6 +259,14 @@ jobs:
           # bootstrap ArgoCD + root-app uninstall cleanly, or are reaped by the
           # cluster delete). There is nothing left to strip from state.
           #
+          # #200 (Karpenter, landed via #190 AFTER this A6 design): Karpenter is
+          # NOT part of the profile split above — it stays a `helm_release` in
+          # BOTH profiles (karpenter.tf, var.enable_karpenter, default on,
+          # independent of cluster_profile). So the Karpenter quiesce +
+          # orphan-EC2-by-tag fail-safe below runs on EVERY destroy-region,
+          # regardless of PROFILE — an ephemeral cluster's Karpenter nodes are
+          # exactly as billable-if-orphaned as a full cluster's.
+          #
           # Use the env-provided region (TF_VAR_region) and validate its shape —
           # never splice a workflow_dispatch input straight into the shell.
           r="$TF_VAR_region"
@@ -276,10 +284,27 @@ jobs:
           [ "$PROFILE" = "ephemeral" ] || [ "$PROFILE" = "full" ] || PROFILE=full
           echo "::notice::destroy-region profile=${PROFILE} cluster=${CLUSTER} region=${r}"
 
+          # kubectl is needed by BOTH the profile=full ALB pre-destroy AND the
+          # #200 Karpenter quiesce fail-safe below — install it unconditionally
+          # rather than only inside the full branch (see the #200 note next).
+          curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy/quiesce steps will be skipped"
+
+          # ─── #200 (successor to aegis-landing-zone-aws#151, Incident 33):
+          # Karpenter quiesce + orphan-EC2-by-tag fail-safe. Runs UNCONDITIONALLY
+          # on BOTH profiles: unlike the ALB controller + external-dns (A6 #178,
+          # profile=full only), Karpenter is gated by `var.enable_karpenter`
+          # (independent of cluster_profile) — an ephemeral cluster runs
+          # Karpenter nodes exactly like a full one, so it carries the identical
+          # orphan-EC2 risk if the controller (helm_release.karpenter, wait=false
+          # for teardown safety — same posture as kyverno.tf) is torn down before
+          # it finishes draining its own fleet. Best-effort + time-boxed; never
+          # blocks teardown — see scripts/dr/karpenter-quiesce.sh for the full
+          # rationale and the tag-scoping proof.
+          bash "$GITHUB_WORKSPACE/scripts/dr/karpenter-quiesce.sh" "$r" "$CLUSTER" || echo "::warning::karpenter-quiesce did not complete cleanly — the post-destroy orphan verification below is the fail-loud backstop of last resort"
+
           VPC=''
           if [ "$PROFILE" = "full" ]; then
             echo "::notice::full profile — running the ALB/SG teardown backstop before terraform destroy (A6 #178)."
-            curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl || echo "::warning::kubectl install failed — in-cluster pre-destroy will be skipped"
             bash "$GITHUB_WORKSPACE/scripts/dr/pre-destroy.sh" "$r" "$CLUSTER" || echo "::warning::pre-destroy (graceful ALB cleanup) did not complete — the AWS-API backstop below covers a wedged controller"
             VPC="$(aws eks describe-cluster --name "$CLUSTER" --region "$r" --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo '')"
             if [ -n "$VPC" ] && [ "$VPC" != "None" ]; then
@@ -306,7 +331,7 @@ jobs:
               # controller ApplicationSet (gitops/platform-addons/addons/alb-controller).
             fi
           else
-            echo "::notice::ephemeral profile — the ALB controller + external-dns never ran on this cluster, so no ALB / controller-SG / Route53 objects exist. Skipping pre-destroy.sh + ALB backstop; teardown is a plain terraform destroy (A6 #178)."
+            echo "::notice::ephemeral profile — the ALB controller + external-dns never ran on this cluster, so no ALB / controller-SG / Route53 objects exist. Skipping pre-destroy.sh (ALB) + ALB backstop; the Karpenter quiesce fail-safe above still ran (Karpenter is not profile-gated — #200). Teardown is otherwise a plain terraform destroy (A6 #178)."
           fi
 
           cd terraform/envs/regional
@@ -360,6 +385,32 @@ jobs:
           DESTROY_RC=0
           terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/registries.auto.tfvars.json" || DESTROY_RC=$?
           [ -n "$REAPER_PID" ] && { kill "$REAPER_PID" 2>/dev/null || true; wait "$REAPER_PID" 2>/dev/null || true; }
+
+          # #200: post-destroy Karpenter orphan-EC2 verification — UNCONDITIONAL
+          # (both profiles; Karpenter is not profile-gated, see the note above).
+          # The pre-destroy quiesce fail-safe (scripts/dr/karpenter-quiesce.sh)
+          # already waits for zero tag-scoped instances before terraform destroy
+          # even starts, but this is the final, fail-LOUD safety net: if an
+          # instance is still present after destroy returns (the quiesce script's
+          # bounded wait timed out, or a node was provisioned in the gap), fail
+          # the job instead of reporting a clean teardown while the account still
+          # bills. Same tag-scoping proof as karpenter-quiesce.sh: the cluster tag
+          # is exact-matched to THIS cluster, and the nodepool tag-key excludes
+          # the static MNG.
+          if ! REMAIN_KARPENTER="$(aws ec2 describe-instances --region "$r" \
+              --filters "Name=tag:kubernetes.io/cluster/${CLUSTER},Values=owned" \
+                        "Name=tag-key,Values=karpenter.sh/nodepool" \
+                        "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null)"; then
+            echo "::error::post-destroy verification failed: Karpenter orphan-EC2 query error"
+            REMAIN_KARPENTER=''
+            [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1
+          fi
+          if [ -n "$REMAIN_KARPENTER" ]; then
+            echo "::error::teardown left orphan Karpenter-tagged EC2 for ${CLUSTER} in ${r} — STILL BILLING: ${REMAIN_KARPENTER}. Terminate them (aws ec2 terminate-instances --region ${r} --instance-ids <id> ...) then re-dispatch infra-ops destroy-region for account ${{ inputs.account_id }} ${r}."
+            [ "$DESTROY_RC" -eq 0 ] && DESTROY_RC=1
+          fi
+
           # (b)+(c) Verified teardown — FULL profile only (A6 #178). A green destroy
           # can still be wrong if the VPC delete actually failed on a lingering ALB
           # SG and terraform was about to spin (or did spin and gave up). After
