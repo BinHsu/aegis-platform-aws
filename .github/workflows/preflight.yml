@@ -6,9 +6,13 @@ name: preflight
 # caused a partial apply that then bills until torn down.
 #
 # Checks:
-#   1. ECR images by digest — each image the deploy repos pin must exist in the
-#      registry/account the deploy targets, resolvable from both active regions.
-#      Flags a placeholder digest (sha256:0000…) as an explicit error.
+#   1. Image-by-digest existence — each image the deploy repos pin must exist
+#      in the registry the deploy targets. aegis-greeter moved off ECR to
+#      public GHCR on 2026-07-21 (ADR-24); its check is now a GHCR manifest
+#      lookup (anonymous token, no AWS creds needed), resolvable independent
+#      of region. aegis-core's check (still ECR-shaped below, gated off — see
+#      its own ADR-23 note) remains an AWS ECR describe-images call. Flags a
+#      placeholder digest (sha256:0000…) as an explicit error either way.
 #   2. DNS delegation — the Route 53 zone for the env exists in the cluster
 #      account AND its NS records are live in the public DNS tree (parent NS
 #      resolves to the AWS zone nameservers). A failed delegation causes ACM
@@ -16,17 +20,23 @@ name: preflight
 #
 # Prerequisites (operator one-time):
 #   AWS_INFRA_CI_ROLE_ARN  — existing ReadOnlyAccess role in the staging cluster
-#                            account (251774439261); used for Route53 checks and
-#                            any per-account ECR check (e.g. aegis-greeter).
+#                            account (251774439261); used for Route53 checks.
+#                            No longer needed for greeter's image check (GHCR,
+#                            not ECR) — kept for DNS delegation only.
 #   AWS_DEPLOYMENT_CI_ROLE_ARN — ReadOnlyAccess role in the deployment account
 #                            (162975888022); needed to describe-images on the
-#                            shared aegis-core ECR repo (ADR-10). Seed it via
-#                            break-glass in the deployment account, same pattern
-#                            as gh-tf-apply-deployment (bootstrap/iam-seed.tf).
-#                            Trust: same GitHub OIDC + repo condition as
-#                            aegis-platform-aws-ci; permissions: ReadOnlyAccess.
-#                            Until this role exists the ECR-deployment check step
-#                            is skipped (SKIP_DEPLOYMENT_ECR_CHECK=true).
+#                            shared aegis-core ECR repo (ADR-10) IF aegis-core
+#                            is still ECR-hosted for a given cluster. Per
+#                            ADR-23, aegis-core itself has already moved to
+#                            GHCR too — this job (`ecr-deployment-account`) is
+#                            gated off (`DEPLOYMENT_ECR_PREFLIGHT` unset) and is
+#                            effectively dead; left as-is, matching ADR-23's
+#                            "deliberate orphan" disposition for aegis-core's
+#                            now-unused ECR push role. Seed it via break-glass
+#                            in the deployment account, same pattern as
+#                            gh-tf-apply-deployment (bootstrap/iam-seed.tf), only
+#                            if this job is ever revived for a future
+#                            private-ECR workload.
 #
 # Inputs (workflow_dispatch):
 #   account        — which accounts.json entry to check (default: staging)
@@ -63,12 +73,12 @@ env:
   # Deployment account that hosts the shared ADR-10 ECR registry.
   # Public topology per ADR-11 (account IDs are in accounts.json).
   DEPLOYMENT_ACCOUNT_ID: "162975888022"
-  # Shared ECR repos (deployment-ecr.tf). These are the repo NAMES, not URLs.
+  # Shared ECR repo (deployment-ecr.tf). This is the repo NAME, not a URL.
+  # aegis-greeter no longer has an ECR entry here — see GREETER_GHCR_IMAGE.
   SHARED_ECR_REPO_CORE: "aegis-core"
-  SHARED_ECR_REPO_GREETER: "aegis-greeter"
-  # Per-account ECR for aegis-greeter lives in the CLUSTER account (ecr.tf),
-  # not the deployment account. ECR region matches the registries entry.
-  GREETER_ECR_REGION: "eu-central-1"
+  # aegis-greeter moved to public GHCR 2026-07-21 (ADR-24). No account/region
+  # needed — this is the whole ref minus the tag/digest.
+  GREETER_GHCR_IMAGE: "binhsu/aegis-greeter"
   # DNS zone parent. Must match var.dns_zone_name in platform/variables.tf.
   DNS_ZONE_PARENT: "aws.binhsu.org"
 
@@ -111,29 +121,22 @@ jobs:
           echo "zone=${env_val}.${{ env.DNS_ZONE_PARENT }}" >> "$GITHUB_OUTPUT"
           echo "DNS zone to check: ${env_val}.${{ env.DNS_ZONE_PARENT }}"
 
-  # ── ECR: per-account repos (staging cluster account) ──────────────────────
-  ecr-cluster-account:
-    name: ecr-cluster-account (${{ matrix.region }})
+  # ── GHCR: aegis-greeter (moved off ECR 2026-07-21, ADR-24) ────────────────
+  ghcr-greeter:
+    name: ghcr-greeter
     runs-on: ubuntu-latest
     needs: setup
-    # Skip this check pre-bootstrap (BOOTSTRAP_COMPLETE guards the cluster account
-    # CI role; the deployment account check is independent — see next job).
+    # No AWS role needed at all — GHCR is checked via an anonymous registry
+    # token (the image is intended public, ADR-24). Still gated on
+    # BOOTSTRAP_COMPLETE so a pre-bootstrap run doesn't fail loud on a
+    # not-yet-promoted overlay; matches the old ecr-cluster-account gating.
     if: ${{ vars.BOOTSTRAP_COMPLETE == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        region: ${{ fromJson(needs.setup.outputs.enabled_regions) }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_INFRA_CI_ROLE_ARN }}
-          aws-region: ${{ matrix.region }}
-
-      - name: fetch digest pins from aegis-greeter-deploy overlay
+      - name: fetch digest pin from aegis-greeter-deploy overlay
         id: greeter_digest
         env:
           OVERLAY: ${{ needs.setup.outputs.environment }}
@@ -156,19 +159,17 @@ jobs:
           echo "greeter_digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Pinned greeter digest: ${digest}"
 
-      - name: assert aegis-greeter image exists in ECR (${{ matrix.region }})
+      - name: assert aegis-greeter image exists in GHCR
         env:
-          REGION:  ${{ matrix.region }}
-          ACCOUNT: ${{ needs.setup.outputs.account_id }}
           OVERLAY: ${{ needs.setup.outputs.environment }}
           DIGEST:  ${{ steps.greeter_digest.outputs.greeter_digest }}
         run: |
           set -euo pipefail
-          repo="$SHARED_ECR_REPO_GREETER"
+          image="$GREETER_GHCR_IMAGE"
 
           # Guard: empty digest means the deploy repo has no overlay yet.
           if [ -z "$DIGEST" ]; then
-            echo "::warning::No digest pin found for aegis-greeter in the ${OVERLAY} overlay — skipping ECR check (image not promoted yet)."
+            echo "::warning::No digest pin found for aegis-greeter in the ${OVERLAY} overlay — skipping GHCR check (image not promoted yet)."
             exit 0
           fi
 
@@ -178,20 +179,33 @@ jobs:
             exit 1
           fi
 
-          echo "Checking ECR ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${repo}@${DIGEST}"
-          # ECR is regional; the cross-region replication destinations see the same
-          # digest because replication copies layers — content-addressed identity holds.
-          result="$(aws ecr describe-images \
-            --registry-id "$ACCOUNT" \
-            --repository-name "$repo" \
-            --region "$REGION" \
-            --image-ids "imageDigest=${DIGEST}" \
-            --query 'imageDetails[0].imageDigest' \
-            --output text 2>&1)" || {
-            echo "::error::aegis-greeter digest ${DIGEST} NOT FOUND in ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${repo}. Push the image or replicate before applying."
+          # Same class of guard the ECR path had: this digest is known to be
+          # promoted from the PRE-migration ECR image (ADR-24 rollout window).
+          # It can never resolve in GHCR — fail with a clear, actionable message
+          # instead of a generic 404 further down.
+          if [ "$DIGEST" = "sha256:0e6f3e6b113bf12f9c4536caa9ccf8aa59351c066408eb1a750a7a97b73d2d28" ]; then
+            echo "::error::aegis-greeter digest ${DIGEST} is the pre-GHCR-migration ECR digest (ADR-24) — it was never pushed to GHCR. Push aegis-greeter's main to run the GHCR-native publish.yml and promote the resulting digest before applying."
             exit 1
-          }
-          echo "OK — found ${result} in ${REGION}"
+          fi
+
+          echo "Checking GHCR ghcr.io/${image}@${DIGEST}"
+          # GHCR requires a bearer token even for public images; fetch an
+          # anonymous pull-scoped token first (this is the documented public
+          # flow — no PAT, no GITHUB_TOKEN, no AWS creds involved).
+          token="$(curl -sf "https://ghcr.io/token?service=ghcr.io&scope=repository:${image}:pull" | jq -r '.token')"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::could not obtain an anonymous GHCR pull token for ${image} — confirm the package is public (ADR-24 assumes it is; if private, this check needs a PAT with read:packages instead, and the cluster needs an imagePullSecret)."
+            exit 1
+          fi
+          status="$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${image}/manifests/${DIGEST}")"
+          if [ "$status" != "200" ]; then
+            echo "::error::aegis-greeter digest ${DIGEST} NOT FOUND in ghcr.io/${image} (HTTP ${status}). Push the image before applying."
+            exit 1
+          fi
+          echo "OK — found ${DIGEST} in ghcr.io/${image}"
 
   # ── ECR: shared deployment-account repos (ADR-10) ─────────────────────────
   ecr-deployment-account:
@@ -414,30 +428,30 @@ jobs:
   summary:
     name: preflight-summary
     runs-on: ubuntu-latest
-    needs: [ecr-cluster-account, ecr-deployment-account, dns-delegation]
+    needs: [ghcr-greeter, ecr-deployment-account, dns-delegation]
     if: ${{ always() }}
     steps:
       - name: evaluate results
         run: |
-          # ecr-cluster-account and dns-delegation: failures block.
+          # ghcr-greeter and dns-delegation: failures block.
           # ecr-deployment-account: skipped when AWS_DEPLOYMENT_CI_ROLE_ARN is
           # not yet set — this is acceptable during initial bring-up; warn loudly.
           ok() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
-          cluster_ecr="${{ needs.ecr-cluster-account.result }}"
+          greeter="${{ needs.ghcr-greeter.result }}"
           deploy_ecr="${{ needs.ecr-deployment-account.result }}"
           dns="${{ needs.dns-delegation.result }}"
 
-          echo "ecr-cluster-account : ${cluster_ecr}"
+          echo "ghcr-greeter          : ${greeter}"
           echo "ecr-deployment-account: ${deploy_ecr}"
-          echo "dns-delegation      : ${dns}"
+          echo "dns-delegation        : ${dns}"
 
           if [ "$deploy_ecr" = "skipped" ]; then
-            echo "::warning::ecr-deployment-account check was SKIPPED — DEPLOYMENT_ECR_PREFLIGHT var is not 'true'."
+            echo "::warning::ecr-deployment-account check was SKIPPED — DEPLOYMENT_ECR_PREFLIGHT var is not 'true'. Per ADR-23, aegis-core itself has since also moved to GHCR, so this job is expected to stay skipped/dead going forward — the warning below is now largely moot but left in case a future workload revives private-ECR + this gate."
             echo "::warning::Seed a ReadOnly role in the deployment account (162975888022), add its ARN"
             echo "::warning::as AWS_DEPLOYMENT_CI_ROLE_ARN, then set DEPLOYMENT_ECR_PREFLIGHT=true to enable this gate."
           fi
 
-          if ! ok "$cluster_ecr" || ! ok "$dns"; then
+          if ! ok "$greeter" || ! ok "$dns"; then
             echo "::error::One or more pre-flight checks FAILED. Fix the above before running the billable apply."
             exit 1
           fi

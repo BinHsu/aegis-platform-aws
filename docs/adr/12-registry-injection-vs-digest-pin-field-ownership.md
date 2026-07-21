@@ -9,8 +9,12 @@ mechanism).
 **Superseded for aegis-core by [ADR-23](23-image-distribution-public-ghcr-graviton.md)**
 (2026-06-20): aegis-core's GHCR refs are static (no account id / region), so the
 platform no longer injects a registry for it — the overlay carries the full ref.
-Greeter still consumes the `aegis.binhsu.org/ecr-repository` annotation per this
-ADR.
+
+**Superseded for aegis-greeter by [ADR-24](24-greeter-image-distribution-public-ghcr.md)**
+(2026-07-21): greeter also moved to public GHCR. This ADR's registry-injection
+mechanism now applies only to workloads still on private per-account ECR (none, as of
+ADR-24 — but the mechanism stays in place in case a future workload needs private-ECR
+account-id hiding again).
 
 ## Context
 

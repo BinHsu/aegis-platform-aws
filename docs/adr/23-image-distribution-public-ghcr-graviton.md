@@ -7,8 +7,15 @@ Accepted (2026-06-20). **Supersedes [ADR-10](10-release-model-build-once-promote
 **supersedes [ADR-12](12-registry-injection-vs-digest-pin-field-ownership.md)
 for aegis-core only** (the platform no longer injects the registry for
 aegis-core). Depends on the node-arch switch to Graviton
-(`feat(regional): switch managed node group to Graviton (arm64 t4g)`). Greeter is
-unaffected and stays on ECR with ADR-10/12 intact.
+(`feat(regional): switch managed node group to Graviton (arm64 t4g)`).
+
+> **Amendment (2026-07-21):** the line below — "Greeter is unaffected and stays
+> on ECR with ADR-10/12 intact" — no longer holds. Greeter also moved to public
+> GHCR; see [ADR-24](24-greeter-image-distribution-public-ghcr.md), which mirrors
+> this ADR's decision for greeter. Left in place, unedited, as the historical
+> record of what was true on 2026-06-20.
+
+Greeter is unaffected and stays on ECR with ADR-10/12 intact.
 
 ## Context
 
@@ -89,9 +96,10 @@ on-prem and on AWS prod.**
   `AL2023_ARM_64_STANDARD`, `node_instance` → `t4g.large` in both regions
   (the node-arch commit). The addon stack was verified arm64-clean as a
   precondition.
-- **Greeter unaffected.** Greeter keeps its per-account ECR, the ADR-12 registry
-  annotation, and ADR-10's promote-by-digest. This ADR narrows only the
-  aegis-core distribution path.
+- **Greeter unaffected** *(as of 2026-06-20 — superseded 2026-07-21, see the
+  amendment in Status above; [ADR-24](24-greeter-image-distribution-public-ghcr.md)
+  moved greeter to GHCR too)*. This ADR narrows only the aegis-core distribution
+  path.
 - **No cross-account ECR ownership dance for aegis-core.** No
   `gh-tf-apply-deployment` role, no cross-account repository policy enumerating
   cluster accounts, no replication for a second-region ECR copy on the
