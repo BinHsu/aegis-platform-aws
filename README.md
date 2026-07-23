@@ -118,7 +118,7 @@ flowchart TB
 
 - **Terraform — three lifecycle-separated environments**: `bootstrap` (S3 state
   bucket + CI IAM roles, local state, operator-seeded once, ADR-13); `platform`
-  (slow lifecycle — Route 53, ECR, Cognito, pre-token Lambda, CloudFront/S3,
+  (slow lifecycle — Route 53, Cognito, pre-token Lambda, CloudFront/S3,
   OIDC, budgets, Grafana dashboards, SSM); `regional` (fast lifecycle — VPC + EKS
   + ArgoCD + Crossplane + Kyverno + Alloy, applied once per region).
 - **Multi-region topology as data** — the region set lives in
@@ -364,7 +364,7 @@ regions.auto.tfvars.json      Region topology — platform_region + regions{}
 registries.auto.tfvars.json   Workload catalog — per-workload ECR/IRSA params (gitignored; holds account IDs). See *.example
 terraform/
   envs/bootstrap/             S3 state bucket + 6 CI IAM roles (local state, operator-seeded once; ADR-13)
-  envs/platform/              Route 53, ECR, Cognito, pre-token Lambda, CloudFront/S3, OIDC, budgets, SSM, Grafana
+  envs/platform/              Route 53, Cognito, pre-token Lambda, CloudFront/S3, OIDC, budgets, SSM, Grafana
   envs/regional/              Invokes modules/regional-stack once per region (one apply per region)
   modules/regional-stack/     VPC + EKS + ArgoCD + Crossplane + Kyverno + Alloy + Argo Rollouts
   modules/regional-stack/charts/  Helm charts: aegis-xrds, aegis-policies, aegis-aws-providerconfig
@@ -405,7 +405,7 @@ cp terraform/envs/regional/secrets.auto.tfvars.example terraform/envs/regional/s
 # 3. Pick the regions — regions.auto.tfvars.json is the single source of
 #    truth, with two keys:
 #      platform_region — where the Terraform state bucket and the slow-
-#        lifecycle platform layer live (ECR, OIDC, Route 53, budget, SSM).
+#        lifecycle platform layer live (OIDC, Route 53, budget, SSM).
 #        Set once; it is also the state-bucket region.
 #      regions{}       — which region(s) the clusters deploy to. eu-central-1
 #        and eu-west-1 both ship `enabled: true`; flip a region's `enabled`
@@ -436,11 +436,13 @@ After `make platform`, capture its outputs and finish the CI wiring:
 # commands live in terraform/envs/platform/README.md (each value is piped from
 # `terraform output`, so nothing is typed by hand).
 
-# GitHub Actions repo variables for an application repo, from platform outputs:
-gh variable set ECR_REPO_URL  -b "$(terraform -chdir=terraform/envs/platform output -raw ecr_repository_url)"  --repo BinHsu/aegis-greeter
-gh variable set ECR_REGISTRY  -b "$(terraform -chdir=terraform/envs/platform output -raw ecr_registry)"        --repo BinHsu/aegis-greeter
-gh variable set OIDC_ROLE_ARN -b "$(terraform -chdir=terraform/envs/platform output -raw greeter_ci_role_arn)" --repo BinHsu/aegis-greeter
-gh variable set AWS_REGION    -b "$(terraform -chdir=terraform/envs/platform output -raw aws_region)"          --repo BinHsu/aegis-greeter
+# (removed 2026-07) The `ECR_REPO_URL` / `ECR_REGISTRY` / `OIDC_ROLE_ARN` /
+# `AWS_REGION` repo-variable commands for aegis-greeter used to live here.
+# Greeter moved to public GHCR 2026-07-21 (ADR-24) — its publish.yml needs no
+# AWS wiring at all, so there is nothing to set here anymore. The
+# ecr_repository_url / ecr_registry / greeter_ci_role_arn / aws_region
+# terraform outputs these commands read were removed in the same cleanup
+# (envs/platform/ecr.tf, envs/bootstrap/iam-seed.tf).
 
 # Flip the CI bootstrap gate — infra-plan/infra-apply plan/apply jobs un-skip.
 gh variable set BOOTSTRAP_COMPLETE -b "true" --repo BinHsu/aegis-platform-aws
@@ -507,13 +509,13 @@ the three knobs a forker must flip to switch back to amd64.
 | Scope | Rate | Note |
 |---|---|---|
 | Per region | ~$0.21/hr | EKS control plane + Spot nodes + ALB + NAT gateway |
-| Platform env | ~$0–1/mo | Route 53 zone + ECR storage — safe to leave running |
+| Platform env | ~$0/mo | Route 53 zone — safe to leave running |
 | Per DR drill (~6 hr) | ~$1.30 | Stand up → drill → destroy |
 
 Regional infrastructure is **ephemeral** — stood up for a demo or DR drill, torn
 down when idle (`make destroy-region`). The `bootstrap`/`platform`/`regional`
-lifecycle split keeps this safe: a destroy never touches ECR images, the
-Route 53 zone, or Grafana dashboards. An AWS Budget ($10 warn / $25 hard)
+lifecycle split keeps this safe: a destroy never touches the Route 53 zone
+or Grafana dashboards. An AWS Budget ($10 warn / $25 hard)
 backstops a forgotten destroy. Cost scales linearly per region.
 
 Full breakdown — itemised rates, the interval math, and the levers pulled — in
@@ -536,7 +538,7 @@ scripts/dr/dr-drill.sh eu-central-1
 Or step through it manually:
 
 ```bash
-# Tear down one region's workload. The platform env (Route 53, ECR, Grafana
+# Tear down one region's workload. The platform env (Route 53, Grafana
 # dashboards) is untouched; other regions, if any, stay alive.
 make destroy-region REGION=eu-central-1
 

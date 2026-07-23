@@ -1,11 +1,11 @@
 # ============================================================================
 # CI IAM roles — SEEDED BY envs/bootstrap, referenced here by data source (ADR-13)
 #
-# The GitHub OIDC trust + the four CI roles (gh-tf-apply-platform,
-# gh-tf-destroy-platform, the read-only plan role, the greeter ECR push role)
-# USED to be `resource` blocks in this file. They were destroyed by
-# `destroy-platform`, which on 2026-06-12 produced four live failures (run
-# decision: ADR-13 (docs/adr/13-ci-iam-roles-survive-teardown.md): a self-delete hazard, an
+# The GitHub OIDC trust + the CI roles (gh-tf-apply-platform,
+# gh-tf-destroy-platform, the read-only plan role) USED to be `resource`
+# blocks in this file. They were destroyed by `destroy-platform`, which on
+# 2026-06-12 produced four live failures (run decision: ADR-13
+# (docs/adr/13-ci-iam-roles-survive-teardown.md): a self-delete hazard, an
 # orphaned admin destroy role in both accounts, a cold-start chicken-egg (no
 # OIDC path left after teardown), and an infra-plan red light.
 #
@@ -25,11 +25,12 @@
 # DEPENDENCY: envs/bootstrap must have been applied in this account first — it
 # is already a precondition, since bootstrap creates the state bucket this env's
 # backend uses. The roles therefore always exist before any platform apply.
+#
+# (removed 2026-07) the greeter ECR push role data lookup (`aegis-greeter-ci`)
+# lived here, feeding the now-removed `greeter_ci_role_arn` output. Greeter
+# moved to public GHCR 2026-07-21 (ADR-24) — see iam-seed.tf in envs/bootstrap
+# for the corresponding role removal.
 # ============================================================================
-
-data "aws_iam_role" "greeter_ci" {
-  name = "aegis-greeter-ci"
-}
 
 data "aws_iam_role" "infra_ci" {
   name = "aegis-platform-aws-ci"
