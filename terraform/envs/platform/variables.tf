@@ -1,23 +1,18 @@
-# ---- Pattern X: regions (read from repo-root regions.auto.tfvars.json) ----
-variable "regions" {
-  description = "Multi-region topology — single source of truth at repo-root regions.auto.tfvars.json. Platform reads it for ECR replication targeting (only enabled entries are real destinations)."
-  # NOTE (WS4 / ADR-23): `cidr` is gone — the regional VPC CIDR is now allocated
-  # from the landing-zone IPAM pool (modules/regional-stack/vpc-ipam.tf), not
-  # carried in regions.auto.tfvars.json. Platform only consumes `enabled` + the
-  # region keys for ECR replication, so the schema drops the unused field.
-  # #183: node_instance -> node_instance_types (list) diversifies the Spot
-  # node group across capacity pools; node_ondemand_baseline sizes an optional
-  # On-Demand floor (0 = none). platform/ only consumes .enabled (ecr.tf), but
-  # the object type must mirror the full regions.auto.tfvars.json schema since
-  # it is loaded here via -var-file.
-  type = map(object({
-    enabled                = bool
-    node_instance_types    = list(string)
-    node_min               = number
-    node_max               = number
-    node_ondemand_baseline = optional(number, 0)
-  }))
-}
+# ---- (removed 2026-07) Pattern X: regions --------------------------------
+# `variable "regions"` (repo-root regions.auto.tfvars.json's multi-region
+# topology map) was consumed ONLY by ecr.tf's replication-destination
+# targeting (`local.ecr_replication_destinations`, keyed off `.enabled`).
+# Removing the dead greeter ECR stack (ecr.tf) left this variable unused —
+# tflint's terraform_unused_declarations caught it. The root
+# regions.auto.tfvars.json still carries the `regions` key (unchanged): the
+# Makefile's own jq-driven ACTIVE_REGIONS/regional-apply loop reads it
+# directly (not via this env's -var-file consumption), so the key stays.
+# This env is applied with -var-file=regions.auto.tfvars.json (same file
+# bootstrap uses) but, like bootstrap, no longer declares a variable to
+# receive the `regions` key — Terraform treats an extra key in a shared
+# tfvars file as a harmless "value for undeclared variable" warning, not
+# an error (verified locally: bootstrap already triggers the identical
+# warning today, pre-dating this cleanup).
 
 # ---- platform basics -------------------------------------------------------
 variable "platform_region" {
