@@ -24,25 +24,24 @@
 # block whose target is already in state is a no-op, so leaving it is harmless
 # but it has served its single purpose.
 #
-# NOT IMPORTED — the inline role policies / policy attachments (greeter_ci,
-# infra_ci_readonly, infra_apply_admin, infra_destroy_admin, core_frontend) are
-# Put*-idempotent: apply converges them onto the adopted roles without their own
-# import blocks (same reasoning as deployment-ecr-import.tf).
+# NOT IMPORTED — the inline role policies / policy attachments
+# (infra_ci_readonly, infra_apply_admin, infra_destroy_admin, core_frontend)
+# are Put*-idempotent: apply converges them onto the adopted roles without
+# their own import blocks (same reasoning as deployment-ecr-import.tf).
 #
 # NOT IMPORTED — `github-actions-aegis-core-ecr` is a deliberate exclusion. It is
 # an orphan with no .tf home: the GHCR pivot (see docs/adr — supersedes ADR-10)
 # makes the aegis-core ECR push role obsolete, so it is deletable, not adopted.
+#
+# (removed 2026-07) Role A: aegis-greeter CI -> ECR push (`aegis-greeter-ci`)
+# had its import block here. Greeter moved to public GHCR 2026-07-21 (ADR-24);
+# the aws_iam_role.greeter_ci resource this import targeted was removed from
+# iam-seed.tf in the same cleanup, so the import block is gone too — there is
+# nothing left to adopt.
 # ============================================================================
 
 # Resource name = import id for aws_iam_role. Each `to` address is confirmed
 # present in iam-seed.tf.
-
-# Role A: aegis-greeter CI -> ECR push
-import {
-  for_each = var.adopt_seeded_iam_roles ? toset(["greeter_ci"]) : toset([])
-  to       = aws_iam_role.greeter_ci
-  id       = "aegis-greeter-ci"
-}
 
 # Role B: aegis-platform-aws CI plan -> read-only AWS
 import {

@@ -42,11 +42,10 @@ variable "environment" {
   }
 }
 
-variable "ecr_repository_name" {
-  description = "Name of the ECR repo where aegis-greeter pushes container images."
-  type        = string
-  default     = "aegis-greeter"
-}
+# (removed 2026-07) ecr_repository_name — greeter's ECR repo name variable.
+# Greeter moved to public GHCR 2026-07-21 (ADR-24); ecr.tf (and its
+# aws_ecr_repository.greeter consumer of this variable) was removed in the
+# same cleanup. See ADR-24 Consequences.
 
 # ---- observability toggle --------------------------------------------------
 variable "enable_observability" {

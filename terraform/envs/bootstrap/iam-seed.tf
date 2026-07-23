@@ -1,13 +1,15 @@
 # ============================================================================
-# CI IAM seed — the GitHub OIDC trust + the four CI roles, relocated here from
+# CI IAM seed — the GitHub OIDC trust + the CI roles, relocated here from
 # envs/platform/oidc.tf (ADR-13).
 #
 # WHY HERE, NOT IN envs/platform
 # ------------------------------------------------------------------------------
 # These roles are the federation entry points every CI workflow assumes
-# (gh-tf-apply-platform, gh-tf-destroy-platform, the read-only plan role, the
-# greeter ECR push role). When they lived in envs/platform they were destroyed
-# by `destroy-platform` — and that produced four live consequences on
+# (gh-tf-apply-platform, gh-tf-destroy-platform, the read-only plan role;
+# the greeter ECR push role also lived here until its 2026-07 removal — see
+# the "(removed 2026-07) Role A" note below). When they lived in envs/platform
+# they were destroyed by `destroy-platform` — and that produced four live
+# consequences on
 # 2026-06-12 (decision: ADR-13, docs/adr/13-ci-iam-roles-survive-teardown.md):
 #   1. Self-delete hazard: destroy-platform runs AS gh-tf-destroy-platform, so
 #      terraform deleting that role mid-run invalidates the live STS session.
@@ -81,88 +83,16 @@ data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
 
-# ---- Role A: aegis-greeter CI -> ECR push -----------------------------------
-data "aws_iam_policy_document" "greeter_ci_trust" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-
-    # Immutable binding (issue #144): repository_id survives a repo rename;
-    # the repo name in `sub` does not. This condition is what actually scopes
-    # the trust to aegis-greeter — the StringLike below only narrows the ref.
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:repository_id"
-      values   = [var.github_greeter_repo_id]
-    }
-
-    # Pinned to the main ref — aegis-greeter's publish.yml only runs on push to
-    # main, so the OIDC subject can be the exact ref (no branch wildcard).
-    # Tightest blast radius: a PR / fork branch on greeter cannot assume this.
-    # Repo NAME is wildcarded (rename-proof); repository_id above is the real
-    # binding.
-    condition {
-      test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_owner}/*:ref:refs/heads/main"]
-    }
-  }
-}
-
-data "aws_iam_policy_document" "greeter_ci_permissions" {
-  # ECR auth token — account-level, cannot be resource-scoped.
-  statement {
-    effect    = "Allow"
-    actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"]
-  }
-
-  # ECR push (+ the layer reads docker push performs) — scoped to the single
-  # aegis-greeter repo ARN. The repo itself is created by envs/platform
-  # (ecr.tf), so we CONSTRUCT its ARN from account + region + the fixed repo
-  # name rather than read platform's remote state: bootstrap must have ZERO
-  # upstream dependency (it is the seed layer — nothing exists before it). The
-  # name `aegis-greeter` is the same literal envs/platform/ecr.tf uses.
-  # ecr:DescribeImages is required because publish.yml (post greeter#14) calls
-  # `aws ecr describe-images` as the authoritative digest source after push;
-  # without it that step fails with AccessDeniedException.
-  statement {
-    effect = "Allow"
-    actions = [
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:BatchGetImage",
-      "ecr:CompleteLayerUpload",
-      "ecr:DescribeImages",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:InitiateLayerUpload",
-      "ecr:PutImage",
-      "ecr:UploadLayerPart",
-    ]
-    resources = ["arn:aws:ecr:${var.platform_region}:${data.aws_caller_identity.current.account_id}:repository/aegis-greeter"]
-  }
-}
-
-resource "aws_iam_role" "greeter_ci" {
-  name               = "aegis-greeter-ci"
-  assume_role_policy = data.aws_iam_policy_document.greeter_ci_trust.json
-}
-
-resource "aws_iam_role_policy" "greeter_ci" {
-  name   = "ecr-push"
-  role   = aws_iam_role.greeter_ci.id
-  policy = data.aws_iam_policy_document.greeter_ci_permissions.json
-}
+# ---- (removed 2026-07) Role A: aegis-greeter CI -> ECR push ----------------
+# Greeter's ECR push role + trust policy (`aegis-greeter-ci`,
+# greeter_ci_trust/greeter_ci_permissions) lived here. Per ADR-24
+# (2026-07-21), greeter moved to public GHCR — this role never successfully
+# assumed anyway (the trust policy was never wired to a working OIDC
+# subject; see ADR-24 Context). Removed along with envs/platform/ecr.tf (the
+# ECR repo this role pushed to) and the aegis-greeter repo's ECR_REPO_URL /
+# ECR_REGISTRY / OIDC_ROLE_ARN / AWS_REGION variables. See ADR-24
+# Consequences for the full removal list; the `github_greeter_repo_id`
+# variable this role's trust policy consumed is removed too (variables.tf).
 
 # ---- Role B: aegis-platform-aws CI plan -> read-only AWS --------------------
 # Trust = any ref/branch on aegis-platform-aws (PR branches included).
@@ -358,8 +288,11 @@ resource "aws_iam_role_policy_attachment" "infra_destroy_admin" {
 # `aegis-core-ci-push` (envs/platform/deployment-ecr.tf); staging/prod pull
 # cross-account. There is therefore no per-account ECR push role here — a
 # per-account repo + role silently diverged from where the deploy pulled and
-# caused ImagePullBackOff (2026-06-18). See envs/platform/ecr.tf for the full
-# rationale. greeter still uses its per-account greeter_ci role below.
+# caused ImagePullBackOff (2026-06-18). See envs/platform/ecr.tf (git history —
+# the file was removed 2026-07) for the full rationale. greeter used to have
+# its own per-account greeter_ci role below; it was removed in the same 2026-07
+# cleanup once greeter moved to public GHCR (ADR-24) — see the
+# "(removed 2026-07) Role A" note above.
 
 # ---- Role F: aegis-core CI -> S3 frontend sync + CloudFront invalidation ----
 # Trust identical to Role E — pinned to refs/heads/main on aegis-core, but via

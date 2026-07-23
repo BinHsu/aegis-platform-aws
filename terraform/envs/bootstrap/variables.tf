@@ -57,14 +57,10 @@ variable "github_platform_repo_id" {
   }
 }
 
-variable "github_greeter_repo_id" {
-  description = "Numeric GitHub repository id (as a string) for aegis-greeter. Binds aegis-greeter-ci. Get it via: gh api repos/<owner>/aegis-greeter --jq .id"
-  type        = string
-  validation {
-    condition     = can(regex("^[0-9]+$", var.github_greeter_repo_id))
-    error_message = "github_greeter_repo_id must be the real numeric repository id, as a digit-only string (gh api repos/<owner>/aegis-greeter --jq .id)."
-  }
-}
+# (removed 2026-07) github_greeter_repo_id — bound aegis-greeter-ci's OIDC
+# trust condition. Greeter moved to public GHCR 2026-07-21 (ADR-24); the
+# aegis-greeter-ci role this variable scoped was removed from iam-seed.tf in
+# the same cleanup.
 
 variable "github_core_repo_id" {
   description = "Numeric GitHub repository id (as a string) for aegis-core. Binds github-actions-aegis-core-frontend. Get it via: gh api repos/<owner>/aegis-core --jq .id"

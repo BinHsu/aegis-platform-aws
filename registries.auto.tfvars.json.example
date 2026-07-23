@@ -42,19 +42,19 @@
     "  ConfigMaps are filled automatically by the ApplicationSet from the platform",
     "    outputs (model_bucket_name, Cognito issuer/audience/jwks) — no hand-patch.",
     "",
-    "aegis-greeter-deploy — OBSOLETE as of ADR-24 (2026-07-21): greeter moved to",
-    "  public GHCR (same move aegis-core made earlier, ADR-23). The entry below is",
-    "  now a no-op: nothing in aegis-greeter-deploy's overlays consumes the",
-    "  injected ecr-repository annotation anymore. Kept here only as a worked",
-    "  example of the schema shape — remove it from your real (gitignored)",
-    "  registries.auto.tfvars.json; a stale entry is harmless (dead data) but",
+    "aegis-greeter-deploy — REMOVED (2026-07 cleanup, follow-up to ADR-24,",
+    "  2026-07-21): greeter moved to public GHCR (same move aegis-core made",
+    "  earlier, ADR-23), and nothing in aegis-greeter-deploy's overlays consumes",
+    "  the injected ecr-repository annotation anymore. The entry that used to sit",
+    "  here (ecr_account_id/ecr_region only, no engine_irsa/ingress_cert) is gone;",
+    "  the platform's per-workload ECR-injection ApplicationSet template itself",
+    "  stays in place per ADR-12 (\"in case a future workload needs private-ECR",
+    "  account-id hiding again\") — only greeter's now-dead entry was removed.",
+    "  Remove the equivalent entry from your real (gitignored)",
+    "  registries.auto.tfvars.json too; a stale entry is harmless (dead data) but",
     "  should not be mistaken for something still in effect."
   ],
   "workload_registries": {
-    "aegis-greeter-deploy": {
-      "ecr_account_id": "<deployment-account-id>",
-      "ecr_region": "eu-central-1"
-    },
     "aegis-core-deploy": {
       "ecr_account_id": "<deployment-account-id>",
       "ecr_region": "eu-central-1",

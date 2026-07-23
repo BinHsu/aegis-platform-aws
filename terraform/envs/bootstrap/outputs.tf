@@ -23,16 +23,15 @@ output "backend_hcl" {
 }
 
 # ---- CI IAM seed (ADR-13) --------------------------------------------------
-# The four CI role ARNs now live in this bootstrap (local) state. envs/platform
+# The CI role ARNs now live in this bootstrap (local) state. envs/platform
 # re-exports them (via data.aws_iam_role lookups) so the downstream regional
 # env keeps reading them from the platform remote state — its cluster-access
 # roster contract is unchanged. These outputs let the seed env emit the ARNs
 # the operator needs to confirm after a day-zero apply.
-output "greeter_ci_role_arn" {
-  description = "IAM role ARN assumed by aegis-greeter CI for ECR push (GitHub OIDC)."
-  value       = aws_iam_role.greeter_ci.arn
-}
-
+#
+# (removed 2026-07) greeter_ci_role_arn — greeter's ECR push role output.
+# Greeter moved to public GHCR 2026-07-21 (ADR-24); the aws_iam_role.greeter_ci
+# resource this output read was removed in the same cleanup.
 output "infra_ci_role_arn" {
   description = "IAM role ARN assumed by aegis-platform-aws CI for read-only AWS (terraform plan on any branch / PR). Scoped to ReadOnlyAccess."
   value       = aws_iam_role.infra_ci.arn

@@ -13,35 +13,18 @@ output "zone_name_servers" {
   value       = aws_route53_zone.main.name_servers
 }
 
-output "ecr_repository_url" {
-  description = "Full ECR repo URL — set as aegis-greeter repo variable ECR_REPO_URL. Form: <account>.dkr.ecr.<region>.amazonaws.com/aegis-greeter."
-  value       = aws_ecr_repository.greeter.repository_url
-}
-
-output "ecr_registry" {
-  description = "ECR registry host (URL minus the /<repo> path) — set as aegis-greeter repo variable ECR_REGISTRY. Form: <account>.dkr.ecr.<region>.amazonaws.com."
-  value       = split("/", aws_ecr_repository.greeter.repository_url)[0]
-}
-
-output "ecr_repository_arn" {
-  description = "ECR repo ARN (referenced by aegis-greeter CI IAM role)."
-  value       = aws_ecr_repository.greeter.arn
-}
-
-output "aws_region" {
-  description = "Platform region — set as aegis-greeter repo variable AWS_REGION (publish.yml configure-aws-credentials region)."
-  value       = var.platform_region
-}
+# ---- (removed 2026-07) greeter ECR outputs -------------------------------
+# ecr_repository_url / ecr_registry / ecr_repository_arn / greeter_ci_role_arn
+# / aws_region (the AWS_REGION-for-greeter-publish.yml output) were removed
+# when the dead greeter ECR stack was torn down in code. Greeter moved to
+# public GHCR 2026-07-21 (ADR-24); the platform no longer holds an ECR repo,
+# an ECR push role, or an AWS region for greeter's publish.yml to consume.
+# See ADR-24 Consequences + ecr.tf's git history for the removed resources.
 
 # CI role ARNs — the roles are SEEDED in envs/bootstrap (ADR-13) and looked up
 # here via data sources (oidc.tf). Re-exported so downstream regional/ keeps
 # reading them from the platform remote state (its cluster-access roster
 # contract is unchanged).
-output "greeter_ci_role_arn" {
-  description = "IAM role ARN assumed by aegis-greeter CI for ECR push (via GitHub OIDC). Seeded in envs/bootstrap."
-  value       = data.aws_iam_role.greeter_ci.arn
-}
-
 output "infra_ci_role_arn" {
   description = "IAM role ARN assumed by aegis-platform-aws CI for read-only AWS (terraform plan on any branch / PR). Scoped to ReadOnlyAccess. Seeded in envs/bootstrap."
   value       = data.aws_iam_role.infra_ci.arn
