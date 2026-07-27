@@ -274,7 +274,11 @@ jobs:
     name: comment-plan-diff
     runs-on: ubuntu-latest
     needs: [plan-platform, plan-regional]
-    if: ${{ always() && github.event_name == 'pull_request' && vars.BOOTSTRAP_COMPLETE == 'true' }}
+    # Same Dependabot exclusion as the plan jobs it reports on. With those
+    # skipped there is no plan diff to post, and the read-only GITHUB_TOKEN on a
+    # Dependabot event cannot write a comment anyway — `always()` would otherwise
+    # run this job on nothing.
+    if: ${{ always() && github.event_name == 'pull_request' && vars.BOOTSTRAP_COMPLETE == 'true' && github.actor != 'dependabot[bot]' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
