@@ -4,6 +4,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/BinHsu/aegis-platform-aws/badge)](https://securityscorecards.dev/viewer/?uri=github.com/BinHsu/aegis-platform-aws)
 
+## Maintenance status
+
+Actively maintained until 2026-07-31. Paused after that date while the owner
+starts a new job; expected to resume around 2026-Q1/Q2. Security updates keep
+flowing during the pause — only version-update PRs are paused. Issues and PRs
+may not get a timely response in the meantime. The repo is left in a
+known-good state at the freeze point, not mid-refactor.
+
 A shared platform tier for a multi-tenant AI workload fleet — Terraform for the
 cloud substrate, per-cluster ArgoCD for GitOps, Crossplane v2 for workload IAM,
 Kyverno for policy, and Grafana Cloud for observability. The goal: platform

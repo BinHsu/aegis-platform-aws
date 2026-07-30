@@ -11,6 +11,15 @@ version: 2
 # (an EKS cluster recreate). That is a deliberate, tested migration — not a
 # routine auto-merge. Dependabot still proposes minor/patch.
 
+# MAINTENANCE FREEZE (from 2026-07-31, expected to lift ~2026-Q1/Q2): the
+# owner is starting a new job and won't be able to tend this repo for six
+# months or more. Every entry below gets open-pull-requests-limit: 0 so
+# Dependabot stops opening version-update PRs — a public repo with dozens of
+# unattended bot PRs piling up reads worse than one with the cadence turned
+# down deliberately. This does not touch security updates, which are a
+# separate GitHub mechanism (repo Settings -> Code security -> Dependabot
+# security updates) and keep firing regardless of this file. To resume,
+# delete the open-pull-requests-limit line from each entry (default is 5).
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -18,6 +27,7 @@ updates:
       interval: weekly
     commit-message:
       prefix: "ci"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: terraform
     directory: /terraform/envs/bootstrap
@@ -28,6 +38,7 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 0
 
   - package-ecosystem: terraform
     directory: /terraform/envs/platform
@@ -38,6 +49,7 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 0
 
   - package-ecosystem: terraform
     directory: /terraform/envs/regional
@@ -48,6 +60,7 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 0
 
   - package-ecosystem: terraform
     directory: /terraform/modules/regional-stack
@@ -58,3 +71,4 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 0
